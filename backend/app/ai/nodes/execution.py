@@ -15,10 +15,10 @@ logger = get_logger(__name__)
 MAX_ROWS = 1000
 
 
-def validate_sql(sql: str) -> tuple[bool, str]:
+def validate_sql(sql: str, dialect: str = "mysql") -> tuple[bool, str]:
     """使用 SQLGlot AST 验证 SQL，拒绝非 SELECT 语句。"""
     try:
-        parsed = sqlglot.parse_one(sql, dialect="mysql")
+        parsed = sqlglot.parse_one(sql, dialect=dialect)
     except ParseError as e:
         return False, f"SQL 语法错误: {e}"
 
@@ -35,9 +35,9 @@ def validate_sql(sql: str) -> tuple[bool, str]:
     return True, ""
 
 
-async def execute_sql(sql: str, datasource_id: str) -> dict[str, Any]:
+async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql") -> dict[str, Any]:
     """执行 SQL 并返回结果。带 30 秒超时保护。"""
-    valid, error = validate_sql(sql)
+    valid, error = validate_sql(sql, dialect)
     if not valid:
         return {"success": False, "error": error}
 
@@ -54,9 +54,12 @@ async def execute_sql(sql: str, datasource_id: str) -> dict[str, Any]:
 
         async with asyncio.timeout(30):
             async with pool.connect() as conn:
-                # Set read-only mode
                 from sqlalchemy import text
-                await conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
+                # MySQL uses SET SESSION TRANSACTION READ ONLY, PostgreSQL uses SET default_transaction_read_only
+                try:
+                    await conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
+                except Exception:
+                    await conn.execute(text("SET default_transaction_read_only = on"))
                 result = await conn.execute(text(sql))
                 columns = list(result.keys())
                 rows = [dict(row._mapping) for row in result.fetchall()]

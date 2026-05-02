@@ -87,3 +87,26 @@ class SavedQuery(Base):
     generated_sql: Mapped[str] = mapped_column(String, nullable=False)
     datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    query_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    rating: Mapped[str] = mapped_column(String(20), nullable=False)
+    comment: Mapped[str] = mapped_column(String(1000), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AnalyticsEvent(Base):
+    __tablename__ = "analytics_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    event_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    event_data: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

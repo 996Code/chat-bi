@@ -40,6 +40,13 @@ async def export_csv(
     csv_content = output.getvalue()
     output.close()
 
+    # Analytics
+    from app.services.analytics_service import track_event, EVENT_QUERY_EXPORT_CSV
+    await track_event(db, user["tenant_id"], user["user_id"], EVENT_QUERY_EXPORT_CSV, {
+        "row_count": len(rows),
+    })
+    await db.commit()
+
     return Response(
         content=csv_content,
         media_type="text/csv",

@@ -12,6 +12,7 @@ from app.core.logging import get_logger
 from app.schemas.query import QueryRequest, QueryResponse
 from app.ai.graph import build_graph
 from app.ai.chart_type import infer_chart_type
+from app.services.rag_schema_service import get_rag_schema
 
 logger = get_logger(__name__)
 
@@ -55,7 +56,12 @@ async def create_query(
         )
     )
     config = config_result.scalar_one_or_none()
-    schema_context = config.config if config else ""
+    raw_metadata = config.config if config else ""
+
+    # RAG: find relevant tables based on question keywords
+    schema_context = ""
+    if raw_metadata:
+        schema_context = get_rag_schema(data.question, raw_metadata)
 
     # Build graph and execute
     try:
@@ -82,11 +88,17 @@ async def create_query(
 
         # Audit log
         from app.services.audit_service import log_action
+        from app.services.analytics_service import track_event, EVENT_QUERY_EXECUTE, EVENT_QUERY_SUCCESS, EVENT_QUERY_ERROR
         await log_action(
             db, tenant_id, user["user_id"],
             "QUERY_EXECUTE", "query", data.datasource_id,
             f"question={data.question[:200]} intent={final_state.get('intent')} success={final_state.get('success')}",
         )
+        event_name = EVENT_QUERY_SUCCESS if final_state.get("success") else EVENT_QUERY_ERROR
+        await track_event(db, tenant_id, user["user_id"], event_name, {
+            "question": data.question,
+            "success": final_state.get("success"),
+        })
         await db.commit()
 
         response = QueryResponse(
@@ -98,6 +110,7 @@ async def create_query(
             row_count=final_state.get("row_count", 0),
             error=final_state.get("error"),
             execution_time_ms=final_state.get("execution_time_ms") or elapsed_ms,
+            chart_type=chart_type,
         )
         return response
 
@@ -149,7 +162,8 @@ async def stream_query(
         )
     )
     config = config_result.scalar_one_or_none()
-    schema_context = config.config if config else ""
+    raw_metadata = config.config if config else ""
+    schema_context = get_rag_schema(data.question, raw_metadata) if raw_metadata else ""
 
     async def event_stream():
         try:

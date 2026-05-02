@@ -12,6 +12,7 @@ from app.api.query import router as query_router
 from app.api.saved_query import router as saved_query_router
 from app.api.export import router as export_router
 from app.api.audit import router as audit_router
+from app.api.feedback import router as feedback_router
 from app.services.connection_pool import pool_manager
 from app.db.base import Base
 from app.db.session import engine
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(saved_query_router, prefix="/api/v1")
     app.include_router(export_router, prefix="/api/v1")
     app.include_router(audit_router, prefix="/api/v1")
+    app.include_router(feedback_router, prefix="/api/v1")
 
     @app.get("/health")
     async def health():

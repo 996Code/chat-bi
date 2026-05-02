@@ -87,6 +87,11 @@ async def save_query(
     await db.commit()
     await db.refresh(sq)
 
+    # Analytics
+    from app.services.analytics_service import track_event, EVENT_QUERY_SAVE
+    await track_event(db, user["tenant_id"], user["user_id"], EVENT_QUERY_SAVE, {"name": sq.name})
+    await db.commit()
+
     return {
         "id": str(sq.id),
         "name": sq.name,

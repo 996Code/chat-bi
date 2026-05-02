@@ -8,6 +8,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "aiosqlite>=0.20",
     "aiomysql>=0.2",
+    "asyncpg>=0.29",
     "alembic>=1.14",
     "passlib[bcrypt]>=1.7",
     "python-jose[cryptography]>=3.3",

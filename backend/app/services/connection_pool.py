@@ -19,11 +19,21 @@ class ConnectionPoolManager:
 
         username = decrypt_value(ds.username_encrypted)
         password = decrypt_value(ds.password_encrypted)
-        url = (
-            f"mysql+aiomysql://{username}:{password}"
-            f"@{ds.host}:{ds.port}/{ds.database_name}"
-            f"?charset=utf8mb4&read_only=on"
-        )
+
+        if ds.db_type == "postgresql":
+            url = (
+                f"postgresql+asyncpg://{username}:{password}"
+                f"@{ds.host}:{ds.port}/{ds.database_name}"
+            )
+        elif ds.db_type == "sqlite":
+            url = f"sqlite+aiosqlite:///{ds.database_name}"
+        else:
+            # Default to MySQL
+            url = (
+                f"mysql+aiomysql://{username}:{password}"
+                f"@{ds.host}:{ds.port}/{ds.database_name}"
+                f"?charset=utf8mb4&read_only=on"
+            )
 
         engine = create_async_engine(
             url,
@@ -34,7 +44,7 @@ class ConnectionPoolManager:
             pool_pre_ping=True,
         )
         self._pools[ds_id] = engine
-        logger.info(f"Created connection pool for datasource {ds.name} ({ds_id})")
+        logger.info(f"Created connection pool for datasource {ds.name} ({ds_id}, type={ds.db_type})")
         return engine
 
     async def close_pool(self, ds_id: str) -> None:

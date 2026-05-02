@@ -13,10 +13,13 @@ from app.db.session import async_session_factory, get_db
 async def db():
     """Fresh DB per test with cleaned tables."""
     async with async_session_factory() as session:
-        # Clean all tables
-        await session.execute(text("DELETE FROM users"))
-        await session.execute(text("DELETE FROM tenants"))
-        await session.execute(text("DELETE FROM data_sources"))
+        # Clean all tables (order matters for FKs)
+        for table in ["analytics_events", "feedback", "audit_logs", "saved_queries",
+                       "metadata_configs", "data_sources", "users", "tenants"]:
+            try:
+                await session.execute(text(f"DELETE FROM {table}"))
+            except Exception:
+                pass  # Table may not exist in fresh DB
         await session.commit()
         yield session
 
@@ -25,13 +28,20 @@ async def db():
 async def client(db):
     """Test client with overridden DB dependency."""
     from app.api import auth as auth_module, datasource as ds_module, query as q_module
+    from app.api import saved_query as sq_module, export as exp_module, audit as audit_module
+    from app.api import feedback as fb_module
 
     async def override_get_db():
         yield db
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[auth_module.get_db] = override_get_db
     app.dependency_overrides[ds_module.get_db] = override_get_db
     app.dependency_overrides[q_module.get_db] = override_get_db
+    app.dependency_overrides[sq_module.get_db] = override_get_db
+    app.dependency_overrides[exp_module.get_db] = override_get_db
+    app.dependency_overrides[audit_module.get_db] = override_get_db
+    app.dependency_overrides[fb_module.get_db] = override_get_db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

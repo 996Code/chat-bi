@@ -110,6 +110,11 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         "USER_LOGIN", "user", str(user.id),
         f"email={user.email}",
     )
+
+    # Analytics event
+    from app.services.analytics_service import track_event, EVENT_USER_LOGIN
+    await track_event(db, str(user.tenant_id), str(user.id), EVENT_USER_LOGIN)
+
     await db.commit()
 
     token_data = {

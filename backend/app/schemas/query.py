@@ -25,3 +25,4 @@ class QueryResponse(BaseModel):
     row_count: int = 0
     error: str | None = None
     execution_time_ms: int | None = None
+    chart_type: str = "none"

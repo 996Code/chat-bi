@@ -59,10 +59,28 @@ def build_graph():
             }
         return {"sql": sql}
 
-    # Execution node
+    # Execution node with self-healing
     async def execution_node(state: QueryState) -> dict:
         from app.ai.chart_type import infer_chart_type
+        from app.ai.nodes.self_heal import self_heal_sql
+
         result = await execute_sql(state["sql"], state["datasource_id"])
+
+        # Self-healing: retry with LLM fix on failure
+        if not result["success"] and state.get("schema_context"):
+            heal_result = await self_heal_sql(
+                question=state["question"],
+                sql=state["sql"],
+                error=result.get("error", ""),
+                datasource_id=state.get("datasource_id", ""),
+                schema_context=state["schema_context"],
+                dialect="mysql",  # TODO: derive from datasource db_type
+            )
+            if heal_result.get("success"):
+                result = await execute_sql(heal_result["sql"], state["datasource_id"])
+                if result["success"]:
+                    state["sql"] = heal_result["sql"]  # update SQL in state
+
         columns = result.get("columns", [])
         rows = result.get("rows", [])
         chart_type = "none"

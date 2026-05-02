@@ -14,6 +14,7 @@ from app.schemas.datasource import (
 from app.services.datasource_service import DataSourceService
 from app.services.mysql_schema_scanner import scan_mysql_schema
 from app.services.connection_pool import pool_manager
+from app.services.rag_schema_service import get_rag_schema
 
 logger = get_logger(__name__)
 
@@ -62,6 +63,9 @@ async def create_datasource(
             "DATASOURCE_CREATE", "datasource", str(ds.id),
             f"name={ds.name} type={ds.db_type}",
         )
+        # Analytics
+        from app.services.analytics_service import track_event, EVENT_DATASOURCE_CREATE
+        await track_event(db, user["tenant_id"], user["user_id"], EVENT_DATASOURCE_CREATE, {"name": ds.name, "type": ds.db_type})
         await db.commit()
     except Exception:
         # Don't fail the request if audit log fails
@@ -174,3 +178,41 @@ async def health_check_datasource(
     await db.commit()
 
     return {"healthy": result["healthy"], "error": result["error"]}
+
+
+@router.get("/{ds_id}/schema", response_model=dict)
+async def get_datasource_schema(
+    ds_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取数据源的完整 schema 信息（用于数据字典浏览器）。"""
+    from sqlalchemy import select
+    from app.db.models import MetadataConfig
+
+    result = await db.execute(
+        select(DataSource).where(
+            DataSource.id == ds_id,
+            DataSource.tenant_id == user["tenant_id"],
+        )
+    )
+    ds = result.scalar_one_or_none()
+    if not ds:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("NOT_FOUND", "数据源不存在"),
+        )
+
+    config_result = await db.execute(
+        select(MetadataConfig).where(
+            MetadataConfig.datasource_id == ds_id,
+            MetadataConfig.tenant_id == user["tenant_id"],
+        ).order_by(MetadataConfig.created_at.desc())
+    )
+    config = config_result.scalars().first()
+    if not config:
+        return {"tables": [], "message": "请先扫描数据源以获取表结构"}
+
+    import json
+    metadata = json.loads(config.config)
+    return metadata

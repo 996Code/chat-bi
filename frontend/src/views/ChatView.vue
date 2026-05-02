@@ -7,6 +7,9 @@
           <el-option v-for="ds in datasourceStore.datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
         </el-select>
         <el-button text @click="router.push('/datasources')">管理数据源</el-button>
+        <el-button text @click="showDict = !showDict">
+          {{ showDict ? '收起' : '数据字典' }}
+        </el-button>
       </div>
       <div class="header-right">
         <span class="user-email">{{ authStore.user?.email }}</span>
@@ -14,75 +17,100 @@
       </div>
     </div>
 
-    <!-- Messages -->
-    <div class="messages" ref="messagesRef">
-      <div v-if="chatStore.messages.length === 0" class="empty-state">
-        <el-empty description="开始你的数据查询之旅吧！">
-          <template #image>
-            <el-icon :size="80" color="#c0c4cc"><ChatDotRound /></el-icon>
-          </template>
-        </el-empty>
-        <div class="suggestions">
-          <el-button text @click="askSuggestion('上个月的销售总额是多少？')">上个月的销售总额是多少？</el-button>
-          <el-button text @click="askSuggestion('用户数量统计')">用户数量统计</el-button>
-          <el-button text @click="askSuggestion('最近的10条订单')">最近的10条订单</el-button>
-        </div>
-      </div>
-
-      <div v-for="msg in chatStore.messages" :key="msg.id" :class="['message', msg.role]">
-        <div class="message-content">
-          <div class="message-text">{{ msg.content }}</div>
-          <div v-if="msg.sql" class="sql-block">
-            <div class="sql-header">
-              <span class="sql-label">生成的 SQL</span>
-              <el-button size="small" text @click="copySql(msg.sql!)">复制</el-button>
-            </div>
-            <pre>{{ msg.sql }}</pre>
-          </div>
-          <div v-if="msg.error && !msg.rows" class="error-text">
-            {{ msg.error }}
-          </div>
-          <div v-if="msg.rows && msg.rows.length > 0" class="data-table">
-            <el-table :data="msg.rows" border size="small" max-height="400">
-              <el-table-column v-for="col in msg.columns" :key="col" :prop="col" :label="col" />
-            </el-table>
-            <div class="table-footer">
-              共 {{ msg.row_count }} 条结果
-              <span v-if="msg.execution_time_ms">（耗时 {{ msg.execution_time_ms }}ms）</span>
+    <!-- Main content -->
+    <div class="chat-body">
+      <div class="chat-main">
+        <!-- Messages -->
+        <div class="messages" ref="messagesRef">
+          <div v-if="chatStore.messages.length === 0" class="empty-state">
+            <el-empty description="开始你的数据查询之旅吧！">
+              <template #image>
+                <el-icon :size="80" color="#c0c4cc"><ChatDotRound /></el-icon>
+              </template>
+            </el-empty>
+            <div class="suggestions">
+              <el-button text @click="askSuggestion('上个月的销售总额是多少？')">上个月的销售总额是多少？</el-button>
+              <el-button text @click="askSuggestion('用户数量统计')">用户数量统计</el-button>
+              <el-button text @click="askSuggestion('最近的10条订单')">最近的10条订单</el-button>
             </div>
           </div>
-        </div>
-      </div>
 
-      <div v-if="chatStore.loading" class="message assistant">
-        <div class="message-content">
-          <div class="loading-indicator">
-            <el-icon class="is-loading"><Loading /></el-icon>
-            <span>正在查询...</span>
+          <div v-for="msg in chatStore.messages" :key="msg.id" :class="['message', msg.role]">
+            <div class="message-content">
+              <div class="message-text">{{ msg.content }}</div>
+              <div v-if="msg.sql" class="sql-block">
+                <div class="sql-header">
+                  <span class="sql-label">生成的 SQL</span>
+                  <el-button size="small" text @click="copySql(msg.sql!)">复制</el-button>
+                </div>
+                <pre>{{ msg.sql }}</pre>
+              </div>
+              <div v-if="msg.error && !msg.rows" class="error-text">
+                {{ msg.error }}
+              </div>
+              <div v-if="msg.rows && msg.rows.length > 0" class="data-table">
+                <ChartRenderer
+                  :chart-type="msg.chart_type || 'table'"
+                  :columns="msg.columns || []"
+                  :rows="msg.rows"
+                />
+                <div class="table-footer">
+                  共 {{ msg.row_count }} 条结果
+                  <span v-if="msg.execution_time_ms">（耗时 {{ msg.execution_time_ms }}ms）</span>
+                </div>
+                <div class="feedback-actions">
+                  <el-button size="small" text @click="submitFeedback(msg, 'up')">
+                    <el-icon><CircleCheckFilled /></el-icon> 有用
+                  </el-button>
+                  <el-button size="small" text @click="submitFeedback(msg, 'down')">
+                    <el-icon><CircleCloseFilled /></el-icon> 不准
+                  </el-button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="chatStore.loading" class="message assistant">
+            <div class="message-content">
+              <div class="loading-indicator">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>正在查询...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input -->
+        <div class="input-area">
+          <el-input
+            v-model="inputText"
+            placeholder="用自然语言提问，例如：上个月的销售总额是多少？"
+            size="large"
+            @keyup.enter="handleSend"
+            :disabled="chatStore.loading || !chatStore.currentDatasourceId"
+          >
+            <template #append>
+              <el-button type="primary" @click="handleSend" :disabled="chatStore.loading || !inputText.trim() || !chatStore.currentDatasourceId">
+                发送
+              </el-button>
+            </template>
+          </el-input>
+          <div v-if="!chatStore.currentDatasourceId" class="input-hint">
+            请先在上方选择数据源
           </div>
         </div>
       </div>
+
+      <!-- Data Dictionary Sidebar -->
+      <DataDictionary
+        v-if="showDict"
+        :datasource-id="chatStore.currentDatasourceId"
+        @close="showDict = false"
+      />
     </div>
 
-    <!-- Input -->
-    <div class="input-area">
-      <el-input
-        v-model="inputText"
-        placeholder="用自然语言提问，例如：上个月的销售总额是多少？"
-        size="large"
-        @keyup.enter="handleSend"
-        :disabled="chatStore.loading || !chatStore.currentDatasourceId"
-      >
-        <template #append>
-          <el-button type="primary" @click="handleSend" :disabled="chatStore.loading || !inputText.trim() || !chatStore.currentDatasourceId">
-            发送
-          </el-button>
-        </template>
-      </el-input>
-      <div v-if="!chatStore.currentDatasourceId" class="input-hint">
-        请先在上方选择数据源
-      </div>
-    </div>
+    <!-- First Use Guide -->
+    <FirstUseGuide />
   </div>
 </template>
 
@@ -92,8 +120,11 @@ import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chatStore'
 import { useDatasourceStore } from '@/stores/datasourceStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ChatDotRound, Loading } from '@element-plus/icons-vue'
+import { ChatDotRound, Loading, CircleCheckFilled, CircleCloseFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import ChartRenderer from '@/components/ChartRenderer.vue'
+import DataDictionary from '@/components/DataDictionary.vue'
+import FirstUseGuide from '@/components/FirstUseGuide.vue'
 
 const router = useRouter()
 const chatStore = useChatStore()
@@ -102,6 +133,7 @@ const authStore = useAuthStore()
 
 const inputText = ref('')
 const messagesRef = ref<HTMLElement>()
+const showDict = ref(false)
 
 async function handleSend() {
   const text = inputText.value.trim()
@@ -128,6 +160,18 @@ function copySql(sql: string) {
   ElMessage.success('SQL 已复制')
 }
 
+async function submitFeedback(msg: any, rating: 'up' | 'down') {
+  try {
+    await api.post('/feedback', {
+      query_id: msg.id,
+      rating,
+    })
+    ElMessage.success(rating === 'up' ? '感谢反馈！' : '已记录，我们会持续改进')
+  } catch {
+    // Don't block UX on feedback failure
+  }
+}
+
 function handleLogout() {
   authStore.logout()
   router.push('/login')
@@ -152,6 +196,19 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   height: 100vh;
+}
+
+.chat-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .chat-header {
@@ -292,5 +349,11 @@ onMounted(async () => {
   color: #909399;
   font-size: 12px;
   text-align: center;
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }
 </style>

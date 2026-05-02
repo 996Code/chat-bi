@@ -11,6 +11,7 @@ export interface QueryResponse {
   row_count: number
   error: string | null
   execution_time_ms: number | null
+  chart_type: string
 }
 
 export interface Message {
@@ -23,6 +24,7 @@ export interface Message {
   row_count?: number
   error?: string
   execution_time_ms?: number
+  chart_type?: string
   timestamp: Date
 }
 
@@ -69,6 +71,7 @@ export const useChatStore = defineStore('chat', () => {
         row_count: data.row_count,
         error: data.error || undefined,
         execution_time_ms: data.execution_time_ms || undefined,
+        chart_type: data.chart_type || 'table',
         timestamp: new Date(),
       })
     } catch (error: any) {
