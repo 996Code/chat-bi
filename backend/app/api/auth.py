@@ -51,13 +51,10 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
             detail=_error("EMAIL_EXISTS", "该邮箱已注册"),
         )
 
-    # Auto-create tenant if first user
-    tenant_result = await db.execute(select(Tenant))
-    tenant = tenant_result.scalars().first()
-    if not tenant:
-        tenant = Tenant(name=f"user-{uuid.uuid4().hex[:6]}")
-        db.add(tenant)
-        await db.flush()
+    # Auto-create tenant for each user
+    tenant = Tenant(name=f"user-{uuid.uuid4().hex[:6]}")
+    db.add(tenant)
+    await db.flush()
 
     user = User(
         tenant_id=tenant.id,
