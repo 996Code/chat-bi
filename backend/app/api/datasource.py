@@ -155,7 +155,6 @@ async def health_check_datasource(
     ds.last_health_check = datetime.now(timezone.utc)
     if result["healthy"]:
         ds.is_active = True
-        ds.last_health_check = datetime.now(timezone.utc)
     else:
         ds.is_active = False
     await db.commit()

@@ -52,7 +52,7 @@ class ConnectionPoolManager:
         try:
             engine = await self.get_pool(ds)
             async with engine.connect() as conn:
-                await conn.execute("SELECT 1")
+                await conn.execute(text("SELECT 1"))
             return {"healthy": True, "error": None}
         except Exception as e:
             return {"healthy": False, "error": str(e)}
