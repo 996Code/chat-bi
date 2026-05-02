@@ -104,10 +104,11 @@ backend/app/ai/         → graph.py, client.py, nodes/, prompts/
 
 | 文件 | 用例 | 通过 | 失败 |
 |------|------|------|------|
-| test_auth.py | 11 | 11 | 0 |
-| test_datasource_query.py | 9 | 9 | 0 |
-| test_unit.py | 21 | 21 | 0 |
-| **总计** | **41** | **41** | **0** |
+| test_auth.py | 认证与多租户 | 11 | 11 | 0 |
+| test_datasource_query.py | 数据源+查询+SQL注入 | 9 | 9 | 0 |
+| test_unit.py | SQL验证+登录锁定单元 | 21 | 21 | 0 |
+| test_e2e.py | E2E全流程(注册→登录→数据源→查询) | 8 | 8 | 0 |
+| **总计** | **49** | **49** | **0** |
 
 ---
 
@@ -121,22 +122,22 @@ backend/app/ai/         → graph.py, client.py, nodes/, prompts/
 | 2 | 登录锁定：check_lock 误删未锁定条目导致计数归零 | 安全漏洞 | ✅ 已修复 |
 | 3 | models.py created_at/updated_at 类型标注为 bool | 类型错误 | ✅ 已修复 |
 
-### P1（建议修复）
+### P1（部分已修复）
 
-| # | 问题 | 说明 |
-|---|------|------|
-| 4 | JWT key 复用 | `secret_key` 同时用于 JWT 和 itsdangerous，建议新增 `token_signing_key` 独立变量 |
-| 5 | refresh token 未失效化 | 刷新后旧 token 仍可用，建议实现 Redis token 黑名单或 jti 追踪 |
-| 6 | 密码重置后旧 token 未失效 | 重置密码后旧 refresh token 仍可刷新 |
-| 7 | login_lock 使用内存 dict | 服务重启后所有锁定丢失，生产环境应使用 Redis |
-| 8 | execution.py 访问私有属性 | `pool_manager._pools` 应改为提供公开 getter |
+| # | 问题 | 说明 | 状态 |
+|---|------|------|------|
+| 4 | JWT key 复用 | `secret_key` 同时用于 JWT 和 itsdangerous，建议新增 `token_signing_key` | ⏭️ 生产环境 |
+| 5 | refresh token 未失效化 | 刷新后旧 token 仍可用 | ⏭️ 需要 Redis |
+| 6 | 密码重置后旧 token 未失效 | 重置密码后旧 refresh token 仍可刷新 | ⏭️ 同上 |
+| 7 | login_lock 使用内存 dict | 服务重启后锁定丢失 | ⏭️ 生产环境用 Redis |
+| 8 | execution.py 访问私有属性 | `pool_manager._pools` | ✅ 已修复：添加 get_pool_by_id() |
 
-### P2（代码质量）
+### P2（部分已修复）
 
-| # | 问题 | 说明 |
-|---|------|------|
-| 9 | config.py 使用 deprecated class Config | 应改用 `model_config = ConfigDict(env_file=".env")` |
-| 10 | 前端 chunk > 500KB | Element Plus + ECharts 全量引入，建议按需导入 |
+| # | 问题 | 说明 | 状态 |
+|---|------|------|------|
+| 9 | config.py 使用 deprecated class Config | 改用 `model_config = ConfigDict(...)` | ✅ 已修复 |
+| 10 | 前端 chunk > 500KB | Element Plus + ECharts 全量引入 | ⏭️ 性能优化阶段 |
 
 ---
 
@@ -144,8 +145,8 @@ backend/app/ai/         → graph.py, client.py, nodes/, prompts/
 
 **代码验收**：57/57 全部通过 ✅
 **架构审查**：全部符合要求 ✅
-**安全审查**：核心安全机制到位，6 项建议改进
-**自动化测试**：41/41 全部通过 ✅
-**已修复 Bug**：3 个 P0（含 2 个安全漏洞）
+**安全审查**：核心安全机制到位，6 项建议改进（2 项已修复）
+**自动化测试**：49/49 全部通过 ✅
+**已修复 Bug**：5 个（3 P0 + 2 P1/P2）
 
 Phase 1 核心链路（登录 → 数据源 → 提问 → SQL → 数据表格）代码质量良好，安全机制（bcrypt、JWT、SQLGlot、租户隔离、登录锁定、凭证加密）全部实现并通过测试。
