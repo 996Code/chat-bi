@@ -10,6 +10,80 @@ from app.db.models import DataSource, MetadataConfig
 logger = get_logger(__name__)
 
 
+async def scan_mysql_schema_raw(engine: AsyncEngine) -> dict:
+    """Scan schema without saving — for incremental diff comparison."""
+    async with engine.connect() as conn:
+        tables_result = await conn.execute(text("""
+            SELECT TABLE_NAME, TABLE_COMMENT
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+        """))
+        tables = tables_result.fetchall()
+
+        columns_result = await conn.execute(text("""
+            SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE,
+                   COLUMN_KEY, COLUMN_COMMENT, DATA_TYPE, ORDINAL_POSITION
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+            ORDER BY TABLE_NAME, ORDINAL_POSITION
+        """))
+        columns = columns_result.fetchall()
+
+        fk_result = await conn.execute(text("""
+            SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL
+        """))
+        fks = fk_result.fetchall()
+
+        # Get database name
+        db_name_result = await conn.execute(text("SELECT DATABASE()"))
+        db_name = db_name_result.scalar()
+
+    # Build structures
+    col_map: dict[str, list[dict]] = {}
+    for row in columns:
+        tname = row[0]
+        col_map.setdefault(tname, []).append({
+            "name": row[1],
+            "column": row[1],
+            "type": row[2],
+            "nullable": row[3] == "YES",
+            "primary": row[4] == "PRI",
+            "comment": row[5] or "",
+            "data_type": row[6],
+        })
+
+    rel_map: dict[str, list[dict]] = {}
+    for row in fks:
+        tname = row[0]
+        rel_map.setdefault(tname, []).append({
+            "column": row[1],
+            "referenced_table": row[2],
+            "referenced_column": row[3],
+        })
+
+    models = []
+    model_map: dict[str, dict] = {}
+    for table_name, table_comment in tables:
+        model = {
+            "name": table_name,
+            "table": table_name,
+            "description": table_comment or "",
+            "columns": col_map.get(table_name, []),
+            "relationships": rel_map.get(table_name, []),
+        }
+        models.append(model)
+        model_map[table_name] = model
+
+    return {
+        "version": "1.0",
+        "database": {"type": "mysql", "name": db_name or ""},
+        "models": models,
+        "model_map": model_map,
+    }
+
+
 async def scan_mysql_schema(engine: AsyncEngine, db: AsyncSession, ds: DataSource) -> dict:
     """Scan database INFORMATION_SCHEMA and save metadata as JSON. Supports MySQL and PostgreSQL."""
     async with engine.connect() as conn:
