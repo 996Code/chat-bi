@@ -1,7 +1,7 @@
 import json
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -153,27 +153,34 @@ async def update_data_model(
     """更新指定数据源的语义层模型配置。"""
     tenant_id = user["tenant_id"]
     result = await db.execute(
-        select(MetadataConfig).where(
+        select(MetadataConfig.id, MetadataConfig.config).where(
             MetadataConfig.datasource_id == uuid.UUID(ds_id),
             MetadataConfig.tenant_id == uuid.UUID(tenant_id),
         ).order_by(MetadataConfig.updated_at.desc()).limit(1)
     )
-    config = result.scalar_one_or_none()
-    if not config:
+    row = result.one_or_none()
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=_error("NOT_FOUND", "该数据源尚未配置数据模型"),
         )
 
+    config_id = row.id
     if "config" in data:
-        config.config = json.dumps(data["config"], ensure_ascii=False)
+        new_config = json.dumps(data["config"], ensure_ascii=False)
+        await db.execute(
+            text("UPDATE metadata_configs SET config = :config, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
+            {"config": new_config, "id": str(config_id)},
+        )
+        await db.commit()
+    else:
+        new_config = row.config
 
-    await db.commit()
     return {
-        "id": str(config.id),
-        "datasource_id": str(config.datasource_id),
-        "config": json.loads(config.config),
-        "updated_at": str(config.updated_at),
+        "id": str(config_id),
+        "datasource_id": ds_id,
+        "config": json.loads(new_config),
+        "updated_at": None,  # will be set on next GET
     }
 
 
@@ -259,7 +266,7 @@ async def sync_data_model(
         select(MetadataConfig).where(
             MetadataConfig.datasource_id == uuid.UUID(ds_id),
             MetadataConfig.tenant_id == uuid.UUID(tenant_id),
-        ).order_by(MetadataConfig.updated_at.desc())
+        ).order_by(MetadataConfig.updated_at.desc()).limit(1)
     )
     existing_config = result.scalar_one_or_none()
 

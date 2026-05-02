@@ -159,14 +159,23 @@ async def scan_mysql_schema(engine: AsyncEngine, db: AsyncSession, ds: DataSourc
         "models": models,
     }
 
-    # Save to metadata_configs (new version)
-    import json
-    config = MetadataConfig(
-        tenant_id=ds.tenant_id,
-        datasource_id=ds.id,
-        config=json.dumps(metadata, ensure_ascii=False),
+    # Upsert: update existing config or create new
+    existing = await db.execute(
+        select(MetadataConfig).where(
+            MetadataConfig.datasource_id == ds.id,
+            MetadataConfig.tenant_id == ds.tenant_id,
+        ).order_by(MetadataConfig.updated_at.desc()).limit(1)
     )
-    db.add(config)
+    existing_config = existing.scalar_one_or_none()
+    if existing_config:
+        existing_config.config = json.dumps(metadata, ensure_ascii=False)
+    else:
+        config = MetadataConfig(
+            tenant_id=ds.tenant_id,
+            datasource_id=ds.id,
+            config=json.dumps(metadata, ensure_ascii=False),
+        )
+        db.add(config)
     await db.commit()
 
     logger.info(f"Scanned {len(models)} tables for datasource {ds.name}")
@@ -254,12 +263,23 @@ async def _scan_postgres_schema(engine: AsyncEngine, db: AsyncSession, ds: DataS
         "models": models,
     }
 
-    config = MetadataConfig(
-        tenant_id=ds.tenant_id,
-        datasource_id=ds.id,
-        config=json.dumps(metadata, ensure_ascii=False),
+    # Upsert: update existing config or create new
+    existing = await db.execute(
+        select(MetadataConfig).where(
+            MetadataConfig.datasource_id == ds.id,
+            MetadataConfig.tenant_id == ds.tenant_id,
+        ).order_by(MetadataConfig.updated_at.desc()).limit(1)
     )
-    db.add(config)
+    existing_config = existing.scalar_one_or_none()
+    if existing_config:
+        existing_config.config = json.dumps(metadata, ensure_ascii=False)
+    else:
+        config = MetadataConfig(
+            tenant_id=ds.tenant_id,
+            datasource_id=ds.id,
+            config=json.dumps(metadata, ensure_ascii=False),
+        )
+        db.add(config)
     await db.commit()
 
     logger.info(f"Scanned {len(models)} PostgreSQL tables for datasource {ds.name}")
