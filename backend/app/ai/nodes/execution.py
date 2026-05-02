@@ -43,7 +43,7 @@ async def execute_sql(sql: str, datasource_id: str) -> dict[str, Any]:
 
     try:
         # Get engine from pool
-        pool = pool_manager._pools.get(datasource_id)
+        pool = await pool_manager.get_pool_by_id(datasource_id)
         if not pool:
             return {
                 "success": False,

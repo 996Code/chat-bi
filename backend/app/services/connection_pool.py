@@ -1,5 +1,6 @@
 import uuid
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy import text
 
 from app.core.logging import get_logger
 from app.core.encryption import decrypt_value
@@ -47,6 +48,14 @@ class ConnectionPoolManager:
             await engine.dispose()
             logger.info(f"Disposed pool for {ds_id}")
         self._pools.clear()
+
+    def has_pool(self, ds_id: str) -> bool:
+        """公开方法检查连接池是否存在，避免访问私有属性。"""
+        return ds_id in self._pools
+
+    async def get_pool_by_id(self, ds_id: str) -> AsyncEngine | None:
+        """公开方法获取连接池。"""
+        return self._pools.get(ds_id)
 
     async def health_check(self, ds_id: str, ds: DataSource) -> dict:
         try:
