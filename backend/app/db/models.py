@@ -12,8 +12,8 @@ class Tenant(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    created_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 
 
 class User(Base):
@@ -29,8 +29,8 @@ class User(Base):
     is_locked: Mapped[bool] = mapped_column(default=False)
     lock_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     role: Mapped[str] = mapped_column(String(50), default="user")
-    created_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 
 
 class DataSource(Base):
@@ -48,8 +48,8 @@ class DataSource(Base):
     is_active: Mapped[bool] = mapped_column(default=True)
     last_health_check: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     health_check_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    created_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 
 
 class MetadataConfig(Base):
@@ -59,8 +59,8 @@ class MetadataConfig(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     config: Mapped[str] = mapped_column(String, nullable=False)  # JSON schema content
-    created_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 
 
 class AuditLog(Base):
@@ -73,7 +73,7 @@ class AuditLog(Base):
     resource_type: Mapped[str] = mapped_column(String(100))
     resource_id: Mapped[str] = mapped_column(String(100))
     details: Mapped[str] = mapped_column(String, default="")
-    created_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class SavedQuery(Base):
@@ -86,4 +86,4 @@ class SavedQuery(Base):
     query_text: Mapped[str] = mapped_column(String, nullable=False)
     generated_sql: Mapped[str] = mapped_column(String, nullable=False)
     datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
-    created_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
