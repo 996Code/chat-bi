@@ -1,0 +1,85 @@
+"""SQL 自愈节点：执行失败时分析错误并重试修正。"""
+import re
+from typing import Any
+
+from app.core.logging import get_logger
+from app.ai.nodes.generation import get_llm
+
+logger = get_logger(__name__)
+
+MAX_RETRY = 2
+
+# 可自动修复的常见错误模式
+AUTO_FIX_RULES = {
+    "1146": "表不存在",
+    "1054": "列不存在",
+    "1064": "SQL 语法错误",
+    "1049": "数据库不存在",
+}
+
+
+def extract_error_code(error: str) -> str | None:
+    """从 MySQL 错误信息中提取错误代码。"""
+    match = re.search(r"\((\d+)\)", error)
+    if match:
+        return match.group(1)
+    return None
+
+
+def build_fix_prompt(question: str, failed_sql: str, error: str, retry_count: int, schema_context: str) -> str:
+    """构建 SQL 修正 prompt。"""
+    error_code = extract_error_code(error) or ""
+    error_desc = AUTO_FIX_RULES.get(error_code, error[:200])
+
+    return f"""你是 SQL 修复专家。请修复以下 SQL 的错误。
+
+原始问题：{question}
+失败的 SQL：{failed_sql}
+错误信息：{error}
+错误类型：{error_desc}
+
+{f"这是第 {retry_count} 次重试，请仔细检查。" if retry_count > 1 else ""}
+
+{f"可用的表结构：\n{schema_context}" if schema_context else ""}
+
+请只返回修复后的 SQL，不要包含任何解释或 markdown 代码块。"""
+
+
+async def self_heal_sql(
+    question: str,
+    sql: str,
+    error: str,
+    schema_context: str = "",
+    retry_count: int = 1,
+) -> dict[str, Any]:
+    """尝试修复失败的 SQL。"""
+    if retry_count > MAX_RETRY:
+        logger.warning("SQL self-healing exceeded max retries for: %s", sql[:200])
+        return {"success": False, "error": f"SQL 修复失败（已重试 {MAX_RETRY} 次）"}
+
+    prompt = build_fix_prompt(question, sql, error, retry_count, schema_context)
+
+    try:
+        llm = get_llm()
+        response = await llm.ainvoke([
+            ("system", "你只生成 SQL，不解释。"),
+            ("human", prompt),
+        ])
+
+        fixed_sql = response.content.strip()
+        # Strip markdown code blocks if present
+        if fixed_sql.startswith("```"):
+            fixed_sql = fixed_sql.split("\n", 1)[-1]
+        if fixed_sql.endswith("```"):
+            fixed_sql = fixed_sql.rsplit("\n", 1)[0]
+        fixed_sql = fixed_sql.strip()
+
+        if not fixed_sql:
+            return await self_heal_sql(question, sql, error, schema_context, retry_count + 1)
+
+        logger.info("SQL fix attempt %d: %s", retry_count, fixed_sql[:200])
+        return {"sql": fixed_sql, "fixed": True, "retry_count": retry_count}
+
+    except Exception as e:
+        logger.error("Self-healing LLM call failed: %s", e)
+        return await self_heal_sql(question, sql, error, schema_context, retry_count + 1)

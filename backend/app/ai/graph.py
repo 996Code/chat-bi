@@ -15,6 +15,7 @@ class QueryState(TypedDict, total=False):
     row_count: int
     execution_time_ms: int
     success: bool
+    chart_type: str
 
 
 def route_by_intent(state: QueryState) -> str:
@@ -60,14 +61,21 @@ def build_graph():
 
     # Execution node
     async def execution_node(state: QueryState) -> dict:
+        from app.ai.chart_type import infer_chart_type
         result = await execute_sql(state["sql"], state["datasource_id"])
+        columns = result.get("columns", [])
+        rows = result.get("rows", [])
+        chart_type = "none"
+        if rows and columns:
+            chart_type = infer_chart_type(columns, rows)
         return {
             "success": result["success"],
             "error": result.get("error"),
-            "columns": result.get("columns", []),
-            "rows": result.get("rows", []),
+            "columns": columns,
+            "rows": rows,
             "row_count": result.get("row_count", 0),
             "execution_time_ms": result.get("execution_time_ms"),
+            "chart_type": chart_type,
         }
 
     # Add nodes
