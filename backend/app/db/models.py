@@ -1,4 +1,6 @@
 import uuid
+from datetime import datetime
+from typing import Optional
 from sqlalchemy import String, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
@@ -41,6 +43,8 @@ class DataSource(Base):
     username_encrypted: Mapped[str] = mapped_column(String(500), nullable=False)
     password_encrypted: Mapped[str] = mapped_column(String(500), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
+    last_health_check: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    health_check_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[bool] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

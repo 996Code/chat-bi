@@ -84,3 +84,25 @@ def verify_email_verification_token(token: str) -> Optional[str]:
         return _get_serializer().loads(token, max_age=86400)
     except (SignatureExpired, BadSignature):
         return None
+
+
+# --- Auth dependency ---
+
+from fastapi import Request, HTTPException, status
+
+
+async def get_current_user(request: Request) -> dict:
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "UNAUTHORIZED", "message": "未提供认证令牌", "details": None},
+        )
+    token = auth.split(" ", 1)[1]
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "INVALID_TOKEN", "message": "无效的访问令牌", "details": None},
+        )
+    return payload
