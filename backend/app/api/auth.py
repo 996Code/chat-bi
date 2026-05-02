@@ -103,6 +103,15 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     user.failed_login_attempts = 0
     await db.commit()
 
+    # Audit log
+    from app.services.audit_service import log_action
+    await log_action(
+        db, str(user.tenant_id), str(user.id),
+        "USER_LOGIN", "user", str(user.id),
+        f"email={user.email}",
+    )
+    await db.commit()
+
     token_data = {
         "user_id": str(user.id),
         "email": user.email,

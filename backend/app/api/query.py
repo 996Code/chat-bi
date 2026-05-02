@@ -80,6 +80,15 @@ async def create_query(
         if rows and columns:
             chart_type = infer_chart_type(columns, rows)
 
+        # Audit log
+        from app.services.audit_service import log_action
+        await log_action(
+            db, tenant_id, user["user_id"],
+            "QUERY_EXECUTE", "query", data.datasource_id,
+            f"question={data.question[:200]} intent={final_state.get('intent')} success={final_state.get('success')}",
+        )
+        await db.commit()
+
         response = QueryResponse(
             success=final_state.get("success", False),
             intent=final_state.get("intent"),

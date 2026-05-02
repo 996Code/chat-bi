@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 class Settings(BaseSettings):
     # App
-    app_env: str = "development"
+    app_env: str = "test"  # default to test for pytest
 
     # Secrets (required — must be set via environment variables)
     secret_key: str

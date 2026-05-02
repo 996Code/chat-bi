@@ -53,6 +53,20 @@ async def create_datasource(
 ):
     service = DataSourceService(db, tenant_id=user["tenant_id"])
     ds = await service.create(data)
+
+    # Audit log
+    try:
+        from app.services.audit_service import log_action
+        await log_action(
+            db, user["tenant_id"], user["user_id"],
+            "DATASOURCE_CREATE", "datasource", str(ds.id),
+            f"name={ds.name} type={ds.db_type}",
+        )
+        await db.commit()
+    except Exception:
+        # Don't fail the request if audit log fails
+        await db.rollback()
+
     return _to_response(ds)
 
 
