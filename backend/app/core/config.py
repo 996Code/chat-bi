@@ -1,6 +1,9 @@
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
 from typing import Optional
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
@@ -12,7 +15,7 @@ class Settings(BaseSettings):
     data_source_encryption_key: str
 
     # Database (SQLite for v1 dev, PostgreSQL for prod)
-    database_url: str = "sqlite+aiosqlite:///./chatbi.db"
+    database_url: str = f"sqlite+aiosqlite:///{BASE_DIR / 'chatbi.db'}"
 
     # JWT
     jwt_algorithm: str = "HS256"
