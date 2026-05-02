@@ -199,7 +199,7 @@
                   </el-select>
                 </template>
               </el-table-column>
-              <el-table-column label="" width="50" align="center">
+              <el-table-column label="" width="60" align="center" fixed="right">
                 <template #default="{ $index }">
                   <el-button size="small" text type="danger" @click="removeRelationship($index)">
                     <el-icon><Delete /></el-icon>
@@ -236,7 +236,7 @@
                   <el-input v-model="row.description" size="small" placeholder="说明" />
                 </template>
               </el-table-column>
-              <el-table-column label="" width="50" align="center">
+              <el-table-column label="" width="60" align="center" fixed="right">
                 <template #default="{ $index }">
                   <el-button size="small" text type="danger" @click="removeMetric($index)">
                     <el-icon><Delete /></el-icon>
@@ -611,7 +611,7 @@ onMounted(async () => {
 
 .panel-body {
   flex: 1;
-  overflow-y: auto;
+  overflow: auto;
   padding: 20px;
 }
 

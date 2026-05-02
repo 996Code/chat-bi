@@ -3,10 +3,14 @@
     <!-- Header -->
     <div class="chat-header">
       <div class="header-left">
+        <el-button text class="sidebar-toggle" @click="showConvSidebar = !showConvSidebar">
+          <el-icon :size="18"><ChatLineSquare /></el-icon>
+        </el-button>
         <el-select v-model="chatStore.currentDatasourceId" placeholder="选择数据源" style="width: 200px" @change="onDatasourceChange">
           <el-option v-for="ds in datasourceStore.datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
         </el-select>
         <el-button text @click="router.push('/datasources')">管理数据源</el-button>
+        <el-button text @click="router.push('/data-models')">数据模型</el-button>
         <el-button text @click="showDict = !showDict">
           {{ showDict ? '收起' : '数据字典' }}
         </el-button>
@@ -17,8 +21,45 @@
       </div>
     </div>
 
-    <!-- Main content -->
+    <!-- Body: conversation sidebar + chat + dictionary -->
     <div class="chat-body">
+      <!-- Conversation Sidebar -->
+      <div v-if="showConvSidebar" class="conv-sidebar">
+        <div class="conv-sidebar-header">
+          <span>对话历史</span>
+          <el-button size="small" type="primary" @click="handleNewConversation">
+            <el-icon><Plus /></el-icon> 新建
+          </el-button>
+        </div>
+        <div class="conv-list">
+          <div
+            v-for="conv in chatStore.conversations"
+            :key="conv.id"
+            :class="['conv-item', { active: chatStore.currentConversationId === conv.id }]"
+            @click="handleLoadConversation(conv)"
+          >
+            <div class="conv-item-content">
+              <div class="conv-title">{{ conv.title || '新对话' }}</div>
+              <div class="conv-meta">
+                {{ conv.message_count }} 条消息 · {{ formatDate(conv.updated_at) }}
+              </div>
+            </div>
+            <el-button
+              size="small"
+              text
+              class="conv-delete"
+              @click.stop="handleDeleteConversation(conv)"
+            >
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
+          <div v-if="chatStore.conversations.length === 0" class="conv-empty">
+            暂无对话历史
+          </div>
+        </div>
+      </div>
+
+      <!-- Main chat area -->
       <div class="chat-main">
         <!-- Messages -->
         <div class="messages" ref="messagesRef">
@@ -29,25 +70,46 @@
               </template>
             </el-empty>
             <div class="suggestions">
-              <el-button text @click="askSuggestion('上个月的销售总额是多少？')">上个月的销售总额是多少？</el-button>
-              <el-button text @click="askSuggestion('用户数量统计')">用户数量统计</el-button>
-              <el-button text @click="askSuggestion('最近的10条订单')">最近的10条订单</el-button>
+              <el-button text @click="askSuggestion('各VIP等级的用户数量')">各VIP等级的用户数量</el-button>
+              <el-button text @click="askSuggestion('订单总金额是多少')">订单总金额是多少</el-button>
+              <el-button text @click="askSuggestion('各城市的已发货订单数量')">各城市已发货订单数量</el-button>
+              <el-button text @click="askSuggestion('哪个商品分类卖得最好')">哪个商品分类卖得最好</el-button>
             </div>
           </div>
 
           <div v-for="msg in chatStore.messages" :key="msg.id" :class="['message', msg.role]">
             <div class="message-content">
               <div class="message-text">{{ msg.content }}</div>
-              <div v-if="msg.sql" class="sql-block">
-                <div class="sql-header">
-                  <span class="sql-label">生成的 SQL</span>
-                  <el-button size="small" text @click="copySql(msg.sql!)">复制</el-button>
+
+              <!-- Pipeline Steps (Dify-like) -->
+              <div v-if="msg.pipelineSteps && msg.pipelineSteps.length > 0" class="pipeline">
+                <div
+                  v-for="(step, idx) in msg.pipelineSteps"
+                  :key="idx"
+                  :class="['pipeline-step', step.status]"
+                >
+                  <div class="step-icon">
+                    <el-icon v-if="step.status === 'running'" class="is-loading"><Loading /></el-icon>
+                    <el-icon v-else-if="step.status === 'done'" class="step-done"><CircleCheck /></el-icon>
+                    <el-icon v-else class="step-failed"><CircleClose /></el-icon>
+                  </div>
+                  <div class="step-content">
+                    <div class="step-label">{{ step.label }}</div>
+                    <div v-if="step.detail" class="step-detail">
+                      <!-- SQL detail -->
+                      <pre v-if="step.type === 'sql' && msg.sql" class="sql-inline">{{ msg.sql }}</pre>
+                      <span v-else>{{ step.detail }}</span>
+                    </div>
+                  </div>
                 </div>
-                <pre>{{ msg.sql }}</pre>
               </div>
-              <div v-if="msg.error && !msg.rows" class="error-text">
+
+              <!-- Error (without pipeline steps) -->
+              <div v-if="msg.error && (!msg.pipelineSteps || msg.pipelineSteps.length === 0)" class="error-text">
                 {{ msg.error }}
               </div>
+
+              <!-- Data table / chart -->
               <div v-if="msg.rows && msg.rows.length > 0" class="data-table">
                 <ChartRenderer
                   :chart-type="msg.chart_type || 'table'"
@@ -57,6 +119,7 @@
                 <div class="table-footer">
                   共 {{ msg.row_count }} 条结果
                   <span v-if="msg.execution_time_ms">（耗时 {{ msg.execution_time_ms }}ms）</span>
+                  <span v-if="msg.traceId" class="trace-id">trace: {{ msg.traceId }}</span>
                 </div>
                 <div class="feedback-actions">
                   <el-button size="small" text @click="submitFeedback(msg, 'up')">
@@ -69,22 +132,13 @@
               </div>
             </div>
           </div>
-
-          <div v-if="chatStore.loading" class="message assistant">
-            <div class="message-content">
-              <div class="loading-indicator">
-                <el-icon class="is-loading"><Loading /></el-icon>
-                <span>正在查询...</span>
-              </div>
-            </div>
-          </div>
         </div>
 
         <!-- Input -->
         <div class="input-area">
           <el-input
             v-model="inputText"
-            placeholder="用自然语言提问，例如：上个月的销售总额是多少？"
+            placeholder="用自然语言提问，例如：各VIP等级的用户数量"
             size="large"
             @keyup.enter="handleSend"
             :disabled="chatStore.loading || !chatStore.currentDatasourceId"
@@ -120,8 +174,9 @@ import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chatStore'
 import { useDatasourceStore } from '@/stores/datasourceStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ChatDotRound, Loading, CircleCheckFilled, CircleCloseFilled } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ChatDotRound, ChatLineSquare, Loading, CircleCheckFilled, CircleCloseFilled, CircleCheck, CircleClose, Plus, Delete } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import api from '@/api'
 import ChartRenderer from '@/components/ChartRenderer.vue'
 import DataDictionary from '@/components/DataDictionary.vue'
 import FirstUseGuide from '@/components/FirstUseGuide.vue'
@@ -134,6 +189,7 @@ const authStore = useAuthStore()
 const inputText = ref('')
 const messagesRef = ref<HTMLElement>()
 const showDict = ref(false)
+const showConvSidebar = ref(true)
 
 async function handleSend() {
   const text = inputText.value.trim()
@@ -181,13 +237,53 @@ function onDatasourceChange() {
   chatStore.clearMessages()
 }
 
+function handleNewConversation() {
+  chatStore.newConversation()
+}
+
+async function handleLoadConversation(conv: any) {
+  if (conv.id === chatStore.currentConversationId) return
+  await chatStore.loadConversation(conv.id)
+  await nextTick()
+  scrollToBottom()
+}
+
+async function handleDeleteConversation(conv: any) {
+  try {
+    await ElMessageBox.confirm('确定要删除这个对话吗？', '确认删除', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await chatStore.deleteConversation(conv.id)
+    ElMessage.success('已删除')
+  } catch {
+    // User cancelled
+  }
+}
+
+function formatDate(dateStr: string): string {
+  const d = new Date(dateStr)
+  const now = new Date()
+  const diffMs = now.getTime() - d.getTime()
+  const diffMin = Math.floor(diffMs / 60000)
+  if (diffMin < 1) return '刚刚'
+  if (diffMin < 60) return `${diffMin} 分钟前`
+  const diffHour = Math.floor(diffMin / 60)
+  if (diffHour < 24) return `${diffHour} 小时前`
+  const diffDay = Math.floor(diffHour / 24)
+  if (diffDay < 7) return `${diffDay} 天前`
+  return d.toLocaleDateString('zh-CN')
+}
+
 onMounted(async () => {
   authStore.initFromStorage()
   await datasourceStore.list()
-  // Auto-select first datasource if available
   if (datasourceStore.datasources.length > 0 && !chatStore.currentDatasourceId) {
     chatStore.currentDatasourceId = datasourceStore.datasources[0].id
   }
+  // Load conversation list
+  await chatStore.loadConversations()
 })
 </script>
 
@@ -204,6 +300,98 @@ onMounted(async () => {
   overflow: hidden;
 }
 
+/* Conversation Sidebar */
+.conv-sidebar {
+  width: 300px;
+  min-width: 300px;
+  border-right: 1px solid #e4e7ed;
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conv-sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+.conv-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.conv-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+  gap: 8px;
+}
+
+.conv-item:hover {
+  background: #e8e8e8;
+}
+
+.conv-item.active {
+  background: #e8edf3;
+  border-right: 3px solid #667eea;
+}
+
+.conv-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.conv-title {
+  font-size: 13px;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-meta {
+  font-size: 11px;
+  color: #909399;
+  margin-top: 2px;
+}
+
+.conv-delete {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+  color: #909399;
+}
+
+.conv-item:hover .conv-delete {
+  opacity: 1;
+}
+
+.conv-delete:hover {
+  color: #f56c6c;
+}
+
+.conv-empty {
+  padding: 20px 16px;
+  text-align: center;
+  color: #909399;
+  font-size: 13px;
+}
+
+.sidebar-toggle {
+  padding: 4px;
+}
+
+/* Main chat area */
 .chat-main {
   flex: 1;
   display: flex;
@@ -218,6 +406,7 @@ onMounted(async () => {
   padding: 12px 20px;
   border-bottom: 1px solid #e4e7ed;
   background: white;
+  gap: 12px;
 }
 
 .header-left,
@@ -225,11 +414,21 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.header-left {
+  flex: 1;
+  min-width: 0;
 }
 
 .user-email {
   color: #606266;
   font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
 }
 
 .messages {
@@ -270,7 +469,7 @@ onMounted(async () => {
 }
 
 .message-content {
-  max-width: 70%;
+  max-width: 80%;
   padding: 12px 16px;
   border-radius: 12px;
   background: white;
@@ -282,37 +481,107 @@ onMounted(async () => {
   color: white;
 }
 
+.message.assistant .message-content {
+  width: 80%;
+}
+
+/* Metric card: small centered card */
+.message.assistant .message-content:has(.metric-card) {
+  width: auto !important;
+  min-width: 260px;
+  max-width: 380px;
+  text-align: center;
+}
+
 .message-text {
   margin-bottom: 8px;
   line-height: 1.5;
 }
 
-.sql-block {
-  background: #1e1e1e;
-  border-radius: 8px;
-  padding: 12px;
-  margin-top: 8px;
-}
-
-.sql-header {
+/* Pipeline Steps - Dify style */
+.pipeline {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border-left: 3px solid #e0e0e0;
 }
 
-.sql-label {
+.pipeline-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  transition: all 0.3s ease;
+}
+
+.pipeline-step.running {
+  opacity: 1;
+}
+
+.pipeline-step.done {
+  opacity: 1;
+}
+
+.pipeline-step.failed {
+  opacity: 0.7;
+}
+
+.step-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.step-done {
+  color: #67c23a;
+  font-size: 16px;
+}
+
+.step-failed {
+  color: #f56c6c;
+  font-size: 16px;
+}
+
+.step-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-label {
+  font-weight: 500;
+  color: #303133;
+  line-height: 1.4;
+}
+
+.step-detail {
   color: #909399;
   font-size: 12px;
+  margin-top: 2px;
+  line-height: 1.4;
+  word-break: break-all;
 }
 
-.sql-block pre {
-  margin: 0;
-  color: #e0e0e0;
-  font-size: 13px;
+.sql-inline {
+  margin: 4px 0 0;
+  padding: 6px 10px;
+  background: #1e1e1e;
+  color: #a5d6ff;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  border-radius: 6px;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-all;
+  line-height: 1.5;
 }
 
 .error-text {
@@ -323,12 +592,22 @@ onMounted(async () => {
 
 .data-table {
   margin-top: 8px;
+  width: 100%;
 }
 
 .table-footer {
   margin-top: 8px;
   color: #909399;
   font-size: 12px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.trace-id {
+  color: #c0c4cc;
+  font-family: 'SF Mono', monospace;
+  font-size: 11px;
 }
 
 .loading-indicator {

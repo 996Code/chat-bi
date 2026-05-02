@@ -110,11 +110,20 @@ watch(() => props.datasourceId, async (id) => {
   align-items: center;
   gap: 6px;
   font-size: 13px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.tree-node span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .node-desc {
   color: #909399;
   font-size: 11px;
   margin-left: 4px;
+  flex-shrink: 0;
 }
 </style>
