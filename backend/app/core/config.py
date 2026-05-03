@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     rate_limit_query_max: int = 30
     rate_limit_query_window: int = 60
 
+    # Chroma vector store (RAG semantic retrieval)
+    chroma_path: str = "./.chroma"
+
     # RAG schema
     rag_max_tables: int = 5
     rag_max_columns: int = 15
