@@ -206,6 +206,16 @@ async def delete_data_model(
         )
     await db.delete(config)
     await db.commit()
+
+    # Clean up Chroma collection
+    try:
+        from app.services.chroma_service import get_chroma_service
+        chroma_svc = get_chroma_service()
+        if chroma_svc:
+            chroma_svc.delete_collection(ds_id)
+    except Exception as e:
+        logger.warning("Chroma cleanup failed (non-fatal): %s", e)
+
     return None
 
 
@@ -330,6 +340,16 @@ async def sync_data_model(
         db.add(config)
 
     await db.commit()
+
+    # Refresh Chroma vector store with synced schema
+    try:
+        from app.services.chroma_service import get_chroma_service
+        chroma_svc = get_chroma_service()
+        if chroma_svc:
+            active_models = [m for m in merged_models if not m.get("_deleted")]
+            chroma_svc.refresh_collection(ds_id, active_models)
+    except Exception as e:
+        logger.warning("Chroma refresh failed (non-fatal): %s", e)
 
     return {
         "mode": "incremental",
