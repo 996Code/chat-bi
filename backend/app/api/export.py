@@ -1,7 +1,7 @@
 """查询结果 CSV 导出 API。"""
 import csv
 import io
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -17,6 +17,15 @@ def _error(code: str, message: str) -> dict:
     return {"code": code, "message": message, "details": None}
 
 
+def _sanitize_csv_cell(value: str) -> str:
+    """Prevent CSV formula injection by prefixing with single quote if starts with dangerous char."""
+    if not isinstance(value, str):
+        return value
+    if value and value[0] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
+
+
 @router.post("/csv")
 async def export_csv(
     data: dict,
@@ -27,15 +36,26 @@ async def export_csv(
     columns = data.get("columns", [])
     rows = data.get("rows", [])
 
-    if not columns or not rows:
-        return {"error": "无数据可导出"}
+    # Extract column names (support both list of strings and list of objects)
+    col_names = []
+    for col in columns:
+        if isinstance(col, dict):
+            col_names.append(col.get("name", col.get("label", "")))
+        else:
+            col_names.append(str(col))
+
+    if not col_names or not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("NO_DATA", "无数据可导出"),
+        )
 
     # Generate CSV
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(columns)
+    writer.writerow(col_names)
     for row in rows:
-        writer.writerow([row.get(col, "") for col in columns])
+        writer.writerow([_sanitize_csv_cell(str(row.get(col, ""))) for col in col_names])
 
     csv_content = output.getvalue()
     output.close()
@@ -49,9 +69,8 @@ async def export_csv(
 
     return Response(
         content=csv_content,
-        media_type="text/csv",
+        media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": "attachment; filename=export.csv",
-            "Content-Encoding": "utf-8",
         },
     )
