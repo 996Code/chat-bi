@@ -83,16 +83,17 @@ class DataSourceService:
         try:
             username = decrypt_value(ds.username_encrypted)
             password = decrypt_value(ds.password_encrypted)
-            url = (
-                f"mysql+aiomysql://{username}:{password}"
-                f"@{ds.host}:{ds.port}/{ds.database_name}"
-                f"?charset=utf8mb4&read_only=on"
-            )
+            url = self._build_connection_url(ds, username, password)
             engine = create_async_engine(url, pool_pre_ping=True)
             async with engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
                 # Get database list
-                result = await conn.execute(text("SHOW DATABASES"))
+                if ds.db_type == "postgresql":
+                    result = await conn.execute(
+                        text("SELECT datname FROM pg_database WHERE datistemplate = false")
+                    )
+                else:
+                    result = await conn.execute(text("SHOW DATABASES"))
                 databases = [row[0] for row in result.fetchall()]
             await engine.dispose()
 
@@ -106,3 +107,17 @@ class DataSourceService:
             ds.is_active = False
             await self.db.commit()
             return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _build_connection_url(ds: DataSource, username: str, password: str) -> str:
+        if ds.db_type == "postgresql":
+            return (
+                f"postgresql+asyncpg://{username}:{password}"
+                f"@{ds.host}:{ds.port}/{ds.database_name}"
+            )
+        # Default: MySQL
+        return (
+            f"mysql+aiomysql://{username}:{password}"
+            f"@{ds.host}:{ds.port}/{ds.database_name}"
+            f"?charset=utf8mb4"
+        )

@@ -1,6 +1,8 @@
 from pydantic import BaseModel, field_validator
 
 
+SUPPORTED_DB_TYPES = {"mysql", "postgresql"}
+
 class DataSourceCreate(BaseModel):
     name: str
     type: str = "mysql"
@@ -23,9 +25,9 @@ class DataSourceCreate(BaseModel):
 
     @field_validator("type")
     @classmethod
-    def type_is_mysql(cls, v: str) -> str:
-        if v != "mysql":
-            raise ValueError("Phase 1 仅支持 MySQL")
+    def type_is_supported(cls, v: str) -> str:
+        if v not in SUPPORTED_DB_TYPES:
+            raise ValueError(f"仅支持以下数据库类型: {', '.join(sorted(SUPPORTED_DB_TYPES))}")
         return v
 
 

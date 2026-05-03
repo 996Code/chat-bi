@@ -13,6 +13,7 @@ from app.schemas.query import QueryRequest, QueryResponse
 from app.ai.graph import build_graph
 from app.ai.chart_type import infer_chart_type
 from app.services.rag_schema_service import get_rag_schema
+from app.services.cache_service import cache_get, cache_set
 
 logger = get_logger(__name__)
 
@@ -46,6 +47,28 @@ async def create_query(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
+        )
+
+    # Check cache first
+    cached = await cache_get(data.question, data.datasource_id)
+    if cached:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        from app.services.analytics_service import track_event, EVENT_QUERY_SUCCESS
+        await track_event(db, tenant_id, user["user_id"], EVENT_QUERY_SUCCESS, {
+            "question": data.question,
+            "cached": True,
+        })
+        await db.commit()
+        return QueryResponse(
+            success=cached.get("success", False),
+            intent=cached.get("intent"),
+            sql=cached.get("sql"),
+            columns=cached.get("columns", []),
+            rows=cached.get("rows", []),
+            row_count=cached.get("row_count", 0),
+            error=cached.get("error"),
+            execution_time_ms=elapsed_ms,
+            chart_type=cached.get("chart_type", "table"),
         )
 
     # Get schema context from metadata_configs
@@ -112,6 +135,19 @@ async def create_query(
             execution_time_ms=final_state.get("execution_time_ms") or elapsed_ms,
             chart_type=chart_type,
         )
+
+        # Cache successful query results
+        if final_state.get("success") and rows:
+            await cache_set(data.question, data.datasource_id, {
+                "success": True,
+                "intent": final_state.get("intent"),
+                "sql": final_state.get("sql"),
+                "columns": columns,
+                "rows": rows,
+                "row_count": final_state.get("row_count", 0),
+                "chart_type": chart_type,
+            })
+
         return response
 
     except asyncio.TimeoutError:

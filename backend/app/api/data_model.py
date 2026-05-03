@@ -228,7 +228,7 @@ async def sync_data_model(
     4. 删除表 → 标记 inactive（不物理删除，保留用户自定义的别名/描述）
     5. 表结构变更 → 更新字段列表，保留用户自定义的 alias/comment
     """
-    from app.services.mysql_schema_scanner import scan_mysql_schema, scan_mysql_schema_raw
+    from app.services.mysql_schema_scanner import scan_schema_raw, scan_mysql_schema
     from app.services.connection_pool import pool_manager
     from app.services.datasource_service import DataSourceService
     import hashlib
@@ -254,7 +254,7 @@ async def sync_data_model(
 
     # Scan current schema
     engine = await pool_manager.get_pool(ds)
-    raw_schema = await scan_mysql_schema_raw(engine)
+    raw_schema = await scan_schema_raw(engine, ds)
 
     if mode == "full":
         # Full sync: replace everything

@@ -10,6 +10,91 @@ from app.db.models import DataSource, MetadataConfig
 logger = get_logger(__name__)
 
 
+async def scan_schema_raw(engine: AsyncEngine, ds: DataSource) -> dict:
+    """Unified schema scanner — dispatches to MySQL or PostgreSQL scanner."""
+    if ds.db_type == "postgresql":
+        return await _scan_postgres_schema_raw(engine, ds)
+    return await scan_mysql_schema_raw(engine)
+
+
+async def _scan_postgres_schema_raw(engine: AsyncEngine, ds: DataSource) -> dict:
+    """Scan PostgreSQL schema without saving — for incremental diff comparison."""
+    async with engine.connect() as conn:
+        tables_result = await conn.execute(text("""
+            SELECT tablename, obj_description((schemaname || '.' || tablename)::regclass, 'pg_class') as comment
+            FROM pg_tables
+            WHERE schemaname = 'public'
+        """))
+        tables = tables_result.fetchall()
+
+        columns_result = await conn.execute(text("""
+            SELECT table_name, column_name, data_type, is_nullable,
+                   (SELECT 'PRI' FROM pg_index i
+                    JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attname = c.column_name
+                    WHERE i.indrelid = (table_schema || '.' || table_name)::regclass AND i.indisprimary)
+            FROM information_schema.columns c
+            WHERE table_schema = 'public'
+            ORDER BY table_name, ordinal_position
+        """))
+        columns = columns_result.fetchall()
+
+        fk_result = await conn.execute(text("""
+            SELECT
+                tc.table_name, kcu.column_name,
+                ccu.table_name AS referenced_table,
+                ccu.column_name AS referenced_column
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+                ON tc.constraint_name = ccu.constraint_name
+                AND tc.table_schema = ccu.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+                AND tc.table_schema = 'public'
+        """))
+        fks = fk_result.fetchall()
+
+    col_map: dict[str, list[dict]] = {}
+    for row in columns:
+        tname = row[0]
+        col_map.setdefault(tname, []).append({
+            "name": row[1],
+            "column": row[1],
+            "type": row[2],
+            "nullable": row[3] == "YES",
+            "primary": row[4] == "PRI",
+            "comment": "",
+            "data_type": row[2],
+        })
+
+    rel_map: dict[str, list[dict]] = {}
+    for row in fks:
+        tname = row[0]
+        rel_map.setdefault(tname, []).append({
+            "column": row[1],
+            "referenced_table": row[2],
+            "referenced_column": row[3],
+        })
+
+    models = []
+    for table_name, table_comment in tables:
+        model = {
+            "name": table_name,
+            "table": table_name,
+            "description": table_comment or "",
+            "columns": col_map.get(table_name, []),
+            "relationships": rel_map.get(table_name, []),
+        }
+        models.append(model)
+
+    return {
+        "version": "1.0",
+        "database": {"type": "postgresql", "name": ds.database_name},
+        "models": models,
+    }
+
+
 async def scan_mysql_schema_raw(engine: AsyncEngine) -> dict:
     """Scan schema without saving — for incremental diff comparison."""
     async with engine.connect() as conn:

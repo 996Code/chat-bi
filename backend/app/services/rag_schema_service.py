@@ -16,6 +16,42 @@ STOP_WORDS = {
     "个", "请", "问", "帮", "查", "给", "想", "能", "吗", "呢", "吧", "啊", "哦",
 }
 
+# 同义词映射表（内存，无需外部中间件）
+# key: 标准词，value: 同义词列表
+SYNONYM_MAP: dict[str, list[str]] = {
+    "用户": ["user", "member", "customer", "客户", "会员"],
+    "订单": ["order", "purchase", "交易"],
+    "商品": ["product", "item", "goods", "货物"],
+    "金额": ["amount", "money", "price", "cost", "total", "费用", "总价"],
+    "数量": ["count", "num", "quantity", "qty", "总数"],
+    "收入": ["revenue", "income", "earning"],
+    "时间": ["time", "date", "created_at", "updated_at", "日期"],
+    "状态": ["status", "state"],
+    "分类": ["category", "type", "kind", "类型"],
+    "名称": ["name", "title"],
+    "电话": ["phone", "mobile", "tel"],
+    "地址": ["address", "addr", "location"],
+    "城市": ["city"],
+    "地区": ["region", "area", "district"],
+    "销售额": ["sale", "sales", "revenue", "营业额"],
+    "利润": ["profit", "margin"],
+    "成本": ["cost", "expense"],
+    "VIP": ["vip", "等级", "level", "tier"],
+    "发货": ["ship", "deliver", "delivery", "物流"],
+    "支付": ["pay", "payment", "付款"],
+}
+
+
+def _expand_keywords(keywords: list[str]) -> set[str]:
+    """通过同义词映射扩展关键词。"""
+    expanded = set(keywords)
+    for kw in keywords:
+        for standard, synonyms in SYNONYM_MAP.items():
+            if kw == standard or kw in synonyms:
+                expanded.add(standard)
+                expanded.update(synonyms)
+    return expanded
+
 
 def extract_keywords(question: str) -> list[str]:
     """从问题中提取关键词（去除停用词）。"""
@@ -53,16 +89,17 @@ def find_relevant_tables(
 ) -> list[dict[str, Any]]:
     """根据问题找到最相关的表。"""
     keywords = extract_keywords(question)
+    expanded_keywords = _expand_keywords(keywords)
     models = metadata.get("models", [])
 
     scores = []
     for model in models:
-        table_name = model.get("name", "").lower()
-        table_desc = model.get("description", "").lower()
+        table_name = (model.get("name") or "").lower()
+        table_desc = (model.get("description") or "").lower()
 
         # Score: name match is highest priority
         name_score = 0
-        for kw in keywords:
+        for kw in expanded_keywords:
             if kw in table_name:
                 name_score += 3
             elif similarity(kw, table_name) > 0.5:
@@ -70,7 +107,7 @@ def find_relevant_tables(
 
         # Description match
         desc_score = 0
-        for kw in keywords:
+        for kw in expanded_keywords:
             if kw in table_desc:
                 desc_score += 2
             elif similarity(kw, table_desc) > 0.4:
@@ -79,9 +116,9 @@ def find_relevant_tables(
         # Column name match
         col_score = 0
         for col in model.get("columns", []):
-            col_name = col.get("name", "").lower()
-            col_comment = col.get("comment", "").lower()
-            for kw in keywords:
+            col_name = (col.get("name") or "").lower()
+            col_comment = (col.get("comment") or "").lower()
+            for kw in expanded_keywords:
                 if kw in col_name:
                     col_score += 1
                 elif kw in col_comment:
@@ -98,11 +135,11 @@ def find_relevant_tables(
         # Only include relevant columns
         relevant_cols = []
         for col in model.get("columns", []):
-            col_name = col.get("name", "").lower()
-            col_comment = col.get("comment", "").lower()
+            col_name = (col.get("name") or "").lower()
+            col_comment = (col.get("comment") or "").lower()
             is_relevant = any(
                 kw in col_name or kw in col_comment or similarity(kw, col_name) > 0.5
-                for kw in keywords
+                for kw in expanded_keywords
             )
             # Always include primary keys and foreign keys
             if col.get("primary") or col.get("column_key") in ("PRI", "FK", "MUL"):
@@ -116,9 +153,9 @@ def find_relevant_tables(
 
         result.append({
             "name": model["name"],
-            "description": model.get("description", ""),
+            "description": model.get("description") or "",
             "columns": relevant_cols,
-            "relationships": model.get("relationships", []),
+            "relationships": model.get("relationships") or [],
         })
 
     return result
@@ -139,7 +176,7 @@ def format_schema_context(tables: list[dict[str, Any]]) -> str:
             nullable = "NULL" if col.get("nullable") else "NOT NULL"
             primary = " [主键]" if col.get("primary") else ""
             comment = f" — {col['comment']}" if col.get("comment") else ""
-            lines.append(f"  - {col['name']} ({col.get('type', 'unknown')}) {nullable}{primary}{comment}")
+            lines.append(f"  - {col.get('name', '?')} ({col.get('type', 'unknown')}) {nullable}{primary}{comment}")
 
         if table.get("relationships"):
             lines.append("关联:")
