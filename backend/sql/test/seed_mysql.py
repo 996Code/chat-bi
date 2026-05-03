@@ -1,23 +1,21 @@
-"""Seed script: populate PostgreSQL test database with high-volume e-commerce data.
+"""Seed script: populate MySQL test database with high-volume e-commerce data.
 
 Generates ~25,000 rows across 11 tables with realistic edge cases
 for complex SQL testing (JOINs, window functions, subqueries, etc.).
 
 Table names use t_ prefix as expected by the ChatBI application.
 
-Uses parameterized queries exclusively (no string SQL generation for data).
-
 Usage:
-    python sql/test/seed_pg.py
+    python sql/test/seed_mysql.py
 """
 import asyncio
 import json
 import os
 import random
 import uuid
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 
-import asyncpg
+import aiomysql
 
 random.seed(42)
 
@@ -25,7 +23,7 @@ random.seed(42)
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "tests", "test_config.json")
 
 with open(CONFIG_PATH) as f:
-    _CONFIG = json.load(f)["postgresql"]
+    _CONFIG = json.load(f)["mysql"]
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 CITIES = [
@@ -47,6 +45,8 @@ LAST_NAMES = [
     "徐", "孙", "胡", "朱", "高", "林", "何", "郭", "马", "罗",
     "梁", "宋", "郑", "谢", "韩", "唐", "冯", "于", "董", "萧",
 ]
+
+CATEGORY_ADJECTIVES = ["优质", "精选", "进口", "国产", "经典", "新款", "热销", "爆款"]
 
 PRODUCT_ADJECTIVES = ["高品质", "经济实惠", "奢华", "专业级", "入门级", "旗舰", "经典"]
 PRODUCT_SUFFIXES = ["标准版", "升级版", "尊享版", "青春版", "Pro版", "Lite版", "Max版"]
@@ -80,65 +80,42 @@ N_ORDERS = 5000
 N_ORDER_ITEMS = 12000
 N_COUPONS = 50
 N_WAREHOUSES = 10
+# Payments, shipping, reviews, inventory derived from order logic
 
 
-async def recreate_database():
-    """Drop and recreate chatbi_test database, then create tables."""
-    admin_conn = await asyncpg.connect(
-        host=_CONFIG["host"],
-        port=_CONFIG["port"],
-        user=_CONFIG["user"],
-        password=_CONFIG["password"],
-        database=_CONFIG["admin_db"],
-    )
-    try:
-        # Terminate existing connections
-        await admin_conn.execute("""
-            SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-            WHERE datname = 'chatbi_test' AND pid <> pg_backend_pid()
-        """)
-        await admin_conn.execute("DROP DATABASE IF EXISTS chatbi_test")
-        await admin_conn.execute("CREATE DATABASE chatbi_test")
-    finally:
-        await admin_conn.close()
+def gen_pool(cur, count, pool):
+    """Return a list of *count* items sampled from *pool* with replacement."""
+    return [random.choice(pool) for _ in range(count)]
 
-    # Create tables in the new database
-    conn = await asyncpg.connect(
-        host=_CONFIG["host"],
-        port=_CONFIG["port"],
-        user=_CONFIG["user"],
-        password=_CONFIG["password"],
-        database="chatbi_test",
-    )
-    try:
-        # Read schema and execute
-        schema_path = os.path.join(os.path.dirname(__file__), "01_pg_schema.sql")
-        with open(schema_path) as f:
-            schema_sql = f.read()
 
-        # Only execute CREATE TABLE and CREATE INDEX statements
-        # Split by semicolons, strip comments and psql commands, skip non-DDL
-        for raw_stmt in schema_sql.split(";"):
-            # Remove SQL comments, psql commands (\c, \i, etc.), and blank lines
-            lines = []
-            for line in raw_stmt.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("--") or not stripped:
-                    continue
-                if stripped.startswith("\\"):
-                    continue  # skip psql meta commands
-                lines.append(line)
-            stmt = "\n".join(lines).strip()
-            if not stmt:
-                continue
-            # Only run DDL we want
-            upper = stmt.upper().lstrip()
-            if upper.startswith("CREATE TABLE") or upper.startswith("CREATE UNIQUE INDEX") or upper.startswith("CREATE INDEX"):
-                await conn.execute(stmt)
-        return conn
-    except Exception:
-        await conn.close()
-        raise
+async def drop_and_create(conn):
+    """Recreate the database from scratch."""
+    async with conn.cursor() as c:
+        await c.execute("DROP DATABASE IF EXISTS chatbi_test")
+        await c.execute(
+            "CREATE DATABASE chatbi_test DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        )
+        await c.execute("USE chatbi_test")
+    await conn.commit()
+
+    # Read and execute schema
+    schema_path = os.path.join(os.path.dirname(__file__), "01_mysql_schema.sql")
+    with open(schema_path) as f:
+        schema_sql = f.read()
+
+    # Split by semicolons and execute each individually
+    async with conn.cursor() as c:
+        await c.execute("USE chatbi_test")
+        # Use regex to extract individual CREATE TABLE statements from the schema
+        import re
+        table_statements = re.findall(
+            r'(CREATE TABLE\s+\w+\s*\([^;]+\))',
+            schema_sql,
+            re.DOTALL,
+        )
+        for stmt in table_statements:
+            await c.execute(stmt)
+    await conn.commit()
 
 
 async def seed_categories(conn):
@@ -146,6 +123,7 @@ async def seed_categories(conn):
     rows = []
     cat_id = 1
 
+    # Level-1 root categories
     level1_names = [
         "数码电子", "服装鞋帽", "食品饮料", "家居家装", "美妆个护",
         "母婴用品", "运动户外", "图书文具", "汽车用品", "医药保健",
@@ -156,6 +134,7 @@ async def seed_categories(conn):
         level1_ids.append(cat_id)
         cat_id += 1
 
+    # Level-2 sub-categories (2-3 per root)
     level2_map = {
         "数码电子": ["手机", "电脑", "平板", "智能穿戴"],
         "服装鞋帽": ["男装", "女装", "童装", "鞋靴"],
@@ -176,6 +155,7 @@ async def seed_categories(conn):
             level2_ids.append(cat_id)
             cat_id += 1
 
+    # Level-3 leaf categories (fill up to 40)
     level3_map = {
         "手机": ["智能手机", "老人机"],
         "电脑": ["笔记本", "台式机"],
@@ -203,16 +183,12 @@ async def seed_categories(conn):
 
     rows = rows[:N_CATEGORIES]
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_categories (id, name, parent_id, level, sort_order) VALUES ($1, $2, $3, $4, $5)",
-                *r,
-            )
-
-    # Reset sequence
-    await conn.execute(f"SELECT setval('t_categories_id_seq', {max(r[0] for r in rows)})")
-
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_categories (id, name, parent_id, level, sort_order) VALUES (%s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return len(rows)
 
 
@@ -221,8 +197,8 @@ async def seed_users(conn):
     rows = []
     for i in range(1, N_USERS + 1):
         username = random.choice(LAST_NAMES) + random.choice(FIRST_NAMES)
-        email = f"user{i:04d}@example.com" if i <= N_USERS * 0.7 else None
-        phone = f"1{''.join([str(random.randint(0, 9)) for _ in range(10)])}" if random.random() > 0.1 else None
+        email = f"user{i:04d}@example.com" if i <= N_USERS * 0.7 else None  # 30% NULL email
+        phone = f"1{''.join([str(random.randint(0,9)) for _ in range(10)])}" if random.random() > 0.1 else None  # 10% NULL phone
 
         vip = 0
         r = random.random()
@@ -237,40 +213,47 @@ async def seed_users(conn):
         else:
             vip = 4
 
-        city = CITIES[i % len(CITIES)]
+        city = CITIES[i % len(CITIES)]  # ensure even distribution initially
 
         created_at = DATE_START + timedelta(days=random.randint(0, 180), hours=random.randint(0, 23))
         rows.append((username, email, phone, vip, city, created_at))
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_users (username, email, phone, vip_level, city, created_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6)",
-                *r,
-            )
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_users (username, email, phone, vip_level, city, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
 
-    await conn.execute(f"SELECT setval('t_users_id_seq', {N_USERS})")
-    return list(range(1, N_USERS + 1))
+    # Get assigned user IDs (1..2000 with auto_increment)
+    user_ids = list(range(1, N_USERS + 1))
+    return user_ids
 
 
 async def seed_products(conn):
     """500 products across categories with price ranges, stock edge cases."""
-    cats = await conn.fetch("SELECT id, name, level FROM t_categories ORDER BY id")
-    leaf_cats = [c for c in cats if c["level"] >= 2]
+    # Get category IDs
+    async with conn.cursor() as c:
+        await c.execute("SELECT id, name, level FROM t_categories ORDER BY id")
+        cats = await c.fetchall()
+
+    # Prefer leaf categories (level 3 or 2) for products
+    leaf_cats = [c for c in cats if c[2] >= 2]
     if not leaf_cats:
         leaf_cats = cats
 
     rows = []
-    statuses = ["active"] * 18 + ["inactive"] + ["discontinued"]
+    statuses = ["active"] * 18 + ["inactive"] + ["discontinued"]  # 90% active
 
     for i in range(1, N_PRODUCTS + 1):
         cat = random.choice(leaf_cats)
-        cat_name = cat["name"]
+        cat_name = cat[1]
         adj = random.choice(PRODUCT_ADJECTIVES)
         suffix = random.choice(PRODUCT_SUFFIXES)
         name = f"{adj}{cat_name}{suffix} #{i:04d}"
 
+        # Price distribution: mostly 10-500, some high-value
         r = random.random()
         if r < 0.6:
             price = round(random.uniform(19.9, 199.9), 2)
@@ -283,53 +266,60 @@ async def seed_products(conn):
 
         cost_price = round(price * random.uniform(0.3, 0.7), 2) if random.random() > 0.1 else None
 
+        # Stock: mostly 0-500, some zero, some huge
         sr = random.random()
         if sr < 0.05:
-            stock = 0
+            stock = 0  # 5% out of stock
         elif sr < 0.9:
             stock = random.randint(1, 500)
         elif sr < 0.97:
             stock = random.randint(500, 2000)
         else:
-            stock = random.randint(2000, 10000)
+            stock = random.randint(2000, 10000)  # 3% bulk stock
 
-        sku = f"SKU-{cat['id']:02d}-{i:04d}"
+        sku = f"SKU-{cat[0]:02d}-{i:04d}"
         weight = round(random.uniform(50, 5000), 2) if random.random() > 0.15 else None
         status = random.choice(statuses)
         created = DATE_START + timedelta(days=random.randint(0, 180))
-        rows.append((name, cat["id"], price, cost_price, stock, sku, weight, status, created))
+        rows.append((name, cat[0], price, cost_price, stock, sku, weight, status, created))
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_products (name, category_id, price, cost_price, stock, sku, weight, status, created_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_products_id_seq', {N_PRODUCTS})")
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_products (name, category_id, price, cost_price, stock, sku, weight, status, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return list(range(1, N_PRODUCTS + 1))
 
 
 async def seed_orders(conn, user_ids):
-    """5000 orders with edge cases."""
+    """5000 orders with edge cases: date spread, city coverage, refunds, high-value, etc."""
     statuses = ["pending", "paid", "shipped", "completed", "cancelled", "refunded"]
-    status_weights = [5, 15, 15, 40, 10, 15]
+    status_weights = [5, 15, 15, 40, 10, 15]  # weighted distribution
 
+    rows = []
+    order_id = 1
+
+    # Pre-generate base orders with even date/city distribution
     base_orders = []
     for i in range(N_ORDERS):
-        city = CITIES[i % len(CITIES)]
-        days_offset = (i * 180) // N_ORDERS
+        city = CITIES[i % len(CITIES)]  # ensures every city gets coverage
+        days_offset = (i * 180) // N_ORDERS  # even spread over 180 days
         created_at = DATE_START + timedelta(days=days_offset, hours=random.randint(0, 23), minutes=random.randint(0, 59))
 
+        # User: ensure some users have many orders, some have none
         user_r = random.random()
         if user_r < 0.1:
+            # Heavy buyers: first 200 user_ids, heavily weighted
             user_id = random.randint(1, 200)
         elif user_r < 0.15:
-            continue  # users 1901-2000 get no orders
+            # Users with NO orders: skip these user_ids entirely (users 1901-2000 never get orders)
+            continue
         else:
             user_id = random.choice(user_ids[200:1900]) if len(user_ids) > 200 else random.choice(user_ids)
 
+        # Amount: mostly 50-2000, some high-value
         amt_r = random.random()
         if amt_r < 0.7:
             total = round(random.uniform(29.9, 499.9), 2)
@@ -338,8 +328,9 @@ async def seed_orders(conn, user_ids):
         elif amt_r < 0.98:
             total = round(random.uniform(3000, 19999.9), 2)
         else:
-            total = round(random.uniform(20000, 89999.9), 2)
+            total = round(random.uniform(20000, 89999.9), 2)  # high-value
 
+        # Discount: 20% zero-discount, rest varied
         disc_r = random.random()
         if disc_r < 0.20:
             discount = 0
@@ -352,7 +343,7 @@ async def seed_orders(conn, user_ids):
 
         base_orders.append((user_id, total, discount, city, created_at))
 
-    # City coverage: ensure 100+ orders per city
+    # Ensure city coverage: every city needs 100+ orders
     city_counts = {}
     for o in base_orders:
         city_counts[o[3]] = city_counts.get(o[3], 0) + 1
@@ -366,7 +357,7 @@ async def seed_orders(conn, user_ids):
                 created_at = DATE_START + timedelta(days=days_offset, hours=random.randint(0, 23))
                 base_orders.append((user_id, total, discount, city, created_at))
 
-    # Heavy buyers: 20 users with 50+ orders
+    # Ensure heavy buyers: 20 users with 50+ orders
     heavy_buyer_ids = list(range(1, 21))
     heavy_counts = {}
     for o in base_orders:
@@ -383,7 +374,7 @@ async def seed_orders(conn, user_ids):
                 created_at = DATE_START + timedelta(days=days_offset, hours=random.randint(0, 23))
                 base_orders.append((uid, total, discount, city, created_at))
 
-    # High-value orders: at least 50 with total > 50000
+    # Ensure high-value orders: at least 50 with total > 50000
     hv_count = sum(1 for o in base_orders if o[1] > 50000)
     for _ in range(max(0, 50 - hv_count)):
         user_id = random.choice(heavy_buyer_ids)
@@ -394,13 +385,14 @@ async def seed_orders(conn, user_ids):
         created_at = DATE_START + timedelta(days=days_offset, hours=random.randint(0, 23))
         base_orders.append((user_id, total, discount, city, created_at))
 
+    # Truncate to target
     base_orders = base_orders[:N_ORDERS]
 
-    rows = []
+    # Assign statuses
     for (user_id, total, discount, city, created_at) in base_orders:
         status = random.choices(statuses, weights=status_weights, k=1)[0]
 
-        order_no = f"ORD{created_at.strftime('%Y%m%d')}{len(rows)+1:06d}"
+        order_no = f"ORD{created_at.strftime('%Y%m%d')}{order_id:06d}"
 
         paid_at = None
         shipped_at = None
@@ -432,27 +424,28 @@ async def seed_orders(conn, user_ids):
 
         rows.append((order_no, user_id, total, discount, shipping_fee, status, city, note,
                      created_at, paid_at, shipped_at, delivered_at, cancelled_at, refunded_at))
+        order_id += 1
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_orders (order_no, user_id, total_amount, discount_amount, shipping_fee, status, city, note, "
-                "created_at, paid_at, shipped_at, delivered_at, cancelled_at, refunded_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_orders_id_seq', {len(rows)})")
-    order_ids = list(range(1, len(rows) + 1))
-    return order_ids, rows
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_orders (order_no, user_id, total_amount, discount_amount, shipping_fee, status, city, note, "
+            "created_at, paid_at, shipped_at, delivered_at, cancelled_at, refunded_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
+    return list(range(1, len(rows) + 1)), rows
 
 
 async def seed_order_items(conn, order_ids, order_rows, product_ids):
     """12000 order items. 30%+ orders have 3+ items."""
+    # Build item count distribution per order
     items_per_order = []
     target_items = N_ORDER_ITEMS
     n_orders = len(order_ids)
+    # Target avg 2.4 items/order
 
+    # 30% of orders get 3+ items, 40% get 2, 30% get 1
     for i in range(n_orders):
         r = random.random()
         if r < 0.30:
@@ -462,6 +455,7 @@ async def seed_order_items(conn, order_ids, order_rows, product_ids):
         else:
             items_per_order.append(1)
 
+    # Adjust to hit target
     current_total = sum(items_per_order)
     while current_total < target_items:
         idx = random.randint(0, n_orders - 1)
@@ -483,14 +477,12 @@ async def seed_order_items(conn, order_ids, order_rows, product_ids):
             subtotal = round(qty * price, 2)
             rows.append((oid, pid, qty, price, subtotal))
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_order_items (order_id, product_id, quantity, price, subtotal) VALUES ($1, $2, $3, $4, $5)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_order_items_id_seq', {len(rows)})")
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_order_items (order_id, product_id, quantity, price, subtotal) VALUES (%s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return len(rows)
 
 
@@ -512,19 +504,17 @@ async def seed_payments(conn, order_ids, order_rows):
 
         rows.append((oid, amount, method, "success", paid_at))
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_payments (order_id, amount, method, status, paid_at) VALUES ($1, $2, $3, $4, $5)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_payments_id_seq', {len(rows)})")
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_payments (order_id, amount, method, status, paid_at) VALUES (%s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return len(rows)
 
 
 async def seed_shipping(conn, order_ids, order_rows):
-    """Shipping for shipped/completed orders. Refunded orders get NO shipping."""
+    """Shipping for shipped/completed orders. Refunded orders should NOT have shipping."""
     rows = []
     for i, oid in enumerate(order_ids):
         status = order_rows[i][5]
@@ -535,52 +525,52 @@ async def seed_shipping(conn, order_ids, order_rows):
             delivered_at = order_rows[i][11] if status == "completed" else None
             rows.append((oid, carrier, tracking_no, shipped_at, delivered_at))
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_shipping (order_id, carrier, tracking_no, shipped_at, delivered_at) VALUES ($1, $2, $3, $4, $5)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_shipping_id_seq', {len(rows)})")
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_shipping (order_id, carrier, tracking_no, shipped_at, delivered_at) VALUES (%s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return len(rows)
 
 
 async def seed_reviews(conn, order_ids, order_rows, product_ids):
     """800 reviews. 30% products never reviewed, 10 products with 20+ reviews."""
     rows = []
+    # Select which orders get reviews (only completed)
     completed_orders = [(i, oid) for i, oid in enumerate(order_ids) if order_rows[i][5] == "completed"]
     random.shuffle(completed_orders)
+
+    # Pick 800 random completed orders for reviews
     selected = completed_orders[:800]
 
-    # Hot products: 10 products with 25+ reviews each
+    # Ensure 10 products get 20+ reviews each
     hot_products = product_ids[:10]
     for pid in hot_products:
+        # Add extra reviews for hot products (beyond the 800 base)
         for _ in range(25):
             idx, oid = random.choice(completed_orders)
             rating = random.choices([1, 2, 3, 4, 5], weights=[2, 5, 10, 35, 48], k=1)[0]
             content = random.choice(REVIEW_CONTENTS) if random.random() > 0.2 else None
-            is_anonymous = True if random.random() < 0.15 else False
+            is_anonymous = 1 if random.random() < 0.15 else 0
             created_at = order_rows[idx][8] + timedelta(days=random.randint(1, 30))
             rows.append((oid, pid, rating, content, is_anonymous, created_at))
 
-    # Regular reviews
+    # Fill remaining with random products
     for idx, oid in selected:
         pid = random.choice(product_ids)
         rating = random.choices([1, 2, 3, 4, 5], weights=[3, 5, 12, 35, 45], k=1)[0]
         content = random.choice(REVIEW_CONTENTS) if random.random() > 0.25 else None
-        is_anonymous = True if random.random() < 0.15 else False
+        is_anonymous = 1 if random.random() < 0.15 else 0
         created_at = order_rows[idx][8] + timedelta(days=random.randint(1, 30))
         rows.append((oid, pid, rating, content, is_anonymous, created_at))
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_reviews (order_id, product_id, rating, content, is_anonymous, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_reviews_id_seq', {len(rows)})")
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_reviews (order_id, product_id, rating, content, is_anonymous, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return len(rows)
 
 
@@ -619,8 +609,9 @@ async def seed_coupons(conn):
         if random.random() < 0.3:
             max_uses = random.choice([100, 500, 1000, 5000])
 
+        # 10 expired coupons
         if i < 10:
-            valid_until = DATE_START + timedelta(days=random.randint(30, 90))
+            valid_until = DATE_START + timedelta(days=random.randint(30, 90))  # already passed
         elif random.random() < 0.1:
             valid_until = NOW + timedelta(days=random.randint(1, 30))
         else:
@@ -628,15 +619,13 @@ async def seed_coupons(conn):
 
         rows.append((name, code, discount_value, dt, min_order, max_uses, 0, valid_from, valid_until, valid_from))
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_coupons (name, code, discount_value, discount_type, min_order, max_uses, used_count, valid_from, valid_until, created_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_coupons_id_seq', {len(rows)})")
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_coupons (name, code, discount_value, discount_type, min_order, max_uses, used_count, valid_from, valid_until, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return len(rows)
 
 
@@ -647,7 +636,7 @@ async def seed_warehouses(conn):
         "东北仓", "西北仓", "东南仓", "中央仓", "保税仓",
     ]
     wh_cities = ["上海", "广州", "北京", "成都", "武汉", "沈阳", "西安", "厦门", "郑州", "上海"]
-    addresses = [f"{c}市某某路{random.randint(1, 999)}号" for c in wh_cities]
+    addresses = [f"{c}市{'某某'}路{random.randint(1, 999)}号" for c in wh_cities]
     capacities = [10000, 15000, 20000, 8000, 12000, 7000, 5000, 6000, 25000, 3000]
     manager_names = ["张经理", "李经理", "王经理", "赵经理", "刘经理", "陈经理", "杨经理", "黄经理", "周经理", "吴经理"]
     manager_phones = [f"1{''.join([str(random.randint(0,9)) for _ in range(10)])}" for _ in range(N_WAREHOUSES)]
@@ -656,14 +645,12 @@ async def seed_warehouses(conn):
     for i in range(N_WAREHOUSES):
         rows.append((wh_names[i], wh_cities[i], addresses[i], capacities[i], manager_names[i], manager_phones[i], True, DATE_START + timedelta(days=random.randint(0, 90))))
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_warehouses (name, city, address, capacity, manager_name, manager_phone, is_active, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_warehouses_id_seq', {len(rows)})")
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_warehouses (name, city, address, capacity, manager_name, manager_phone, is_active, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return list(range(1, N_WAREHOUSES + 1))
 
 
@@ -673,16 +660,18 @@ async def seed_inventory(conn, product_ids, warehouse_ids):
     inv_id = 1
 
     for pid in product_ids:
+        # Each product gets inventory in 2-5 warehouses
         n_wh = random.randint(2, 5)
         chosen_wh = random.sample(warehouse_ids, min(n_wh, len(warehouse_ids)))
         for wh in chosen_wh:
+            # Edge cases
             edge = random.random()
             if edge < 0.03:
-                qty = 0
+                qty = 0  # 3% out of stock
                 reserved = 0
             elif edge < 0.05:
                 qty = random.randint(1, 10)
-                reserved = qty + random.randint(1, 5)
+                reserved = qty + random.randint(1, 5)  # overbooked!
             else:
                 qty = random.randint(10, 500)
                 reserved = random.randint(0, int(qty * 0.3))
@@ -690,29 +679,35 @@ async def seed_inventory(conn, product_ids, warehouse_ids):
             updated_at = NOW - timedelta(days=random.randint(0, 30))
             rows.append((pid, wh, qty, reserved, updated_at))
             inv_id += 1
-            if inv_id > 2000:
+            if inv_id > N_COUPONS * 40:  # cap at ~2000
                 break
-        if inv_id > 2000:
+        if inv_id > N_COUPONS * 40:
             break
 
     rows = rows[:2000]
 
-    async with conn.transaction():
-        for r in rows:
-            await conn.execute(
-                "INSERT INTO t_inventory (product_id, warehouse_id, quantity, reserved, updated_at) VALUES ($1, $2, $3, $4, $5)",
-                *r,
-            )
-
-    await conn.execute(f"SELECT setval('t_inventory_id_seq', {len(rows)})")
+    async with conn.cursor() as c:
+        await c.executemany(
+            "INSERT INTO t_inventory (product_id, warehouse_id, quantity, reserved, updated_at) VALUES (%s, %s, %s, %s, %s)",
+            rows,
+        )
+    await conn.commit()
     return len(rows)
 
 
 async def main():
-    print("Recreating PostgreSQL database...")
-    conn = await recreate_database()
+    print("Connecting to MySQL...")
+    conn = await aiomysql.connect(
+        host=_CONFIG["host"],
+        port=_CONFIG["port"],
+        user=_CONFIG["user"],
+        password=_CONFIG["password"],
+    )
 
     try:
+        print("Dropping and recreating database...")
+        await drop_and_create(conn)
+
         print("Seeding categories...")
         n_cats = await seed_categories(conn)
         print(f"  Categories: {n_cats}")
@@ -759,69 +754,71 @@ async def main():
 
         # ─── Verification ────────────────────────────────────────────────
         print("\n=== Row Counts Verification ===")
-        tables = [
-            "t_categories", "t_users", "t_products", "t_orders",
-            "t_order_items", "t_payments", "t_shipping", "t_reviews",
-            "t_coupons", "t_warehouses", "t_inventory",
-        ]
-        for tbl in tables:
-            row = await conn.fetchrow(f"SELECT COUNT(*) AS cnt FROM {tbl}")
-            print(f"  {tbl:20s}: {row['cnt']}")
+        async with conn.cursor() as c:
+            tables = [
+                "t_categories", "t_users", "t_products", "t_orders",
+                "t_order_items", "t_payments", "t_shipping", "t_reviews",
+                "t_coupons", "t_warehouses", "t_inventory",
+            ]
+            for tbl in tables:
+                await c.execute(f"SELECT COUNT(*) FROM {tbl}")
+                count = (await c.fetchone())[0]
+                print(f"  {tbl:20s}: {count}")
 
         # ─── Edge Case Verification ──────────────────────────────────────
         print("\n=== Edge Case Verification ===")
+        async with conn.cursor() as c:
+            # Users with no orders
+            await c.execute("SELECT COUNT(*) FROM t_users WHERE id NOT IN (SELECT DISTINCT user_id FROM t_orders)")
+            print(f"  Users with NO orders: {(await c.fetchone())[0]}")
 
-        # Users with no orders
-        row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM t_users WHERE id NOT IN (SELECT DISTINCT user_id FROM t_orders)")
-        print(f"  Users with NO orders: {row['cnt']}")
+            # Users with 50+ orders
+            await c.execute("SELECT COUNT(*) FROM (SELECT user_id, COUNT(*) as cnt FROM t_orders GROUP BY user_id HAVING cnt >= 50) t")
+            print(f"  Users with 50+ orders: {(await c.fetchone())[0]}")
 
-        # Users with 50+ orders
-        row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM (SELECT user_id FROM t_orders GROUP BY user_id HAVING COUNT(*) >= 50) t")
-        print(f"  Users with 50+ orders: {row['cnt']}")
+            # Orders per city
+            await c.execute("SELECT city, COUNT(*) as cnt FROM t_orders GROUP BY city ORDER BY cnt LIMIT 5")
+            print(f"  Lowest 5 city order counts:")
+            for row in await c.fetchall():
+                print(f"    {row[0]}: {row[1]}")
 
-        # Orders per city (lowest 5)
-        rows = await conn.fetch("SELECT city, COUNT(*) AS cnt FROM t_orders GROUP BY city ORDER BY cnt LIMIT 5")
-        print(f"  Lowest 5 city order counts:")
-        for r in rows:
-            print(f"    {r['city']}: {r['cnt']}")
+            # Refunded orders without shipping
+            await c.execute(
+                "SELECT COUNT(*) FROM t_orders o LEFT JOIN t_shipping s ON o.id = s.order_id "
+                "WHERE o.status = 'refunded' AND s.id IS NULL"
+            )
+            print(f"  Refunded orders without shipping: {(await c.fetchone())[0]}")
 
-        # Refunded orders without shipping
-        row = await conn.fetchrow(
-            "SELECT COUNT(*) AS cnt FROM t_orders o LEFT JOIN t_shipping s ON o.id = s.order_id "
-            "WHERE o.status = 'refunded' AND s.id IS NULL"
-        )
-        print(f"  Refunded orders without shipping: {row['cnt']}")
+            # High-value orders (>50000)
+            await c.execute("SELECT COUNT(*) FROM t_orders WHERE total_amount > 50000")
+            print(f"  Orders with total_amount > 50000: {(await c.fetchone())[0]}")
 
-        # High-value orders
-        row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM t_orders WHERE total_amount > 50000")
-        print(f"  Orders with total_amount > 50000: {row['cnt']}")
+            # Zero-discount orders
+            await c.execute("SELECT COUNT(*) FROM t_orders WHERE discount_amount = 0")
+            print(f"  Zero-discount orders: {(await c.fetchone())[0]}")
 
-        # Zero-discount orders
-        row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM t_orders WHERE discount_amount = 0")
-        print(f"  Zero-discount orders: {row['cnt']}")
+            # Products with no reviews
+            await c.execute("SELECT COUNT(*) FROM t_products WHERE id NOT IN (SELECT DISTINCT product_id FROM t_reviews)")
+            print(f"  Products with NO reviews: {(await c.fetchone())[0]}")
 
-        # Products with no reviews
-        row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM t_products WHERE id NOT IN (SELECT DISTINCT product_id FROM t_reviews)")
-        print(f"  Products with NO reviews: {row['cnt']}")
+            # Category hierarchy levels
+            await c.execute("SELECT level, COUNT(*) FROM t_categories GROUP BY level ORDER BY level")
+            print(f"  Category hierarchy:")
+            for row in await c.fetchall():
+                print(f"    Level {row[0]}: {row[1]}")
 
-        # Category hierarchy
-        rows = await conn.fetch("SELECT level, COUNT(*) AS cnt FROM t_categories GROUP BY level ORDER BY level")
-        print(f"  Category hierarchy:")
-        for r in rows:
-            print(f"    Level {r['level']}: {r['cnt']}")
+            # Overbooked inventory
+            await c.execute("SELECT COUNT(*) FROM t_inventory WHERE reserved > quantity")
+            print(f"  Overbooked inventory (reserved > quantity): {(await c.fetchone())[0]}")
 
-        # Overbooked inventory
-        row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM t_inventory WHERE reserved > quantity")
-        print(f"  Overbooked inventory (reserved > quantity): {row['cnt']}")
+            # Zero-quantity inventory
+            await c.execute("SELECT COUNT(*) FROM t_inventory WHERE quantity = 0")
+            print(f"  Zero-quantity inventory: {(await c.fetchone())[0]}")
 
-        # Zero-quantity inventory
-        row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM t_inventory WHERE quantity = 0")
-        print(f"  Zero-quantity inventory: {row['cnt']}")
-
-        print("\nPostgreSQL seed complete!")
+        print("\nMySQL seed complete!")
 
     finally:
-        await conn.close()
+        conn.close()
 
 
 if __name__ == "__main__":

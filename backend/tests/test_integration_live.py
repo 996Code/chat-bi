@@ -184,17 +184,25 @@ async def _run_integration():
 
         # ─── 4. Data Model ───
         print("\n[4] Data Model")
-        # Use an existing datasource for model scan
-        if ds_id:
+        # Find a valid datasource to use for model scan (MySQL test DB if available)
+        valid_ds_id = None
+        for d in ds_list:
+            if d["type"] == "mysql" and "测试" in d.get("name", ""):
+                valid_ds_id = d["id"]
+                break
+        if valid_ds_id is None:
+            # fallback to first available
+            valid_ds_id = ds_id
+        if valid_ds_id:
             # Sync first to ensure a MetadataConfig exists
-            resp = await c.post(f"{API}/data-models/{ds_id}/sync", headers=headers)
+            resp = await c.post(f"{API}/data-models/{valid_ds_id}/sync", json={"mode": "full"}, headers=headers)
             if resp.status_code in (200, 201):
                 ok("Data model sync responds")
             else:
-                fail("Data model sync", f"status={resp.status_code}")
+                fail("Data model sync", f"status={resp.status_code}, body={resp.text[:200]}")
 
             # Then get the model
-            resp = await c.get(f"{API}/data-models/{ds_id}", headers=headers)
+            resp = await c.get(f"{API}/data-models/{valid_ds_id}", headers=headers)
             if resp.status_code == 200:
                 model = resp.json()
                 if "tables" in model:

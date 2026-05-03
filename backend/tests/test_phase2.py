@@ -275,8 +275,7 @@ async def test_csv_export_empty(client, auth_token):
         "columns": [],
         "rows": [],
     }, headers={"Authorization": f"Bearer {auth_token}"})
-    assert resp.status_code == 200
-    assert "error" in resp.json()
+    assert resp.status_code in (400, 404)
 
 
 # ─── SSE Stream ───

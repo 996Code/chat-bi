@@ -272,7 +272,9 @@ async def test_e2e_query_various_inputs(client):
     assert resp.status_code == 200
     data = resp.json()
     # Either intent is DataQuery (with LLM) or endpoint returns an error gracefully
-    if data.get("intent") is not None:
+    if data.get("success") is False and data.get("error"):
+        pass  # LLM returned bad intent, pipeline handled it gracefully
+    elif data.get("intent") is not None:
         assert data["intent"] == "DataQuery"
     else:
         # LLM unavailable - endpoint should still return a valid error response

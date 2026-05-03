@@ -11,11 +11,15 @@
         </el-select>
         <el-button text @click="router.push('/datasources')">管理数据源</el-button>
         <el-button text @click="router.push('/data-models')">数据模型</el-button>
+        <el-button text @click="router.push('/query-history')">查询历史</el-button>
         <el-button text @click="showDict = !showDict">
           {{ showDict ? '收起' : '数据字典' }}
         </el-button>
       </div>
       <div class="header-right">
+        <el-button text @click="showPipelineDialog = true">
+          <el-icon><QuestionFilled /></el-icon> 查询流程
+        </el-button>
         <span class="user-email">{{ authStore.user?.email }}</span>
         <el-button text @click="handleLogout">退出</el-button>
       </div>
@@ -83,6 +87,12 @@
 
               <!-- Pipeline Steps (Dify-like) -->
               <div v-if="msg.pipelineSteps && msg.pipelineSteps.length > 0" class="pipeline">
+                <div class="pipeline-header-row">
+                  <span class="pipeline-title">查询流程</span>
+                  <el-button size="small" text @click="showPipelineDialog = true">
+                    <el-icon><QuestionFilled /></el-icon> 完整流程
+                  </el-button>
+                </div>
                 <div
                   v-for="(step, idx) in msg.pipelineSteps"
                   :key="idx"
@@ -165,6 +175,11 @@
 
     <!-- First Use Guide -->
     <FirstUseGuide />
+
+    <!-- Pipeline Flow Dialog -->
+    <el-dialog v-model="showPipelineDialog" title="AI 查询流程" width="720px">
+      <PipelineVisual ref="pipelineRef" :steps="[]" />
+    </el-dialog>
   </div>
 </template>
 
@@ -174,12 +189,13 @@ import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chatStore'
 import { useDatasourceStore } from '@/stores/datasourceStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ChatDotRound, ChatLineSquare, Loading, CircleCheckFilled, CircleCloseFilled, CircleCheck, CircleClose, Plus, Delete } from '@element-plus/icons-vue'
+import { ChatDotRound, ChatLineSquare, Loading, CircleCheckFilled, CircleCloseFilled, CircleCheck, CircleClose, Plus, Delete, QuestionFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import ChartRenderer from '@/components/ChartRenderer.vue'
 import DataDictionary from '@/components/DataDictionary.vue'
 import FirstUseGuide from '@/components/FirstUseGuide.vue'
+import PipelineVisual from '@/components/PipelineVisual.vue'
 
 const router = useRouter()
 const chatStore = useChatStore()
@@ -190,6 +206,7 @@ const inputText = ref('')
 const messagesRef = ref<HTMLElement>()
 const showDict = ref(false)
 const showConvSidebar = ref(true)
+const showPipelineDialog = ref(false)
 
 async function handleSend() {
   const text = inputText.value.trim()
@@ -508,6 +525,19 @@ onMounted(async () => {
   background: #f8f9fa;
   border-radius: 8px;
   border-left: 3px solid #e0e0e0;
+}
+
+.pipeline-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.pipeline-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
 }
 
 .pipeline-step {

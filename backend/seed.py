@@ -40,7 +40,7 @@ async def seed():
             session.add(t)
         await session.commit()
 
-        pw_hash = await hash_password('Test1234!')
+        pw_hash = hash_password('Test1234!')
         users = [
             User(id=USER_ADMIN, tenant_id=TENANT_1, email='admin@chatbi.com',
                  password_hash=pw_hash, is_active=True, email_verified=True, role='admin'),

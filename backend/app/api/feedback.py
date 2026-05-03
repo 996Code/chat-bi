@@ -49,7 +49,7 @@ async def list_feedback(
     result = await db.execute(
         select(Feedback)
         .where(Feedback.tenant_id == user["tenant_id"])
-        .order_by(Feedback.created_at.desc())
+        .order_by(Feedback.created_at.desc(), Feedback.id.desc())
     )
     feedbacks = result.scalars().all()
     return [
