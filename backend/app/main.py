@@ -15,6 +15,7 @@ from app.api.audit import router as audit_router
 from app.api.feedback import router as feedback_router
 from app.api.conversation import router as conversation_router
 from app.api.data_model import router as data_model_router
+from app.api.analytics import router as analytics_router
 from app.services.connection_pool import pool_manager
 from app.core.redis_client import close_redis
 from app.db.base import Base
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(feedback_router, prefix=settings.api_prefix)
     app.include_router(conversation_router, prefix=settings.api_prefix)
     app.include_router(data_model_router, prefix=settings.api_prefix)
+    app.include_router(analytics_router, prefix=settings.api_prefix)
 
     @app.get("/health")
     async def health():
