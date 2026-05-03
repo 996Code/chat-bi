@@ -16,6 +16,7 @@ from app.api.feedback import router as feedback_router
 from app.api.conversation import router as conversation_router
 from app.api.data_model import router as data_model_router
 from app.services.connection_pool import pool_manager
+from app.core.redis_client import close_redis
 from app.db.base import Base
 from app.db.session import engine
 
@@ -29,9 +30,10 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables ensured")
     yield
-    # Shutdown: close all connection pools
+    # Shutdown: close all connection pools and Redis
     await pool_manager.close_all()
-    logger.info("All connection pools disposed")
+    await close_redis()
+    logger.info("All connection pools and Redis disposed")
 
 
 def create_app() -> FastAPI:

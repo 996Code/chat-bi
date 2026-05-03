@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
 
     # Redis (query cache, rate limits, login lock)
-    redis_url: str = ""  # e.g. "redis://localhost:6379/0" — empty = in-memory fallback
+    redis_url: str = "redis://192.168.3.110:6379/0"  # Redis for query cache, rate limits, login lock
     query_cache_ttl_seconds: int = 3600
 
     # Logging
