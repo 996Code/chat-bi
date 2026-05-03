@@ -71,28 +71,13 @@ async def create_query(
             chart_type=cached.get("chart_type", "table"),
         )
 
-    # Get schema context from metadata_configs
-    config_result = await db.execute(
-        select(MetadataConfig).where(
-            MetadataConfig.datasource_id == data.datasource_id,
-            MetadataConfig.tenant_id == tenant_id,
-        )
-    )
-    config = config_result.scalar_one_or_none()
-    raw_metadata = config.config if config else ""
-
-    # RAG: find relevant tables based on question keywords
-    schema_context = ""
-    if raw_metadata:
-        schema_context = get_rag_schema(data.question, raw_metadata)
-
-    # Build graph and execute
+    # Build graph and execute (RAG is handled inside the graph)
     try:
         graph = build_graph()
         initial_state = {
             "question": data.question,
             "datasource_id": data.datasource_id,
-            "schema_context": schema_context,
+            "tenant_id": tenant_id,
         }
 
         final_state = await asyncio.wait_for(

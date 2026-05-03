@@ -6,6 +6,7 @@ from langgraph.graph import StateGraph, END
 class QueryState(TypedDict, total=False):
     question: str
     datasource_id: str
+    tenant_id: str
     schema_context: str
     intent: str
     sql: str
@@ -21,7 +22,7 @@ class QueryState(TypedDict, total=False):
 def route_by_intent(state: QueryState) -> str:
     """根据意图路由到不同节点。"""
     if state.get("intent") == "DataQuery":
-        return "generate_sql"
+        return "rag_retrieval"
     return "misleading"
 
 
@@ -35,11 +36,16 @@ def handle_misleading(state: QueryState) -> QueryState:
 
 
 def build_graph():
-    """构建 LangGraph StateGraph。"""
+    """构建 LangGraph StateGraph。
+
+    流程：
+        classify_intent → (DataQuery) → rag_retrieval → generate_sql → execute_sql → END
+        classify_intent → (Other) → misleading → END
+    """
     from app.ai.nodes.intent import classify_intent
     from app.ai.nodes.generation import generate_sql
     from app.ai.nodes.execution import execute_sql
-    import asyncio
+    from app.ai.nodes.rag_retrieval import rag_retrieval_node
 
     graph = StateGraph(QueryState)
 
@@ -47,6 +53,10 @@ def build_graph():
     async def intent_node(state: QueryState) -> dict:
         intent = await classify_intent(state["question"])
         return {"intent": intent}
+
+    # RAG retrieval node: retrieves relevant tables/columns for the question
+    async def rag_node(state: QueryState) -> dict:
+        return await rag_retrieval_node(state)
 
     # SQL generation node
     async def generation_node(state: QueryState) -> dict:
@@ -98,6 +108,7 @@ def build_graph():
 
     # Add nodes
     graph.add_node("classify_intent", intent_node)
+    graph.add_node("rag_retrieval", rag_node)
     graph.add_node("generate_sql", generation_node)
     graph.add_node("execute_sql", execution_node)
     graph.add_node("misleading", handle_misleading)
@@ -107,8 +118,9 @@ def build_graph():
     graph.add_conditional_edges(
         "classify_intent",
         route_by_intent,
-        {"generate_sql": "generate_sql", "misleading": "misleading"},
+        {"rag_retrieval": "rag_retrieval", "misleading": "misleading"},
     )
+    graph.add_edge("rag_retrieval", "generate_sql")
     graph.add_edge("generate_sql", "execute_sql")
     graph.add_edge("misleading", END)
     graph.add_edge("execute_sql", END)
