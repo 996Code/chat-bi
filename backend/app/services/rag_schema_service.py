@@ -8,6 +8,14 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Chroma integration: try import, fall back to keyword-only if unavailable
+try:
+    from app.services.chroma_service import get_chroma_service
+    _CHROMA_AVAILABLE = True
+except ImportError:
+    _CHROMA_AVAILABLE = False
+    get_chroma_service = None  # type: ignore
+
 # 中文停用词
 STOP_WORDS = {
     "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
@@ -161,6 +169,113 @@ def find_relevant_tables(
     return result
 
 
+def resolve_tables(
+    question: str,
+    metadata: dict[str, Any],
+    max_tables: int = 5,
+) -> list[dict[str, Any]]:
+    """主入口：Chroma 向量检索优先，关键词/同义词兜底。
+
+    1. 尝试用 Chroma 向量相似度检索
+    2. 如果 Chroma 不可用或无结果，回退到关键词匹配
+    3. 合并两种结果（Chroma 优先），去重后返回
+
+    返回值格式与 find_relevant_tables 一致，保证向后兼容。
+    """
+    models = metadata.get("models", [])
+    model_map = {m["name"]: m for m in models}
+
+    # --- Chroma retrieval (primary) ---
+    chroma_tables = []
+    chroma_service = get_chroma_service()
+    if _CHROMA_AVAILABLE and chroma_service:
+        try:
+            # Use the first datasource_id found in metadata to query Chroma
+            # The metadata itself doesn't carry datasource_id, so we try
+            # to find collections by scanning available datasource_ids
+            # For now, we use the question text to query ALL available collections
+            chroma_results = _query_all_collections(question, max_tables, chroma_service)
+            for ct in chroma_results:
+                t_name = ct["name"]
+                if t_name in model_map:
+                    full_model = model_map[t_name]
+                    # Use Chroma's matched_columns if available, otherwise fall back to all columns
+                    matched_cols = ct.get("matched_columns", [])
+                    if matched_cols:
+                        # Build column set from matched columns + always include PKs/FKs
+                        matched_names = {mc["name"] for mc in matched_cols}
+                        relevant_cols = []
+                        for col in full_model.get("columns", []):
+                            if col.get("name") in matched_names or \
+                               col.get("primary") or col.get("column_key") in ("PRI", "FK", "MUL"):
+                                relevant_cols.append(col)
+                        if not relevant_cols:
+                            relevant_cols = full_model.get("columns", [])[:15]
+                    else:
+                        relevant_cols = full_model.get("columns", [])[:15]
+
+                    chroma_tables.append({
+                        "name": t_name,
+                        "description": full_model.get("description", "") or "",
+                        "columns": relevant_cols,
+                        "relationships": full_model.get("relationships") or [],
+                        "_chroma_score": ct.get("score", 0),
+                    })
+        except Exception as e:
+            logger.warning("Chroma retrieval failed, falling back to keyword: %s", e)
+
+    # --- Keyword retrieval (fallback) ---
+    keyword_tables = find_relevant_tables(question, metadata, max_tables)
+
+    # --- Merge: Chroma results first, then keyword results (deduplicated) ---
+    seen = set()
+    merged = []
+    for t in chroma_tables:
+        if t["name"] not in seen:
+            seen.add(t["name"])
+            # Remove internal score field
+            t.pop("_chroma_score", None)
+            merged.append(t)
+
+    for t in keyword_tables:
+        if t["name"] not in seen:
+            seen.add(t["name"])
+            merged.append(t)
+
+    return merged[:max_tables]
+
+
+def _query_all_collections(
+    question: str,
+    max_tables: int,
+    chroma_service,
+) -> list[dict]:
+    """Query all available Chroma collections for the given question.
+
+    Since metadata JSON doesn't carry datasource_id, we scan all collections
+    that match the rag_ prefix pattern.
+    """
+    all_results = []
+    try:
+        client = chroma_service.client
+        collections = client.list_collections()
+        for col in collections:
+            if col.name.startswith("rag_"):
+                ds_id = col.name[len("rag_"):]
+                result = chroma_service.query_similar(
+                    datasource_id=ds_id,
+                    query_text=question,
+                    max_results=max_tables,
+                )
+                all_results.extend(result.get("tables", []))
+    except Exception:
+        pass
+
+    # Sort by score, take top max_tables
+    all_results.sort(key=lambda x: -x.get("score", 0))
+    return all_results[:max_tables]
+
+
 def format_schema_context(tables: list[dict[str, Any]]) -> str:
     """将相关表格式化为 LLM 可读的 schema 上下文。"""
     if not tables:
@@ -201,5 +316,5 @@ def get_rag_schema(
         logger.warning("Failed to parse metadata JSON")
         return metadata_json  # fallback to raw metadata
 
-    relevant = find_relevant_tables(question, metadata, max_tables)
+    relevant = resolve_tables(question, metadata, max_tables)
     return format_schema_context(relevant)
