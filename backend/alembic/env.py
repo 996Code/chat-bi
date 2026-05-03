@@ -22,6 +22,9 @@ from app.db.models import (  # noqa: F401
     MetadataConfig,
     AuditLog,
     SavedQuery,
+    Feedback,
+    AnalyticsEvent,
+    Conversation,
 )
 
 target_metadata = Base.metadata
