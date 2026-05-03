@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+dist
+*.egg
+.venv
+.venv-test
+
+# Node
+node_modules
+frontend/dist
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Planning / docs
+.planning
+docs
+
+# Deploy (not needed inside image)
+deploy
+deploy.sh
+docker-compose.yml
+
+# Env files (written at runtime by entrypoint)
+.env
+.env.*
+
+# Docker
+Dockerfile.*
+.dockerignore

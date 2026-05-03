@@ -13,6 +13,8 @@ from app.api.saved_query import router as saved_query_router
 from app.api.export import router as export_router
 from app.api.audit import router as audit_router
 from app.api.feedback import router as feedback_router
+from app.api.conversation import router as conversation_router
+from app.api.data_model import router as data_model_router
 from app.services.connection_pool import pool_manager
 from app.db.base import Base
 from app.db.session import engine
@@ -49,22 +51,38 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Rate limiting (TODO: enable when Redis is available)
-    # from starlette.middleware.base import BaseHTTPMiddleware
-    # app.add_middleware(BaseHTTPMiddleware, dispatch=rate_limit_middleware)
+    # Security headers
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import Response
+
+    class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Content-Security-Policy"] = "default-src 'self'"
+            return response
+
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    # Rate limiting
+    from starlette.middleware.base import BaseHTTPMiddleware
+    app.add_middleware(BaseHTTPMiddleware, dispatch=rate_limit_middleware)
 
     # Include routers
-    app.include_router(auth_router, prefix="/api/v1")
-    app.include_router(datasource_router, prefix="/api/v1")
-    app.include_router(query_router, prefix="/api/v1")
-    app.include_router(saved_query_router, prefix="/api/v1")
-    app.include_router(export_router, prefix="/api/v1")
-    app.include_router(audit_router, prefix="/api/v1")
-    app.include_router(feedback_router, prefix="/api/v1")
+    app.include_router(auth_router, prefix=settings.api_prefix)
+    app.include_router(datasource_router, prefix=settings.api_prefix)
+    app.include_router(query_router, prefix=settings.api_prefix)
+    app.include_router(saved_query_router, prefix=settings.api_prefix)
+    app.include_router(export_router, prefix=settings.api_prefix)
+    app.include_router(audit_router, prefix=settings.api_prefix)
+    app.include_router(feedback_router, prefix=settings.api_prefix)
+    app.include_router(conversation_router, prefix=settings.api_prefix)
+    app.include_router(data_model_router, prefix=settings.api_prefix)
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "env": settings.app_env}
+        return {"status": "ok"}
 
     return app
 

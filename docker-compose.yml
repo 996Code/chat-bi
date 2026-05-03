@@ -1,0 +1,61 @@
+services:
+  chatbi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chatbi
+    restart: unless-stopped
+    ports:
+      - "${CHATBI_PORT:-8080}:8080"
+    env_file:
+      - deploy/.env
+    environment:
+      - CORS_ORIGINS=${CORS_ORIGINS:-["*"]}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - chatbi-net
+
+  mysql:
+    image: mysql:9.4
+    container_name: chatbi-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-yjt_mysql}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-chatbi}
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-yjt_mysql}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - chatbi-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: chatbi-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - chatbi-net
+
+volumes:
+  mysql-data:
+  redis-data:
+
+networks:
+  chatbi-net:
+    driver: bridge
