@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     rag_desc_sim_threshold: float = 0.4
     rag_column_sim_threshold: float = 0.5
 
+    # RAG column pruning (two-stage retrieval)
+    rag_max_columns_per_query: int = 10
+    rag_pruning_enabled: bool = True
+
     # SMTP (email verification / password reset)
     smtp_host: str = ""
     smtp_port: int = 587

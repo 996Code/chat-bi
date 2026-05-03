@@ -4,6 +4,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Any
 
+from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -304,6 +305,136 @@ def format_schema_context(tables: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _score_column(col: dict, keywords: set[str], expanded_keywords: set[str]) -> float:
+    """Score a single column's relevance to the user's question.
+
+    Higher score = more relevant. Scoring rules:
+    - Exact column name match: +10
+    - Column name contains keyword: +5
+    - Column comment/alias contains keyword: +3
+    - Fuzzy similarity > threshold: +2
+    - Synonym match on comment/alias: +4
+    """
+    col_name = (col.get("name") or "").lower()
+    col_comment = (col.get("comment") or "").lower()
+    col_alias = (col.get("alias") or "").lower()
+    col_text = f"{col_name} {col_comment} {col_alias}"
+
+    score = 0.0
+    for kw in expanded_keywords:
+        # Exact match on column name
+        if kw == col_name:
+            score += 10
+        # Substring match on column name
+        elif kw in col_name:
+            score += 5
+        # Match on comment or alias (semantic layer)
+        elif kw in col_comment or kw in col_alias:
+            score += 3
+        # Synonym match: if keyword is a synonym of a standard term that
+        # appears in the column's comment/alias
+        elif any(kw in syn_list for syn_list in SYNONYM_MAP.values()
+                 if any(s in col_text for s in syn_list)):
+            score += 4
+        # Fuzzy match
+        elif similarity(kw, col_name) > 0.5:
+            score += 2
+        elif col_comment and similarity(kw, col_comment) > 0.5:
+            score += 2
+
+    return score
+
+
+def _is_protected_column(col: dict) -> bool:
+    """Check if a column must always be kept regardless of relevance score.
+
+    Protected columns:
+    - Primary key columns
+    - Foreign key columns (column_key in FK, MUL)
+    - Columns with user-provided alias or comment (semantic layer)
+    """
+    if col.get("primary"):
+        return True
+    if col.get("column_key") in ("PRI", "FK", "MUL"):
+        return True
+    # Semantic layer columns: user explicitly added alias or comment
+    if col.get("alias") or col.get("comment"):
+        return True
+    return False
+
+
+def prune_columns(
+    tables: list[dict[str, Any]],
+    question: str,
+    max_columns: int = 10,
+) -> list[dict[str, Any]]:
+    """Stage 2 retrieval: prune columns per table based on question relevance.
+
+    For each table returned by Stage 1 (resolve_tables), this function:
+    1. Scores each column by relevance to the user's question
+    2. Always keeps protected columns (PKs, FKs, semantic layer columns)
+    3. Keeps top-scoring columns up to max_columns
+    4. Drops columns with zero semantic relevance
+
+    Returns: list[dict] with the same structure as input, but with pruned columns.
+    """
+    if not tables:
+        return []
+
+    keywords = extract_keywords(question)
+    expanded_keywords = _expand_keywords(keywords)
+
+    result = []
+    for table in tables:
+        columns = table.get("columns", [])
+        if not columns:
+            result.append(table)
+            continue
+
+        # Separate protected vs scored columns
+        protected = []
+        scored = []
+        for col in columns:
+            if _is_protected_column(col):
+                protected.append(col)
+            else:
+                s = _score_column(col, set(keywords), expanded_keywords)
+                if s > 0:
+                    scored.append((s, col))
+
+        # Sort scored columns by relevance (descending)
+        scored.sort(key=lambda x: -x[0])
+
+        # Calculate budget: max_columns minus protected columns
+        protected_names = {c.get("name") for c in protected}
+        budget = max(0, max_columns - len(protected))
+
+        # Take top scored columns within budget, avoiding duplicates with protected
+        selected_scored = []
+        for s, col in scored:
+            if len(selected_scored) >= budget:
+                break
+            if col.get("name") not in protected_names:
+                selected_scored.append(col)
+
+        # Combine: protected first, then scored
+        pruned = protected + selected_scored
+
+        # If pruning removed all columns (no protected, no scored), keep all
+        # as a safety fallback — the table was matched for a reason
+        if not pruned:
+            pruned = columns[:max_columns]
+
+        result.append({
+            "name": table["name"],
+            "description": table.get("description") or "",
+            "columns": pruned,
+            "relationships": table.get("relationships") or [],
+        })
+
+    return result
+
+
 def get_rag_schema(
     question: str,
     metadata_json: str,
@@ -317,4 +448,13 @@ def get_rag_schema(
         return metadata_json  # fallback to raw metadata
 
     relevant = resolve_tables(question, metadata, max_tables)
+
+    # Stage 2: column pruning (two-stage retrieval)
+    if settings.rag_pruning_enabled:
+        relevant = prune_columns(
+            relevant,
+            question,
+            max_columns=settings.rag_max_columns_per_query,
+        )
+
     return format_schema_context(relevant)
