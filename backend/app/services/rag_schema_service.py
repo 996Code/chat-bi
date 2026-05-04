@@ -36,6 +36,7 @@ SYNONYM_MAP: dict[str, list[str]] = {
     "收入": ["revenue", "income", "earning"],
     "时间": ["time", "date", "created_at", "updated_at", "日期"],
     "状态": ["status", "state"],
+    "退款": ["refund", "cancelled", "退款"],
     "分类": ["category", "type", "kind", "类型"],
     "名称": ["name", "title"],
     "电话": ["phone", "mobile", "tel"],
@@ -47,7 +48,19 @@ SYNONYM_MAP: dict[str, list[str]] = {
     "成本": ["cost", "expense"],
     "VIP": ["vip", "等级", "level", "tier"],
     "发货": ["ship", "deliver", "delivery", "物流"],
-    "支付": ["pay", "payment", "付款"],
+    "支付": ["pay", "payment", "payment_method", "method", "付款"],
+    "配送": ["carrier", "delivery", "shipping", "物流", "快递"],
+    "快递": ["carrier", "delivery", "shipping", "物流"],
+    "库存": ["inventory", "stock", "quantity", "warehouse"],
+    "仓库": ["warehouse", "warehouse_id", "location"],
+    "优惠券": ["coupon", "discount", "code"],
+    "复购": ["repurchase", "repeat", "order_count"],
+    "趋势": ["trend", "date", "month", "created_at", "时间"],
+    "月份": ["month", "date", "created_at"],
+    "评价": ["review", "rating", "comment", "评分"],
+    "好评": ["review", "rating", "good", "高分"],
+    "占比": ["percentage", "ratio", "proportion", "count", "占比"],
+    "分布": ["distribution", "breakdown", "group", "count"],
 }
 
 
@@ -150,8 +163,10 @@ def find_relevant_tables(
                 kw in col_name or kw in col_comment or similarity(kw, col_name) > 0.5
                 for kw in expanded_keywords
             )
-            # Always include primary keys and foreign keys
+            # Always include primary keys, foreign keys, and protected columns
             if col.get("primary") or col.get("column_key") in ("PRI", "FK", "MUL"):
+                is_relevant = True
+            if _is_protected_column(col):
                 is_relevant = True
             if is_relevant:
                 relevant_cols.append(col)
@@ -280,8 +295,11 @@ def _score_column(col: dict, keywords: set[str], expanded_keywords: set[str]) ->
     - Exact column name match: +10
     - Column name contains keyword: +5
     - Column comment/alias contains keyword: +3
-    - Fuzzy similarity > threshold: +2
     - Synonym match on comment/alias: +4
+    - Fuzzy similarity > threshold: +2
+
+    Key improvement: synonyms from Chinese keywords are checked against
+    English column names (e.g. "支付" → "payment" matches "payment_method").
     """
     col_name = (col.get("name") or "").lower()
     col_comment = (col.get("comment") or "").lower()
@@ -299,8 +317,8 @@ def _score_column(col: dict, keywords: set[str], expanded_keywords: set[str]) ->
         # Match on comment or alias (semantic layer)
         elif kw in col_comment or kw in col_alias:
             score += 3
-        # Synonym match: if keyword is a synonym of a standard term that
-        # appears in the column's comment/alias
+        # Bidirectional synonym match: if keyword's synonyms appear
+        # in the column name (Chinese kw → English col names)
         elif any(kw in syn_list for syn_list in SYNONYM_MAP.values()
                  if any(s in col_text for s in syn_list)):
             score += 4
@@ -309,6 +327,16 @@ def _score_column(col: dict, keywords: set[str], expanded_keywords: set[str]) ->
             score += 2
         elif col_comment and similarity(kw, col_comment) > 0.5:
             score += 2
+
+    # Bonus: check if any synonym of Chinese keywords matches the column name
+    # This handles cases like "退款" → "refund"/"cancelled" matching status column
+    for kw in keywords:
+        for standard, synonyms in SYNONYM_MAP.items():
+            if kw == standard or kw in synonyms:
+                for syn in synonyms:
+                    if syn in col_name and syn != kw:
+                        score += 6  # Higher than simple substring match
+                break
 
     return score
 
@@ -320,6 +348,7 @@ def _is_protected_column(col: dict) -> bool:
     - Primary key columns
     - Foreign key columns (column_key in FK, MUL)
     - Columns with user-provided alias or comment (semantic layer)
+    - Common business-critical columns: status, name, type, method, etc.
     """
     if col.get("primary"):
         return True
@@ -327,6 +356,13 @@ def _is_protected_column(col: dict) -> bool:
         return True
     # Semantic layer columns: user explicitly added alias or comment
     if col.get("alias") or col.get("comment"):
+        return True
+    # Common business-critical columns used in WHERE/GROUP BY frequently
+    protected_names = frozenset({
+        "status", "type", "name", "method", "code", "created_at",
+        "updated_at", "amount", "price", "quantity", "total",
+    })
+    if col.get("name", "").lower() in protected_names:
         return True
     return False
 

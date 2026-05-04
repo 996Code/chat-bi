@@ -197,21 +197,26 @@ async def stream_query(
                 yield f"event: complete\ndata: {json.dumps({'success': False, 'error': '请提出数据查询相关的问题'}, ensure_ascii=False)}\n\n"
                 return
 
-            # Step 2: SQL generation
+            # Step 3: Semantic parsing
+            from app.ai.nodes.semantic_parser import parse_semantics
+            semantics = await parse_semantics(data.question, schema_context)
+            yield f"event: semantics\ndata: {json.dumps(semantics, ensure_ascii=False)}\n\n"
+
+            # Step 4: SQL generation
             from app.ai.nodes.generation import generate_sql
-            sql = await generate_sql(data.question, schema_context)
+            sql = await generate_sql(data.question, schema_context, semantics=semantics, raw_metadata=raw_metadata)
             yield f"event: sql\ndata: {json.dumps({'sql': sql}, ensure_ascii=False)}\n\n"
 
             if not sql:
                 yield f"event: complete\ndata: {json.dumps({'success': False, 'error': '无法生成 SQL'}, ensure_ascii=False)}\n\n"
                 return
 
-            # Step 3: Execute
+            # Step 5: Execute
             from app.ai.nodes.execution import execute_sql
             exec_result = await execute_sql(sql, data.datasource_id)
             yield f"event: data\ndata: {json.dumps(exec_result, ensure_ascii=False, default=str)}\n\n"
 
-            # Step 4: Chart type
+            # Step 6: Chart type
             if exec_result.get("rows") and exec_result.get("columns"):
                 chart_type = infer_chart_type(exec_result["columns"], exec_result["rows"])
                 yield f"event: chart\ndata: {json.dumps({'chart_type': chart_type}, ensure_ascii=False)}\n\n"
@@ -222,4 +227,8 @@ async def stream_query(
             logger.exception("Stream query error")
             yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no"},
+    )

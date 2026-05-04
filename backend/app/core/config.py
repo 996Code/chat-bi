@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     # Query
     query_max_rows: int = 1000
     sql_execution_timeout: int = 30
-    query_pipeline_timeout: int = 35
-    stream_query_timeout: int = 60
+    query_pipeline_timeout: int = 60
+    stream_query_timeout: int = 90
     conversation_history_max_turns: int = 5
 
     # Connection pool

@@ -28,7 +28,7 @@ async def rag_retrieval_node(state: dict) -> dict:
 
     if not datasource_id:
         logger.warning("RAG node: missing datasource_id")
-        return {"schema_context": ""}
+        return {"schema_context": "", "raw_metadata": ""}
 
     # Fetch metadata from DB
     try:
@@ -47,7 +47,7 @@ async def rag_retrieval_node(state: dict) -> dict:
 
     if not raw_metadata:
         logger.info("RAG node: no metadata for datasource %s", datasource_id)
-        return {"schema_context": ""}
+        return {"schema_context": "", "raw_metadata": ""}
 
     # RAG retrieval
     schema_context = get_rag_schema(question, raw_metadata, datasource_id=datasource_id)
@@ -60,4 +60,5 @@ async def rag_retrieval_node(state: dict) -> dict:
         len(schema_context),
         question[:80],
     )
-    return {"schema_context": schema_context}
+    logger.info("RAG node schema_context preview:\n%s", schema_context[:1000])
+    return {"schema_context": schema_context, "raw_metadata": raw_metadata}

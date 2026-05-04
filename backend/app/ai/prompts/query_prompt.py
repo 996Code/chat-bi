@@ -12,7 +12,7 @@ SYSTEM_PROMPT = """你是一个专业的 SQL 生成助手。你的任务根据�
 9. 禁止在 SQL 中使用中文别名和中文注释
 10. 禁止使用 CREATE TEMPORARY TABLE、子查询中的 DDL 等结构
 11. 只返回 SQL 语句本身，不要解释、不要 markdown 代码块
-12. 如果问题模糊或无法映射到已知表结构，返回空字符串
+12. 如果问题无法直接映射到表结构，尝试使用最相关的表和通用聚合函数，不要返回空
 
 ## 输出格式
 仅输出一条 SQL 语句，以分号结尾。"""
@@ -25,3 +25,53 @@ def build_user_prompt(question: str, schema_context: str) -> str:
 问题：{question}
 
 请生成对应的 SQL 查询语句。"""
+
+
+def build_semantic_prompt(
+    question: str,
+    schema_context: str,
+    semantics: dict,
+) -> str:
+    """构建包含语义分析结果的 prompt。"""
+    parts = [f"数据库结构：\n{schema_context}", f"\n问题：{question}"]
+
+    if semantics:
+        parts.append("\n## 语义分析结果")
+        intent = semantics.get("intent") or "DataQuery"
+        parts.append(f"- 查询类型: {intent}")
+
+        metric = semantics.get("metric")
+        if metric:
+            func = metric.get("function", "SELECT")
+            col = metric.get("column", "?")
+            parts.append(f"- 指标: {func}({col})")
+
+        dims = semantics.get("dimensions")
+        if dims:
+            cols = ", ".join(d["column"] for d in dims)
+            parts.append(f"- 分组维度: {cols}")
+
+        filters = semantics.get("filters")
+        if filters:
+            conditions = []
+            for f in filters:
+                col = f.get("column", "?")
+                op = f.get("operator", "=")
+                val = str(f.get("value", "?")).replace("'", "''")
+                conditions.append(f"{col} {op} '{val}'")
+            parts.append(f"- 过滤条件: {' AND '.join(conditions)}")
+
+        tr = semantics.get("time_range")
+        if tr:
+            parts.append(f"- 时间范围: {tr.get('relative', '')} → {tr.get('start', '')} ~ {tr.get('end', '')}")
+
+        sort = semantics.get("sort")
+        if sort:
+            parts.append(f"- 排序: {sort.get('column', '')} {sort.get('order', 'DESC')}")
+
+        limit = semantics.get("limit")
+        if limit:
+            parts.append(f"- 限制: LIMIT {limit}")
+
+    parts.append("\n请根据以上语义分析结果生成对应的 SQL 查询语句。")
+    return "\n".join(parts)

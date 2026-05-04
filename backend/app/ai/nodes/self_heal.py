@@ -1,4 +1,5 @@
 """SQL 自愈节点：执行失败时分析错误并重试修正。"""
+import asyncio
 import re
 from typing import Any
 
@@ -46,12 +47,9 @@ def build_fix_prompt(question: str, failed_sql: str, error: str, retry_count: in
 
 def _strip_markdown(raw: str) -> str:
     """去除 markdown 代码块。"""
-    sql = raw.strip()
-    if sql.startswith("```"):
-        sql = sql.split("\n", 1)[-1]
-    if sql.endswith("```"):
-        sql = sql.rsplit("\n", 1)[0]
-    return sql.strip()
+    sql = re.sub(r'^```(?:\w+)?\s*', '', raw, flags=re.MULTILINE).strip()
+    sql = re.sub(r'\s*```\s*$', '', sql).strip()
+    return sql
 
 
 async def self_heal_sql(
@@ -71,10 +69,11 @@ async def self_heal_sql(
 
         try:
             llm = get_llm()
-            response = await llm.ainvoke([
-                ("system", "你只生成 SQL，不解释。"),
-                ("human", prompt),
-            ])
+            async with asyncio.timeout(30):
+                response = await llm.ainvoke([
+                    ("system", "你只生成 SQL，不解释。"),
+                    ("human", prompt),
+                ])
             fixed_sql = _strip_markdown(response.content)
 
             if not fixed_sql:
