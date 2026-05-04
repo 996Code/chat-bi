@@ -61,6 +61,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
         email=req.email,
         password_hash=hash_password(req.password),
         role="user",
+        email_verified=True,  # Auto-verify for now; email service can be enabled later
     )
     db.add(user)
     await db.commit()
@@ -104,8 +105,10 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     if not user.email_verified:
-        # Allow login but include a flag so frontend can show a reminder
-        pass  # Email verification is not enforced at login
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_error("EMAIL_NOT_VERIFIED", "邮箱未验证，请查收验证邮件后再登录"),
+        )
 
     # Audit log
     from app.services.audit_service import log_action

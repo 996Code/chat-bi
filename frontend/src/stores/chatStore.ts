@@ -110,20 +110,21 @@ export const useChatStore = defineStore('chat', () => {
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            const eventType = line.slice(7).trim()
-            // Next line should be 'data: '
-            const dataLine = lines.shift()
-            if (!dataLine?.startsWith('data: ')) continue
-
-            try {
-              const data = JSON.parse(dataLine.slice(6))
-              handleSSEEvent(eventType, data, assistantMsg)
-            } catch {
-              // Skip malformed JSON
+        let i = 0
+        while (i < lines.length) {
+          if (lines[i].startsWith('event: ')) {
+            const eventType = lines[i].slice(7).trim()
+            i++
+            if (i < lines.length && lines[i].startsWith('data: ')) {
+              try {
+                const data = JSON.parse(lines[i].slice(6))
+                handleSSEEvent(eventType, data, assistantMsg)
+              } catch {
+                // Skip malformed JSON
+              }
             }
           }
+          i++
         }
       }
 
