@@ -10,11 +10,11 @@ logger = get_logger(__name__)
 # Masking patterns: (regex, replacement function)
 MASKING_RULES = [
     # Chinese phone: 13812345678 -> 138****5678
-    (re.compile(r"^1[3-9]\d{9}$"), lambda m: m.group()[:3] + "****" + m.group()[-4:]),
+    (re.compile(r"^1[3-9]\d{9}$"), lambda v: v[:3] + "****" + v[-4:]),
     # Chinese ID: 18 digits -> **************1234
-    (re.compile(r"^\d{17}[\dXx]$"), lambda m: "***************" + m.group()[-4:]),
+    (re.compile(r"^\d{17}[\dXx]$"), lambda v: "***************" + v[-4:]),
     # Email: john@example.com -> j***n@example.com
-    (re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"), lambda m: m.group()[0] + "***@" + m.group().split("@")[1]),
+    (re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"), lambda v: v[0] + "***@" + v.split("@")[1]),
 ]
 
 # Column name patterns that suggest sensitive data
