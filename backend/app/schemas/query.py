@@ -26,3 +26,7 @@ class QueryResponse(BaseModel):
     error: str | None = None
     execution_time_ms: int | None = None
     chart_type: str = "none"
+
+
+class ExplainRequest(BaseModel):
+    sql: str

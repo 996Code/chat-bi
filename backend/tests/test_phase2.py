@@ -165,7 +165,9 @@ async def test_list_queries(client, auth_token):
         "Authorization": f"Bearer {auth_token}"
     })
     assert resp.status_code == 200
-    assert len(resp.json()) == 2
+    data = resp.json()
+    queries = data.get("data", data)
+    assert len(queries) == 2
 
 
 @pytest.mark.asyncio
@@ -184,7 +186,9 @@ async def test_query_isolation(client, auth_token, auth_token_b):
         "Authorization": f"Bearer {auth_token_b}"
     })
     assert resp.status_code == 200
-    assert len(resp.json()) == 0
+    data = resp.json()
+    queries = data.get("data", data)
+    assert len(queries) == 0
 
 
 @pytest.mark.asyncio

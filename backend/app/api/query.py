@@ -11,7 +11,7 @@ from app.db.models import DataSource, MetadataConfig
 from app.core.config import settings
 from app.core.security import get_current_user
 from app.core.logging import get_logger
-from app.schemas.query import QueryRequest, QueryResponse
+from app.schemas.query import QueryRequest, QueryResponse, ExplainRequest
 from app.ai.graph import build_graph
 from app.ai.chart_type import infer_chart_type
 from app.services.rag_schema_service import get_rag_schema
@@ -94,6 +94,10 @@ async def create_query(
         rows = final_state.get("rows", [])
         if rows and columns:
             chart_type = infer_chart_type(columns, rows)
+
+        # Mask sensitive data (phone, ID card, email)
+        from app.services.data_masking import mask_sensitive_data
+        columns, rows = mask_sensitive_data(columns, rows)
 
         # Audit log
         from app.services.audit_service import log_action
@@ -232,3 +236,14 @@ async def stream_query(
         media_type="text/event-stream",
         headers={"X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/explain")
+async def explain_sql(
+    data: ExplainRequest,
+    user=Depends(get_current_user),
+):
+    """返回 SQL 的自然语言解释。"""
+    from app.ai.nodes.sql_explainer import explain_sql as do_explain
+    explanation = await do_explain(data.sql)
+    return {"explanation": explanation}

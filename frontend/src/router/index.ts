@@ -22,6 +22,12 @@ const routes: RouteRecordRaw[] = [
     meta: { guest: true },
   },
   {
+    path: '/verify-email',
+    name: 'VerifyEmail',
+    component: () => import('@/views/VerifyEmailView.vue'),
+    meta: { guest: true },
+  },
+  {
     path: '/',
     name: 'Chat',
     component: () => import('@/views/ChatView.vue'),

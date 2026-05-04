@@ -73,63 +73,71 @@ class TestSqlValidation:
 class TestLoginLock:
     """Test login lock service."""
 
-    def setup_method(self):
+    @pytest.mark.asyncio
+    async def setup_method(self):
         """Reset login attempts before each test."""
         from app.services import login_lock_service
-        login_lock_service._login_attempts.clear()
+        login_lock_service._fallback.clear()
 
-    def test_no_lock_initial(self):
+    @pytest.mark.asyncio
+    async def test_no_lock_initial(self):
         from app.services.login_lock_service import check_lock
-        assert check_lock("test@example.com") is False
+        assert await check_lock("test@example.com") is False
 
-    def test_lock_after_5_failures(self):
+    @pytest.mark.asyncio
+    async def test_lock_after_5_failures(self):
         from app.services.login_lock_service import record_failure, check_lock
         email = "lock@example.com"
         for _ in range(5):
-            record_failure(email)
-        assert check_lock(email) is True
+            await record_failure(email)
+        assert await check_lock(email) is True
 
-    def test_not_locked_after_4_failures(self):
+    @pytest.mark.asyncio
+    async def test_not_locked_after_4_failures(self):
         from app.services.login_lock_service import record_failure, check_lock
         email = "notlocked@example.com"
         for _ in range(4):
-            record_failure(email)
-        assert check_lock(email) is False
+            await record_failure(email)
+        assert await check_lock(email) is False
 
-    def test_reset_unlocks(self):
+    @pytest.mark.asyncio
+    async def test_reset_unlocks(self):
         from app.services.login_lock_service import record_failure, check_lock, reset
         email = "reset@example.com"
         for _ in range(5):
-            record_failure(email)
-        assert check_lock(email) is True
-        reset(email)
-        assert check_lock(email) is False
+            await record_failure(email)
+        assert await check_lock(email) is True
+        await reset(email)
+        assert await check_lock(email) is False
 
-    def test_case_insensitive(self):
+    @pytest.mark.asyncio
+    async def test_case_insensitive(self):
         from app.services.login_lock_service import record_failure, check_lock
-        # 5 failures with mixed case should all count toward the same user
-        record_failure("User@Example.com")
-        record_failure("user@example.com")
-        record_failure("USER@EXAMPLE.COM")
-        record_failure("uSeR@eXaMpLe.CoM")
-        record_failure("User@example.com")
-        assert check_lock("USER@EXAMPLE.COM") is True
+        await record_failure("User@Example.com")
+        await record_failure("user@example.com")
+        await record_failure("USER@EXAMPLE.COM")
+        await record_failure("uSeR@eXaMpLe.CoM")
+        await record_failure("User@example.com")
+        assert await check_lock("USER@EXAMPLE.COM") is True
 
-    def test_lock_expiry(self):
-        from app.services.login_lock_service import record_failure, check_lock, _login_attempts, LOCK_DURATION
+    @pytest.mark.asyncio
+    async def test_lock_expiry(self):
+        import time
+        from app.services.login_lock_service import record_failure, check_lock, _fallback, LOCK_DURATION
         email = "expiry@example.com"
         for _ in range(5):
-            record_failure(email)
-        assert check_lock(email) is True
+            await record_failure(email)
+        assert await check_lock(email) is True
 
         # Simulate time passing
-        entry = _login_attempts[email]
-        entry["locked_until"] = time.time() - 10  # Expired
-        assert check_lock(email) is False
+        key = f"login_lock:{email}"
+        _fallback[key]["locked_until"] = time.time() - 10  # Expired
+        assert await check_lock(email) is False
 
-    def test_different_users_independent(self):
+    @pytest.mark.asyncio
+    async def test_different_users_independent(self):
         from app.services.login_lock_service import record_failure, check_lock
         for _ in range(5):
-            record_failure("user1@example.com")
-        assert check_lock("user1@example.com") is True
-        assert check_lock("user2@example.com") is False
+            await record_failure("user1@example.com")
+        assert await check_lock("user1@example.com") is True
+        assert await check_lock("user2@example.com") is False

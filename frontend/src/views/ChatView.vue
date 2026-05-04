@@ -131,7 +131,10 @@
                   <span v-if="msg.execution_time_ms">（耗时 {{ msg.execution_time_ms }}ms）</span>
                   <span v-if="msg.traceId" class="trace-id">trace: {{ msg.traceId }}</span>
                 </div>
-                <div class="feedback-actions">
+                <div class="query-actions">
+                  <el-button size="small" text @click="saveQuery(msg)">
+                    <el-icon><Star /></el-icon> 保存查询
+                  </el-button>
                   <el-button size="small" text @click="submitFeedback(msg, 'up')">
                     <el-icon><CircleCheckFilled /></el-icon> 有用
                   </el-button>
@@ -189,7 +192,7 @@ import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chatStore'
 import { useDatasourceStore } from '@/stores/datasourceStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ChatDotRound, ChatLineSquare, Loading, CircleCheckFilled, CircleCloseFilled, CircleCheck, CircleClose, Plus, Delete, QuestionFilled } from '@element-plus/icons-vue'
+import { ChatDotRound, ChatLineSquare, Loading, CircleCheckFilled, CircleCloseFilled, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Star } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import ChartRenderer from '@/components/ChartRenderer.vue'
@@ -242,6 +245,23 @@ async function submitFeedback(msg: any, rating: 'up' | 'down') {
     ElMessage.success(rating === 'up' ? '感谢反馈！' : '已记录，我们会持续改进')
   } catch {
     // Don't block UX on feedback failure
+  }
+}
+
+async function saveQuery(msg: any) {
+  try {
+    const userMsg = chatStore.messages.find((m: any) => m.role === 'user' && m.id && chatStore.messages.indexOf(m) === chatStore.messages.indexOf(msg) - 1)
+    const question = userMsg?.content || '保存的查询'
+    await api.post('/queries', {
+      name: question.slice(0, 50),
+      query_text: question,
+      generated_sql: msg.sql || '',
+      datasource_id: chatStore.currentDatasourceId,
+    })
+    ElMessage.success('查询已保存')
+    await chatStore.loadConversations()
+  } catch {
+    ElMessage.error('保存失败，请稍后重试')
   }
 }
 
@@ -660,7 +680,7 @@ onMounted(async () => {
   text-align: center;
 }
 
-.feedback-actions {
+.query-actions {
   display: flex;
   gap: 8px;
   margin-top: 8px;

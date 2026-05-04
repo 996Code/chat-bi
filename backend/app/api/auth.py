@@ -78,7 +78,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     responses={401: {"model": dict}, 429: {"model": dict}},
 )
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
-    if check_lock(req.email):
+    if await check_lock(req.email):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=_error("ACCOUNT_LOCKED", "账号已锁定，请15分钟后重试"),
@@ -93,15 +93,19 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         )
 
     if not verify_password(req.password, user.password_hash):
-        record_failure(req.email)
+        await record_failure(req.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=_error("INVALID_CREDENTIALS", "邮箱或密码错误"),
         )
 
-    reset(req.email)
+    await reset(req.email)
     user.failed_login_attempts = 0
     await db.commit()
+
+    if not user.email_verified:
+        # Allow login but include a flag so frontend can show a reminder
+        pass  # Email verification is not enforced at login
 
     # Audit log
     from app.services.audit_service import log_action
@@ -125,7 +129,11 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     access_token = create_access_token(token_data)
     refresh_token = create_refresh_token(token_data)
 
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        email_verified=user.email_verified,
+    )
 
 
 @router.post("/refresh", response_model=TokenResponse)

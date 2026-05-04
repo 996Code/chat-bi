@@ -33,6 +33,9 @@ def setup_test_db():
     # Reset rate limiter state between tests
     from app.core.rate_limiter import _rate_limits
     _rate_limits.clear()
+    # Clear login lock fallback state
+    from app.services.login_lock_service import _fallback
+    _fallback.clear()
     # Clear dependency overrides (in case test crashed before cleanup)
     from app.main import app
     app.dependency_overrides.clear()

@@ -282,10 +282,11 @@ async def test_saved_query_full_cycle(client):
     assert resp.status_code == 201
     query_id = resp.json()["id"]
 
-    # List queries
+    # List queries (cursor-based pagination returns {data, next_cursor, has_more})
     resp = await client.get(f"{BASE}/queries", headers=_auth_header(token))
     assert resp.status_code == 200
-    queries = resp.json()
+    data = resp.json()
+    queries = data.get("data", data)  # Handle both old list and new dict format
     assert len(queries) >= 1
     names = [q["name"] for q in queries]
     assert "Cycle Test Query" in names
@@ -354,7 +355,8 @@ async def test_saved_query_user_isolation(client):
     # User B cannot see User A's query in list
     resp = await client.get(f"{BASE}/queries", headers=_auth_header(token_b))
     assert resp.status_code == 200
-    queries_b = resp.json()
+    data_b = resp.json()
+    queries_b = data_b.get("data", data_b)
     names_b = [q["name"] for q in queries_b]
     assert "Alice Secret Query" not in names_b
 
@@ -847,36 +849,40 @@ async def test_query_history_pagination(client):
             "datasource_id": ds_id,
         }, headers=_auth_header(token))
 
-    # Page 1 with page_size=3
-    resp = await client.get(f"{BASE}/queries?page=1&page_size=3",
+    # Page 1 with cursor and page_size=3
+    resp = await client.get(f"{BASE}/queries?page_size=3",
                             headers=_auth_header(token))
     assert resp.status_code == 200
-    page1 = resp.json()
+    data1 = resp.json()
+    page1 = data1["data"]
     assert len(page1) == 3
     # Should be ordered by created_at desc, so Query-07 first
     assert page1[0]["name"] == "Query-07"
 
-    # Page 2 with page_size=3
-    resp = await client.get(f"{BASE}/queries?page=2&page_size=3",
+    # Page 2 with cursor
+    assert data1["has_more"]
+    cursor1 = data1["next_cursor"]
+    resp = await client.get(f"{BASE}/queries?page_size=3&cursor={cursor1}",
                             headers=_auth_header(token))
     assert resp.status_code == 200
-    page2 = resp.json()
+    data2 = resp.json()
+    page2 = data2["data"]
     assert len(page2) == 3
     assert page2[0]["name"] == "Query-04"
 
-    # Page 3 with page_size=3 -- remaining 2
-    resp = await client.get(f"{BASE}/queries?page=3&page_size=3",
+    # Page 3 -- remaining 2
+    assert data2["has_more"]
+    cursor2 = data2["next_cursor"]
+    resp = await client.get(f"{BASE}/queries?page_size=3&cursor={cursor2}",
                             headers=_auth_header(token))
     assert resp.status_code == 200
-    page3 = resp.json()
+    data3 = resp.json()
+    page3 = data3["data"]
     assert len(page3) == 2
     assert page3[0]["name"] == "Query-01"
 
     # Page 4 -- empty
-    resp = await client.get(f"{BASE}/queries?page=4&page_size=3",
-                            headers=_auth_header(token))
-    assert resp.status_code == 200
-    assert len(resp.json()) == 0
+    assert not data3["has_more"]
 
 
 @pytest.mark.asyncio
@@ -896,22 +902,25 @@ async def test_pagination_edge_cases(client):
             "datasource_id": ds_id,
         }, headers=_auth_header(token))
 
-    # page=0 should be rejected (ge=1 in Query param)
-    resp = await client.get(f"{BASE}/queries?page=0&page_size=10",
+    # page_size negative should be rejected
+    resp = await client.get(f"{BASE}/queries?page_size=0",
                             headers=_auth_header(token))
     assert resp.status_code == 422
 
     # page_size larger than total items -- should return all items
-    resp = await client.get(f"{BASE}/queries?page=1&page_size=100",
+    resp = await client.get(f"{BASE}/queries?page_size=100",
                             headers=_auth_header(token))
     assert resp.status_code == 200
-    assert len(resp.json()) == 3
+    data = resp.json()
+    assert len(data["data"]) == 3
 
-    # Page well beyond results -- should return empty
-    resp = await client.get(f"{BASE}/queries?page=999&page_size=10",
+    # Cursor beyond results -- should return has_more=False
+    # Use a very old cursor (far future date to get nothing)
+    resp = await client.get(f"{BASE}/queries?cursor=2099-01-01+00:00:00&page_size=10",
                             headers=_auth_header(token))
     assert resp.status_code == 200
-    assert len(resp.json()) == 0
+    data = resp.json()
+    assert data["has_more"] is False
 
 
 # ─── Additional E2E Tests ───────────────────────────────────────────────

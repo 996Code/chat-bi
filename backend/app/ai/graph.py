@@ -7,6 +7,7 @@ class QueryState(TypedDict, total=False):
     question: str
     datasource_id: str
     tenant_id: str
+    conversation_history: list[dict]
     schema_context: str
     raw_metadata: str
     intent: str
@@ -59,6 +60,15 @@ def build_graph():
     # RAG retrieval node: retrieves relevant tables/columns for the question
     async def rag_node(state: QueryState) -> dict:
         return await rag_retrieval_node(state)
+
+    # Context resolution node: resolve follow-up question context
+    async def resolve_context_node(state: QueryState) -> dict:
+        from app.ai.nodes.context_resolver import resolve_context
+        history = state.get("conversation_history", [])
+        resolved = resolve_context(state["question"], history)
+        if resolved != state["question"]:
+            return {"question": resolved}
+        return {}
 
     # Semantic parse node: extract structured intent/metric/dimensions/filters
     async def semantic_node(state: QueryState) -> dict:
@@ -122,6 +132,7 @@ def build_graph():
 
     # Add nodes
     graph.add_node("classify_intent", intent_node)
+    graph.add_node("resolve_context", resolve_context_node)
     graph.add_node("rag_retrieval", rag_node)
     graph.add_node("semantic_parse", semantic_node)
     graph.add_node("generate_sql", generation_node)
@@ -133,8 +144,9 @@ def build_graph():
     graph.add_conditional_edges(
         "classify_intent",
         route_by_intent,
-        {"rag_retrieval": "rag_retrieval", "misleading": "misleading"},
+        {"rag_retrieval": "resolve_context", "misleading": "misleading"},
     )
+    graph.add_edge("resolve_context", "rag_retrieval")
     graph.add_edge("rag_retrieval", "semantic_parse")
     graph.add_edge("semantic_parse", "generate_sql")
     graph.add_edge("generate_sql", "execute_sql")

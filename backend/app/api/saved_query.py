@@ -18,36 +18,48 @@ def _error(code: str, message: str) -> dict:
     return {"code": code, "message": message, "details": None}
 
 
-@router.get("", response_model=list[dict])
+@router.get("", response_model=dict)
 async def list_queries(
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    page: int = Query(1, ge=1),
+    cursor: str | None = Query(None, description="游标：上次返回的最后一条记录的 created_at"),
     page_size: int = Query(20, ge=1, le=100),
 ):
-    """列出当前用户的查询历史。"""
-    offset = (page - 1) * page_size
-
-    result = await db.execute(
+    """列出当前用户的查询历史（cursor-based 分页）。"""
+    query = (
         select(SavedQuery)
         .where(SavedQuery.user_id == user["user_id"])
         .order_by(desc(SavedQuery.created_at))
-        .offset(offset)
-        .limit(page_size)
+        .limit(page_size + 1)  # Fetch one extra to check if there's more
     )
-    queries = result.scalars().all()
 
-    return [
-        {
-            "id": str(q.id),
-            "name": q.name,
-            "query_text": q.query_text,
-            "generated_sql": q.generated_sql,
-            "datasource_id": str(q.datasource_id),
-            "created_at": str(q.created_at),
-        }
-        for q in queries
-    ]
+    if cursor:
+        query = query.where(SavedQuery.created_at < cursor)
+
+    result = await db.execute(query)
+    queries = list(result.scalars().all())
+
+    has_next = len(queries) > page_size
+    if has_next:
+        queries = queries[:page_size]
+
+    next_cursor = str(queries[-1].created_at) if queries and has_next else None
+
+    return {
+        "data": [
+            {
+                "id": str(q.id),
+                "name": q.name,
+                "query_text": q.query_text,
+                "generated_sql": q.generated_sql,
+                "datasource_id": str(q.datasource_id),
+                "created_at": str(q.created_at),
+            }
+            for q in queries
+        ],
+        "next_cursor": next_cursor,
+        "has_more": has_next,
+    }
 
 
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
