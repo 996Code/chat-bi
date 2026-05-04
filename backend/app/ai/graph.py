@@ -75,6 +75,7 @@ def build_graph():
         from app.ai.nodes.self_heal import self_heal_sql
 
         result = await execute_sql(state["sql"], state["datasource_id"])
+        final_sql = state["sql"]
 
         # Self-healing: retry with LLM fix on failure
         if not result["success"] and state.get("schema_context"):
@@ -87,11 +88,8 @@ def build_graph():
                 dialect="mysql",  # TODO: derive from datasource db_type
             )
             if heal_result.get("success"):
-                # Re-execute with healed SQL
-                result = await execute_sql(heal_result["sql"], state["datasource_id"])
-            # Return corrected sql via state update, not direct mutation
-            if heal_result.get("sql"):
-                state["sql"] = heal_result["sql"]
+                final_sql = heal_result.get("sql", final_sql)
+                result = await execute_sql(final_sql, state["datasource_id"])
 
         columns = result.get("columns", [])
         rows = result.get("rows", [])
@@ -99,6 +97,7 @@ def build_graph():
         if rows and columns:
             chart_type = infer_chart_type(columns, rows)
         return {
+            "sql": final_sql,
             "success": result["success"],
             "error": result.get("error"),
             "columns": columns,
