@@ -2,12 +2,11 @@
 import re
 from typing import Any
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.ai.nodes.generation import get_llm
 
 logger = get_logger(__name__)
-
-MAX_RETRY = 2
 
 # 可自动修复的常见错误模式
 AUTO_FIX_RULES = {
@@ -45,6 +44,16 @@ def build_fix_prompt(question: str, failed_sql: str, error: str, retry_count: in
 请只返回修复后的 SQL，不要包含任何解释或 markdown 代码块。"""
 
 
+def _strip_markdown(raw: str) -> str:
+    """去除 markdown 代码块。"""
+    sql = raw.strip()
+    if sql.startswith("```"):
+        sql = sql.split("\n", 1)[-1]
+    if sql.endswith("```"):
+        sql = sql.rsplit("\n", 1)[0]
+    return sql.strip()
+
+
 async def self_heal_sql(
     question: str,
     sql: str,
@@ -54,43 +63,38 @@ async def self_heal_sql(
     dialect: str = "mysql",
     retry_count: int = 1,
 ) -> dict[str, Any]:
-    """尝试修复失败的 SQL，执行修复后的 SQL 并返回结果。"""
-    if retry_count > MAX_RETRY:
-        logger.warning("SQL self-healing exceeded max retries for: %s", sql[:200])
-        return {"success": False, "error": f"SQL 修复失败（已重试 {MAX_RETRY} 次）"}
+    """迭代式修复失败的 SQL，执行修复后的 SQL 并返回结果。"""
+    from app.ai.nodes.execution import execute_sql
 
-    prompt = build_fix_prompt(question, sql, error, retry_count, schema_context)
+    while retry_count <= settings.llm_self_heal_max_retries:
+        prompt = build_fix_prompt(question, sql, error, retry_count, schema_context)
 
-    try:
-        llm = get_llm()
-        response = await llm.ainvoke([
-            ("system", "你只生成 SQL，不解释。"),
-            ("human", prompt),
-        ])
+        try:
+            llm = get_llm()
+            response = await llm.ainvoke([
+                ("system", "你只生成 SQL，不解释。"),
+                ("human", prompt),
+            ])
+            fixed_sql = _strip_markdown(response.content)
 
-        fixed_sql = response.content.strip()
-        # Strip markdown code blocks if present
-        if fixed_sql.startswith("```"):
-            fixed_sql = fixed_sql.split("\n", 1)[-1]
-        if fixed_sql.endswith("```"):
-            fixed_sql = fixed_sql.rsplit("\n", 1)[0]
-        fixed_sql = fixed_sql.strip()
+            if not fixed_sql:
+                logger.warning("Self-heal LLM returned empty, retry %d", retry_count)
+                retry_count += 1
+                continue
 
-        if not fixed_sql:
-            return await self_heal_sql(question, sql, error, datasource_id, schema_context, dialect, retry_count + 1)
+            result = await execute_sql(fixed_sql, datasource_id, dialect)
 
-        # Execute the fixed SQL
-        from app.ai.nodes.execution import execute_sql
-        result = await execute_sql(fixed_sql, datasource_id, dialect)
+            if result["success"]:
+                logger.info("SQL self-heal succeeded on retry %d: %s", retry_count, fixed_sql[:200])
+                return {"success": True, "sql": fixed_sql, "fixed": True, **result}
 
-        if result["success"]:
-            logger.info("SQL self-heal succeeded on retry %d: %s", retry_count, fixed_sql[:200])
-            return {"success": True, "sql": fixed_sql, "fixed": True, **result}
+            logger.info("SQL fix attempt %d still failed: %s", retry_count, result.get("error"))
+            error = result.get("error", "")
+            retry_count += 1
 
-        # Still failed, try again
-        logger.info("SQL fix attempt %d still failed: %s", retry_count, result.get("error"))
-        return await self_heal_sql(question, sql, result.get("error", ""), datasource_id, schema_context, dialect, retry_count + 1)
+        except Exception as e:
+            logger.error("Self-healing LLM call failed: %s", e)
+            retry_count += 1
 
-    except Exception as e:
-        logger.error("Self-healing LLM call failed: %s", e)
-        return await self_heal_sql(question, sql, error, datasource_id, schema_context, dialect, retry_count + 1)
+    logger.warning("SQL self-healing exceeded max retries for: %s", sql[:200])
+    return {"success": False, "error": f"SQL 修复失败（已重试 {settings.llm_self_heal_max_retries} 次）"}

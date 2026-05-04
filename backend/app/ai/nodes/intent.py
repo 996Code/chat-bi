@@ -1,40 +1,109 @@
+"""意图分类节点：LLM + 关键词兜底 + 内存缓存。"""
+import asyncio
+import json
+import time
+
 from langchain_openai import ChatOpenAI
 
+from app.ai.nodes.shared_utils import append_all_table_names
 from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-INTENT_SYSTEM = """你是一个查询意图分类器。判断用户的问题是否属于数据查询类问题。
+INTENT_SYSTEM = """你是一个意图分类器。只返回 JSON，不要任何额外文字。
 
-分类标准：
-- DataQuery: 问题涉及数据查询、统计分析、报表生成、SQL生成等，需要从数据库获取信息
-- Other: 问候、闲聊、技术问题、系统操作指令、与数据无关的内容
+判断用户问题是否属于数据查询类问题：
+- DataQuery: 涉及数据查询、统计分析、报表、SQL生成
+- Other: 问候、闲聊、与数据无关
 
-只返回一个词：DataQuery 或 Other"""
+返回格式严格为: {"intent": "DataQuery"} 或 {"intent": "Other"}"""
+
+# 内存缓存 + TTL
+_INTENT_CACHE: dict[str, tuple[str, float]] = {}
+_INTENT_CACHE_TTL = 300  # 5 minutes
+_INTENT_CACHE_MAX = 500  # memory cap
+_INTENT_CACHE_CLEANUP = 120  # cleanup interval (seconds)
+_last_cleanup = 0.0
+
+# 闲聊关键词（兜底用）
+_OTHER_KEYWORDS = frozenset({
+    "你好", "hello", "hi", "嗨", "谢谢", "再见", "拜拜",
+    "早上好", "晚上好", "下午好", "在吗", "你是谁", "你能做什么",
+    "help", "thanks", "thank you", "bye", "good morning", "good evening",
+    "what can you do", "who are you",
+})
+
+
+def _keyword_fallback(q: str) -> str:
+    """关键词兜底：极短文本或匹配闲聊词 → Other。"""
+    words = set(q.split())
+    if words & _OTHER_KEYWORDS:
+        return "Other"
+    # 极短输入（<= 2 个中文字符或 1 个英文单词）视为闲聊
+    chinese_chars = sum(1 for c in q if '一' <= c <= '鿿')
+    english_words = len(q.strip().split())
+    if chinese_chars <= 2 and english_words <= 1 and len(q) <= 4:
+        return "Other"
+    return "DataQuery"
+
+
+def _maybe_cleanup_cache():
+    """Lazy cleanup of expired cache entries."""
+    global _last_cleanup
+    now = time.time()
+    if now - _last_cleanup < _INTENT_CACHE_CLEANUP:
+        return
+    _last_cleanup = now
+    expired = [k for k, (_, ts) in _INTENT_CACHE.items()
+               if now - ts >= _INTENT_CACHE_TTL]
+    for k in expired:
+        del _INTENT_CACHE[k]
+    # If still over capacity, evict oldest entries
+    while len(_INTENT_CACHE) >= _INTENT_CACHE_MAX:
+        oldest = min(_INTENT_CACHE, key=lambda k: _INTENT_CACHE[k][1])
+        del _INTENT_CACHE[oldest]
 
 
 async def classify_intent(question: str) -> str:
-    # Heuristic shortcut: if question is very short and looks like greeting
-    stripped = question.strip().lower()
-    if stripped in ("你好", "hello", "hi", "嗨", "在吗", "在不在", "好", "谢谢", "再见"):
-        logger.info("Intent shortcut: Other (greeting)")
-        return "Other"
+    q = question.strip().lower()
+
+    # Lazy cleanup
+    _maybe_cleanup_cache()
+
+    # Check cache
+    if q in _INTENT_CACHE:
+        cached, ts = _INTENT_CACHE[q]
+        if time.time() - ts < _INTENT_CACHE_TTL:
+            return cached
+        del _INTENT_CACHE[q]
 
     llm = ChatOpenAI(
         model=settings.llm_model,
         openai_api_base=settings.llm_base_url,
         openai_api_key=settings.llm_api_key,
-        temperature=0,
-        max_tokens=10,
+        temperature=settings.llm_intent_temperature,
+        max_tokens=settings.llm_intent_max_tokens,
+        response_format={"type": "json_object"},
     )
     messages = [
         ("system", INTENT_SYSTEM),
-        ("human", f"问题: {question}"),
+        ("human", question),
     ]
-    response = await llm.ainvoke(messages)
-    intent = response.content.strip()
-    # Extract first word in case LLM adds extra text
-    intent = intent.split()[0] if intent.split() else "Other"
-    logger.info("Intent classification: %s", intent)
+    try:
+        async with asyncio.timeout(5):
+            response = await llm.ainvoke(messages)
+            raw = response.content.strip()
+            if not raw:
+                raise ValueError("Empty response from LLM")
+            data = json.loads(raw)
+            intent = data.get("intent", "DataQuery")
+            if intent not in ("DataQuery", "Other"):
+                intent = "DataQuery"
+    except Exception as e:
+        logger.warning("Intent LLM failed: %s", e)
+        intent = _keyword_fallback(q)
+
+    _INTENT_CACHE[q] = (intent, time.time())
+    logger.info("Intent: %s for '%s'", intent, question[:50])
     return intent

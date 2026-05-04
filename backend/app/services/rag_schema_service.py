@@ -174,10 +174,11 @@ def resolve_tables(
     question: str,
     metadata: dict[str, Any],
     max_tables: int = 5,
+    datasource_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """主入口：Chroma 向量检索优先，关键词/同义词兜底。
 
-    1. 尝试用 Chroma 向量相似度检索
+    1. 尝试用 Chroma 向量相似度检索（仅查询当前数据源的 collection）
     2. 如果 Chroma 不可用或无结果，回退到关键词匹配
     3. 合并两种结果（Chroma 优先），去重后返回
 
@@ -189,21 +190,20 @@ def resolve_tables(
     # --- Chroma retrieval (primary) ---
     chroma_tables = []
     chroma_service = get_chroma_service()
-    if _CHROMA_AVAILABLE and chroma_service:
+    if _CHROMA_AVAILABLE and chroma_service and datasource_id:
         try:
-            # Use the first datasource_id found in metadata to query Chroma
-            # The metadata itself doesn't carry datasource_id, so we try
-            # to find collections by scanning available datasource_ids
-            # For now, we use the question text to query ALL available collections
-            chroma_results = _query_all_collections(question, max_tables, chroma_service)
-            for ct in chroma_results:
+            # Only query the specific datasource collection
+            chroma_results = chroma_service.query_similar(
+                datasource_id=datasource_id,
+                query_text=question,
+                max_results=max_tables,
+            )
+            for ct in chroma_results.get("tables", []):
                 t_name = ct["name"]
                 if t_name in model_map:
                     full_model = model_map[t_name]
-                    # Use Chroma's matched_columns if available, otherwise fall back to all columns
                     matched_cols = ct.get("matched_columns", [])
                     if matched_cols:
-                        # Build column set from matched columns + always include PKs/FKs
                         matched_names = {mc["name"] for mc in matched_cols}
                         relevant_cols = []
                         for col in full_model.get("columns", []):
@@ -234,7 +234,6 @@ def resolve_tables(
     for t in chroma_tables:
         if t["name"] not in seen:
             seen.add(t["name"])
-            # Remove internal score field
             t.pop("_chroma_score", None)
             merged.append(t)
 
@@ -244,37 +243,6 @@ def resolve_tables(
             merged.append(t)
 
     return merged[:max_tables]
-
-
-def _query_all_collections(
-    question: str,
-    max_tables: int,
-    chroma_service,
-) -> list[dict]:
-    """Query all available Chroma collections for the given question.
-
-    Since metadata JSON doesn't carry datasource_id, we scan all collections
-    that match the rag_ prefix pattern.
-    """
-    all_results = []
-    try:
-        client = chroma_service.client
-        collections = client.list_collections()
-        for col in collections:
-            if col.name.startswith("rag_"):
-                ds_id = col.name[len("rag_"):]
-                result = chroma_service.query_similar(
-                    datasource_id=ds_id,
-                    query_text=question,
-                    max_results=max_tables,
-                )
-                all_results.extend(result.get("tables", []))
-    except Exception:
-        pass
-
-    # Sort by score, take top max_tables
-    all_results.sort(key=lambda x: -x.get("score", 0))
-    return all_results[:max_tables]
 
 
 def format_schema_context(tables: list[dict[str, Any]]) -> str:
@@ -439,6 +407,7 @@ def get_rag_schema(
     question: str,
     metadata_json: str,
     max_tables: int = 5,
+    datasource_id: str | None = None,
 ) -> str:
     """入口函数：从 metadata JSON 中找到相关表并格式化。"""
     try:
@@ -447,7 +416,7 @@ def get_rag_schema(
         logger.warning("Failed to parse metadata JSON")
         return metadata_json  # fallback to raw metadata
 
-    relevant = resolve_tables(question, metadata, max_tables)
+    relevant = resolve_tables(question, metadata, max_tables, datasource_id)
 
     # Stage 2: column pruning (two-stage retrieval)
     if settings.rag_pruning_enabled:

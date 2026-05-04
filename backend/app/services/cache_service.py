@@ -14,9 +14,9 @@ logger = get_logger(__name__)
 _local_cache: dict[str, tuple[float, Any]] = {}
 
 
-def _cache_key(question: str, datasource_id: str) -> str:
-    """Generate cache key from question and datasource."""
-    raw = f"{question.strip().lower()}:{datasource_id}"
+def _cache_key(question: str, datasource_id: str, tenant_id: str = "") -> str:
+    """Generate cache key from question, datasource, and tenant."""
+    raw = f"{tenant_id}:{question.strip().lower()}:{datasource_id}"
     return f"query:{hashlib.sha256(raw.encode()).hexdigest()}"
 
 
@@ -40,9 +40,9 @@ def _get_local(key: str) -> Any | None:
     return value
 
 
-async def cache_get(question: str, datasource_id: str) -> dict | None:
+async def cache_get(question: str, datasource_id: str, tenant_id: str = "") -> dict | None:
     """Get cached query result. Returns None on miss."""
-    key = _cache_key(question, datasource_id)
+    key = _cache_key(question, datasource_id, tenant_id)
 
     try:
         redis = await get_redis()
@@ -59,12 +59,12 @@ async def cache_get(question: str, datasource_id: str) -> dict | None:
     return value
 
 
-async def cache_set(question: str, datasource_id: str, result: dict) -> None:
+async def cache_set(question: str, datasource_id: str, result: dict, tenant_id: str = "") -> None:
     """Cache query result."""
     if not result.get("success") or not result.get("rows"):
         return  # Don't cache errors or empty results
 
-    key = _cache_key(question, datasource_id)
+    key = _cache_key(question, datasource_id, tenant_id)
 
     try:
         redis = await get_redis()
@@ -78,9 +78,9 @@ async def cache_set(question: str, datasource_id: str, result: dict) -> None:
     logger.info("Cached query result locally (TTL=%ds)", settings.query_cache_ttl_seconds)
 
 
-async def cache_delete(question: str, datasource_id: str) -> None:
+async def cache_delete(question: str, datasource_id: str, tenant_id: str = "") -> None:
     """Invalidate cached query result (e.g., after schema change)."""
-    key = _cache_key(question, datasource_id)
+    key = _cache_key(question, datasource_id, tenant_id)
 
     try:
         redis = await get_redis()

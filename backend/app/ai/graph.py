@@ -87,9 +87,11 @@ def build_graph():
                 dialect="mysql",  # TODO: derive from datasource db_type
             )
             if heal_result.get("success"):
+                # Re-execute with healed SQL
                 result = await execute_sql(heal_result["sql"], state["datasource_id"])
-                if result["success"]:
-                    state["sql"] = heal_result["sql"]  # update SQL in state
+            # Return corrected sql via state update, not direct mutation
+            if heal_result.get("sql"):
+                state["sql"] = heal_result["sql"]
 
         columns = result.get("columns", [])
         rows = result.get("rows", [])

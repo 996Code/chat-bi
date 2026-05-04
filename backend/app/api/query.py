@@ -3,10 +3,12 @@ import json
 import time
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.db.models import DataSource, MetadataConfig
+from app.core.config import settings
 from app.core.security import get_current_user
 from app.core.logging import get_logger
 from app.schemas.query import QueryRequest, QueryResponse
@@ -14,6 +16,7 @@ from app.ai.graph import build_graph
 from app.ai.chart_type import infer_chart_type
 from app.services.rag_schema_service import get_rag_schema
 from app.services.cache_service import cache_get, cache_set
+from app.ai.nodes.shared_utils import append_all_table_names
 
 logger = get_logger(__name__)
 
@@ -34,8 +37,6 @@ async def create_query(
     tenant_id = user["tenant_id"]
 
     # Verify datasource belongs to tenant
-    from sqlalchemy import select
-
     result = await db.execute(
         select(DataSource).where(
             DataSource.id == data.datasource_id,
@@ -50,7 +51,7 @@ async def create_query(
         )
 
     # Check cache first
-    cached = await cache_get(data.question, data.datasource_id)
+    cached = await cache_get(data.question, data.datasource_id, tenant_id)
     if cached:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         from app.services.analytics_service import track_event, EVENT_QUERY_SUCCESS
@@ -82,7 +83,7 @@ async def create_query(
 
         final_state = await asyncio.wait_for(
             graph.ainvoke(initial_state),
-            timeout=35.0,
+            timeout=settings.query_pipeline_timeout,
         )
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -131,7 +132,7 @@ async def create_query(
                 "rows": rows,
                 "row_count": final_state.get("row_count", 0),
                 "chart_type": chart_type,
-            })
+            }, tenant_id=tenant_id)
 
         return response
 
@@ -139,7 +140,7 @@ async def create_query(
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return QueryResponse(
             success=False,
-            error="查询超时（35秒限制）",
+            error=f"查询超时（{settings.query_pipeline_timeout}秒限制）",
             execution_time_ms=elapsed_ms,
         )
     except Exception as e:
@@ -147,7 +148,7 @@ async def create_query(
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return QueryResponse(
             success=False,
-            error=f"查询失败: {e}",
+            error="查询失败，请稍后重试",
             execution_time_ms=elapsed_ms,
         )
 
@@ -160,8 +161,6 @@ async def stream_query(
 ):
     """SSE 流式查询：逐步推送 intent/sql/data/结果。"""
     tenant_id = user["tenant_id"]
-
-    from sqlalchemy import select
 
     result = await db.execute(
         select(DataSource).where(
@@ -184,7 +183,8 @@ async def stream_query(
     )
     config = config_result.scalar_one_or_none()
     raw_metadata = config.config if config else ""
-    schema_context = get_rag_schema(data.question, raw_metadata) if raw_metadata else ""
+    schema_context = get_rag_schema(data.question, raw_metadata, datasource_id=data.datasource_id) if raw_metadata else ""
+    schema_context = append_all_table_names(schema_context, raw_metadata)
 
     async def event_stream():
         try:

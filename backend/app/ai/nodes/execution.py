@@ -1,18 +1,20 @@
 import asyncio
+import datetime
+import re
 import time
 from typing import Any
 
 import sqlglot
+from sqlalchemy import select, text
 from sqlglot import ParseError
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.db.session import get_db
 from app.db.models import DataSource
 from app.services.connection_pool import pool_manager
 
 logger = get_logger(__name__)
-
-MAX_ROWS = 1000
 
 
 def validate_sql(sql: str, dialect: str = "mysql") -> tuple[bool, str]:
@@ -25,12 +27,12 @@ def validate_sql(sql: str, dialect: str = "mysql") -> tuple[bool, str]:
     if not isinstance(parsed, sqlglot.exp.Select):
         return False, "仅支持 SELECT 查询"
 
-    # 检查是否包含危险操作
+    # 检查是否包含危险操作（使用单词边界，避免 created_at 误匹配 CREATE）
     dangerous_keywords = ["DROP", "DELETE", "TRUNCATE", "ALTER", "CREATE", "INSERT", "UPDATE"]
-    upper_sql = sql.upper()
-    for kw in dangerous_keywords:
-        if kw in upper_sql:
-            return False, f"禁止使用 {kw} 语句"
+    pattern = re.compile(r'\b(' + '|'.join(dangerous_keywords) + r')\b', re.IGNORECASE)
+    match = pattern.search(sql)
+    if match:
+        return False, f"禁止使用 {match.group(1)} 语句"
 
     return True, ""
 
@@ -42,19 +44,24 @@ async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql") -> d
         return {"success": False, "error": error}
 
     try:
-        # Get engine from pool
-        pool = await pool_manager.get_pool_by_id(datasource_id)
-        if not pool:
-            return {
-                "success": False,
-                "error": "数据源连接池未初始化",
-            }
+        engine = await pool_manager.get_pool_by_id(datasource_id)
+        if not engine:
+            async for db in get_db():
+                result = await db.execute(
+                    select(DataSource).where(DataSource.id == datasource_id)
+                )
+                ds = result.scalar_one_or_none()
+                if not ds:
+                    return {"success": False, "error": "数据源不存在"}
+                engine = await pool_manager.get_pool(ds)
+                break
+            if not engine:
+                return {"success": False, "error": "数据源连接池未初始化"}
 
         start = time.monotonic()
 
-        async with asyncio.timeout(30):
-            async with pool.connect() as conn:
-                from sqlalchemy import text
+        async with asyncio.timeout(settings.sql_execution_timeout):
+            async with engine.connect() as conn:
                 # MySQL uses SET SESSION TRANSACTION READ ONLY, PostgreSQL uses SET default_transaction_read_only
                 try:
                     await conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
@@ -68,12 +75,11 @@ async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql") -> d
 
         # Truncate to MAX_ROWS
         truncated = False
-        if len(rows) > MAX_ROWS:
-            rows = rows[:MAX_ROWS]
+        if len(rows) > settings.query_max_rows:
+            rows = rows[:settings.query_max_rows]
             truncated = True
 
         # Convert non-serializable types
-        import datetime
         for row in rows:
             for k, v in row.items():
                 if isinstance(v, (datetime.datetime, datetime.date)):
@@ -91,8 +97,8 @@ async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql") -> d
         }
 
     except asyncio.TimeoutError:
-        logger.error("SQL execution timed out after 30s: %s", sql[:200])
-        return {"success": False, "error": "查询超时（30秒限制）"}
+        logger.error("SQL execution timed out after %ds: %s", settings.sql_execution_timeout, sql[:200])
+        return {"success": False, "error": f"查询超时（{settings.sql_execution_timeout}秒限制）"}
     except Exception as e:
         logger.error("SQL execution failed: %s — %s", sql[:200], e)
         return {"success": False, "error": f"SQL 执行失败: {e}"}
