@@ -128,6 +128,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         "user_id": str(user.id),
         "email": user.email,
         "tenant_id": str(user.tenant_id),
+        "role": user.role,
     }
     access_token = create_access_token(token_data)
     refresh_token = create_refresh_token(token_data)
@@ -152,6 +153,7 @@ async def refresh_token(req: RefreshRequest):
         "user_id": payload.get("user_id"),
         "email": payload.get("email"),
         "tenant_id": payload.get("tenant_id"),
+        "role": payload.get("role", "user"),
     }
     access_token = create_access_token(token_data)
     new_refresh = create_refresh_token(token_data)

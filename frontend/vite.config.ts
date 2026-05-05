@@ -9,11 +9,14 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
     },
   },
+  optimizeDeps: {
+    include: ['exceljs'],
+  },
   server: {
     port: 5173,
     proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8000',
+      '/chat-bi/api': {
+        target: 'http://127.0.0.1:8999',
         changeOrigin: true,
       },
     },

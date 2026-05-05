@@ -86,8 +86,23 @@ cd "$PROJECT_DIR"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down --remove-orphans 2>/dev/null || true
 
 # ---- Step 4: 构建并启动 ----
+# 检查是否需要启动内置 MySQL/Redis
+# 如果 DATABASE_URL 包含 "mysql:3306" 或 "redis:6379"（Docker 内部主机名），自动启用对应 profile
+PROFILES=""
+source "$ENV_FILE" 2>/dev/null || true
+
+if echo "${DATABASE_URL:-}" | grep -q "@mysql:"; then
+  PROFILES="$PROFILES --profile with-mysql"
+  log_info "检测到使用内置 MySQL，启用 with-mysql profile"
+fi
+
+if echo "${REDIS_URL:-}" | grep -q "//redis:"; then
+  PROFILES="$PROFILES --profile with-redis"
+  log_info "检测到使用内置 Redis，启用 with-redis profile"
+fi
+
 log_info "构建并启动新容器..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" $PROFILES up -d --build
 
 # ---- Step 5: 检查状态 ----
 echo ""
@@ -110,6 +125,7 @@ while [ $RETRY -lt $MAX_RETRIES ]; do
     echo ""
     log_info "查看日志: docker compose logs -f chatbi"
     log_info "停止服务: docker compose down"
+    log_info "启动内置 MySQL/Redis: docker compose --profile with-mysql --profile with-redis up -d"
     exit 0
   fi
   RETRY=$((RETRY + 1))

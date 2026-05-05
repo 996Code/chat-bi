@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, DateTime, func
+from sqlalchemy import String, DateTime, func, CheckConstraint, Text, Boolean, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 from app.db.types import GUID
@@ -29,6 +29,10 @@ class User(Base):
     is_locked: Mapped[bool] = mapped_column(default=False)
     lock_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     role: Mapped[str] = mapped_column(String(50), default="user")
+
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'user', 'read_only')", name="ck_user_role"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 
@@ -58,7 +62,7 @@ class MetadataConfig(Base):
     id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
-    config: Mapped[str] = mapped_column(String, nullable=False)  # JSON schema content
+    config: Mapped[str] = mapped_column(Text, nullable=False)  # JSON schema content
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 
@@ -70,9 +74,13 @@ class AuditLog(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(100), nullable=False)
-    resource_type: Mapped[str] = mapped_column(String(100))
-    resource_id: Mapped[str] = mapped_column(String(100))
-    details: Mapped[str] = mapped_column(String, default="")
+    resource_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    resource_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    details: Mapped[str] = mapped_column(Text, default="")
+    sql_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    result_count: Mapped[Optional[int]] = mapped_column(nullable=True)
+    execution_time_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
 
 
@@ -82,10 +90,15 @@ class SavedQuery(Base):
     id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(200), nullable=False)
-    query_text: Mapped[str] = mapped_column(String, nullable=False)
-    generated_sql: Mapped[str] = mapped_column(String, nullable=False)
-    datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_sql: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    success: Mapped[Optional[bool]] = mapped_column(nullable=True)
+    execution_time_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
+    row_count: Mapped[Optional[int]] = mapped_column(nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    chart_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
 
 
@@ -108,7 +121,7 @@ class AnalyticsEvent(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     event_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    event_data: Mapped[str] = mapped_column(String, default="")
+    event_data: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
 
 
@@ -120,6 +133,6 @@ class Conversation(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     datasource_id: Mapped[str] = mapped_column(String(100), nullable=True)
     title: Mapped[str] = mapped_column(String(200), default="新对话")
-    messages: Mapped[str] = mapped_column(String, default="[]")  # JSON array
+    messages: Mapped[str] = mapped_column(Text, default="[]")  # JSON array
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())

@@ -42,6 +42,50 @@ export const useChatStore = defineStore('chat', () => {
   const currentDatasourceId = ref<string | null>(null)
   const currentConversationId = ref<string | null>(null)
   const conversations = ref<any[]>([])
+  const onMessageUpdate = ref<(() => void) | null>(null)
+
+  function _serializeMessages(): any[] {
+    // Save messages with query results (cap rows at 100 to avoid bloat)
+    return messages.value.map(m => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      sql: m.sql,
+      columns: m.columns,
+      rows: m.rows ? m.rows.slice(0, 100) : undefined,
+      row_count: m.row_count,
+      error: m.error,
+      execution_time_ms: m.execution_time_ms,
+      chart_type: m.chart_type,
+      pipelineSteps: m.pipelineSteps,
+    }))
+  }
+
+  async function _saveCurrentConversation(): Promise<void> {
+    if (!currentConversationId.value) {
+      // Create new conversation
+      const title = messages.value.find(m => m.role === 'user')?.content?.slice(0, 50) || '新对话'
+      try {
+        const res = await api.post('/conversations', {
+          title,
+          datasource_id: currentDatasourceId.value,
+          messages: _serializeMessages(),
+        })
+        currentConversationId.value = res.data.id
+      } catch {
+        // Non-blocking
+      }
+    } else {
+      // Update existing conversation
+      try {
+        await api.put(`/conversations/${currentConversationId.value}`, {
+          messages: _serializeMessages(),
+        })
+      } catch {
+        // Non-blocking
+      }
+    }
+  }
 
   async function sendQuestion(question: string): Promise<void> {
     if (!currentDatasourceId.value) {
@@ -88,6 +132,14 @@ export const useChatStore = defineStore('chat', () => {
         body: JSON.stringify({
           question,
           datasource_id: currentDatasourceId.value,
+          history: messages.value
+            .filter(m => m.role === 'user' || (m.role === 'assistant' && m.sql))
+            .slice(-6)
+            .map(m => ({
+              role: m.role,
+              content: m.content,
+              sql: m.sql || undefined,
+            })),
         }),
       })
 
@@ -140,6 +192,9 @@ export const useChatStore = defineStore('chat', () => {
       assistantMsg.pipelineSteps = []
     } finally {
       loading.value = false
+      // Auto-save conversation after query completes
+      await _saveCurrentConversation()
+      await loadConversations()
     }
   }
 
@@ -147,8 +202,8 @@ export const useChatStore = defineStore('chat', () => {
     switch (eventType) {
       case 'intent':
         msg.pipelineSteps = [
-          { type: 'intent', label: `意图识别: ${data.intent === 'DataQuery' ? '数据查询' : '其他'}`, status: 'done' },
-          { type: 'sql', label: '检索表结构', status: 'running' },
+          { type: 'intent', label: `意图识别: ${data.intent === 'DataQuery' ? '数据查询' : '其他'}`, status: 'done', detail: data.detail },
+          { type: 'sql', label: 'Schema 选择', status: 'running' },
         ]
         if (data.intent !== 'DataQuery') {
           msg.content = data.error || '请提出数据查询相关的问题'
@@ -157,20 +212,23 @@ export const useChatStore = defineStore('chat', () => {
         break
 
       case 'semantics':
-        // Semantic parsing done
-        const sqlStep = msg.pipelineSteps?.find(s => s.type === 'sql')
-        if (sqlStep) sqlStep.status = 'done'
-        msg.pipelineSteps?.push({ type: 'data', label: '生成 SQL', status: 'running' })
+        // Schema selection done (LLM two-step: table selection + column selection)
+        const schemaStep = msg.pipelineSteps?.find(s => s.type === 'sql' && s.status === 'running')
+        if (schemaStep) {
+          schemaStep.label = 'Schema 选择'
+          schemaStep.status = 'done'
+          schemaStep.detail = data.detail
+        }
+        msg.pipelineSteps?.push({ type: 'sql', label: 'SQL 生成', status: 'running' })
         break
 
       case 'sql':
         msg.sql = data.sql
         // Mark SQL generation done, start execution
-        const execStep = msg.pipelineSteps?.find(s => s.type === 'data' && s.status === 'running')
-        if (execStep) {
-          execStep.type = 'sql'
-          execStep.detail = data.sql?.slice(0, 100)
-          execStep.status = 'done'
+        const sqlGenStep = msg.pipelineSteps?.find(s => s.type === 'sql' && s.status === 'running')
+        if (sqlGenStep) {
+          sqlGenStep.detail = data.detail || data.sql?.slice(0, 100)
+          sqlGenStep.status = 'done'
         }
         msg.pipelineSteps?.push({ type: 'data', label: '执行查询', status: 'running' })
         break
@@ -182,17 +240,25 @@ export const useChatStore = defineStore('chat', () => {
           msg.row_count = data.row_count || 0
           msg.content = '查询成功'
           const runStep = msg.pipelineSteps?.find(s => s.type === 'data' && s.status === 'running')
-          if (runStep) runStep.status = 'done'
+          if (runStep) {
+            runStep.status = 'done'
+            runStep.detail = data.detail
+          }
         } else {
           msg.error = data.error || '执行失败'
-          msg.content = msg.error
+          msg.content = msg.error || '执行失败'
           const runStep = msg.pipelineSteps?.find(s => s.status === 'running')
-          if (runStep) runStep.status = 'failed'
+          if (runStep) {
+            runStep.status = 'failed'
+            runStep.detail = data.detail
+          }
         }
         break
 
       case 'chart':
         msg.chart_type = data.chart_type
+        // Add chart step with detail
+        msg.pipelineSteps?.push({ type: 'chart', label: '图表推断', status: 'done', detail: data.detail })
         break
 
       case 'complete':
@@ -204,12 +270,14 @@ export const useChatStore = defineStore('chat', () => {
 
       case 'error':
         msg.error = data.error || '未知错误'
-        msg.content = msg.error
+        msg.content = msg.error || '未知错误'
         msg.pipelineSteps?.forEach(s => {
           if (s.status === 'running') s.status = 'failed'
         })
         break
     }
+
+    onMessageUpdate.value?.()
   }
 
   function clearMessages() {
@@ -222,21 +290,58 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function loadConversation(convId: string) {
-    // For now just clear — full implementation loads from saved queries
     currentConversationId.value = convId
-    clearMessages()
+    try {
+      const res = await api.get(`/conversations/${convId}`)
+      const conv = res.data
+      clearMessages()
+
+      // Set datasource from conversation
+      if (conv.datasource_id) {
+        currentDatasourceId.value = conv.datasource_id
+      }
+
+      // Restore messages from conversation (including saved query results)
+      const savedMessages: any[] = conv.messages || []
+      for (const m of savedMessages) {
+        if (typeof m !== 'object' || !m.role) continue
+        messages.value.push({
+          id: m.id || `msg-${Date.now()}-${Math.random()}`,
+          role: m.role,
+          content: m.content || '',
+          sql: m.sql,
+          columns: m.columns,
+          rows: m.rows,
+          row_count: m.row_count,
+          error: m.error,
+          execution_time_ms: m.execution_time_ms,
+          chart_type: m.chart_type,
+          pipelineSteps: m.pipelineSteps || (m.role === 'assistant' && m.sql
+            ? [
+                { type: 'intent' as const, label: '意图识别: 数据查询', status: 'done' as const },
+                { type: 'sql' as const, label: 'Schema 选择', status: 'done' as const },
+                { type: 'sql' as const, label: 'SQL 生成', status: 'done' as const, detail: m.sql?.slice(0, 100) },
+                { type: 'data' as const, label: '执行查询', status: m.error ? 'failed' as const : 'done' as const },
+              ]
+            : undefined),
+          timestamp: new Date(),
+        })
+      }
+    } catch {
+      clearMessages()
+    }
   }
 
   async function loadConversations() {
     try {
-      const res = await api.get('/queries', { params: { page_size: 50 } })
-      const data = res.data
-      const items = Array.isArray(data) ? data : (data.data || [])
-      conversations.value = items.map((q: any) => ({
-        id: q.id,
-        title: q.name || q.query_text?.slice(0, 30) || '未命名',
-        message_count: 1,
-        updated_at: q.created_at,
+      const res = await api.get('/conversations')
+      const items = Array.isArray(res.data) ? res.data : []
+      conversations.value = items.map((c: any) => ({
+        id: c.id,
+        title: c.title || '新对话',
+        message_count: c.message_count || 0,
+        datasource_id: c.datasource_id,
+        updated_at: c.updated_at || c.created_at,
       }))
     } catch {
       conversations.value = []
@@ -244,7 +349,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function deleteConversation(convId: string) {
-    await api.delete(`/queries/${convId}`)
+    await api.delete(`/conversations/${convId}`)
     conversations.value = conversations.value.filter(c => c.id !== convId)
     if (currentConversationId.value === convId) {
       currentConversationId.value = null
@@ -258,6 +363,7 @@ export const useChatStore = defineStore('chat', () => {
     currentDatasourceId,
     currentConversationId,
     conversations,
+    onMessageUpdate,
     sendQuestion,
     clearMessages,
     newConversation,

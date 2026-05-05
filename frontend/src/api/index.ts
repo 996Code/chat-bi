@@ -2,7 +2,7 @@ import axios from 'axios'
 import type { AxiosInstance } from 'axios'
 
 const api: AxiosInstance = axios.create({
-  baseURL: '/api/v1',
+  baseURL: '/chat-bi/api/v1',
   timeout: 60000,
   headers: {
     'Content-Type': 'application/json',

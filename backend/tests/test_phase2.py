@@ -320,3 +320,57 @@ async def test_sse_stream_greeting(client, auth_token):
     text = resp.text
     assert "intent" in text
     assert "Other" in text
+
+
+# --- Timezone / ISO 8601 format tests ---
+
+@pytest.mark.asyncio
+async def test_conversation_timestamps_are_iso8601(client, auth_header):
+    """Conversation API returns timestamps in ISO 8601 with Z suffix."""
+    BASE = "/api/v1"
+    # Create a conversation
+    resp = await client.post(f"{BASE}/conversations", json={
+        "title": "时间测试",
+        "datasource_id": "",
+        "messages": [{"role": "user", "content": "test"}],
+    }, headers=auth_header)
+    assert resp.status_code == 201
+    data = resp.json()
+    conv_id = data["id"]
+
+    # Check list endpoint
+    resp = await client.get(f"{BASE}/conversations", headers=auth_header)
+    assert resp.status_code == 200
+    convs = resp.json()
+    target = next(c for c in convs if c["id"] == conv_id)
+    assert target["created_at"].endswith("Z")
+    assert target["updated_at"].endswith("Z")
+
+    # Check get endpoint
+    resp = await client.get(f"{BASE}/conversations/{conv_id}", headers=auth_header)
+    assert resp.status_code == 200
+    detail = resp.json()
+    assert detail["created_at"].endswith("Z")
+    assert detail["updated_at"].endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_saved_query_timestamps_are_iso8601(client, auth_header):
+    """Saved query API returns timestamps in ISO 8601 with Z suffix."""
+    BASE = "/api/v1"
+    resp = await client.post(f"{BASE}/queries", json={
+        "name": "时间测试查询",
+        "query_text": "test",
+        "generated_sql": "SELECT 1",
+        "datasource_id": "00000000-0000-0000-0000-000000000001",
+    }, headers=auth_header)
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["created_at"].endswith("Z")
+
+    # Check list endpoint
+    resp = await client.get(f"{BASE}/queries", headers=auth_header)
+    assert resp.status_code == 200
+    items = resp.json()["data"]
+    assert len(items) > 0
+    assert items[0]["created_at"].endswith("Z")

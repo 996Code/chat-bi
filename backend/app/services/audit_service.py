@@ -16,6 +16,10 @@ async def log_action(
     resource_type: str,
     resource_id: str = "",
     details: str = "",
+    sql_text: str | None = None,
+    result_count: int | None = None,
+    execution_time_ms: int | None = None,
+    error_message: str | None = None,
 ) -> None:
     """记录审计日志。"""
     audit = AuditLog(
@@ -26,7 +30,10 @@ async def log_action(
         resource_type=resource_type,
         resource_id=resource_id,
         details=details,
+        sql_text=sql_text,
+        result_count=result_count,
+        execution_time_ms=execution_time_ms,
+        error_message=error_message,
     )
     db.add(audit)
-    # Don't commit here — let the caller commit with their transaction
     logger.info("Audit: %s %s %s by user %s (tenant %s)", action, resource_type, resource_id, user_id, tenant_id)

@@ -113,6 +113,9 @@ def find_relevant_tables(
     keywords = extract_keywords(question)
     expanded_keywords = _expand_keywords(keywords)
     models = metadata.get("models", [])
+    # Build relationship map from top-level config relationships
+    all_rels = metadata.get("relationships", [])
+    rel_map = _build_relationship_map(all_rels)
 
     scores = []
     for model in models:
@@ -179,35 +182,147 @@ def find_relevant_tables(
             "name": model["name"],
             "description": model.get("description") or "",
             "columns": relevant_cols,
-            "relationships": model.get("relationships") or [],
+            "relationships": rel_map.get(model["name"], []),
         })
 
     return result
 
 
-def resolve_tables(
+def _build_relationship_map(all_rels: list[dict]) -> dict[str, list[dict]]:
+    """将顶层 relationships 列表转为按表名索引的 map。
+
+    输入格式: [{from_table, from_column, to_table, to_column}, ...]
+    输出格式: {table_name: [{column, referenced_table, referenced_column}, ...]}
+    """
+    rel_map: dict[str, list[dict]] = {}
+    for rel in all_rels:
+        ft = rel.get("from_table", "")
+        fc = rel.get("from_column", "")
+        tt = rel.get("to_table", "")
+        tc = rel.get("to_column", "")
+        if ft and fc and tt and tc:
+            rel_map.setdefault(ft, []).append({
+                "column": fc,
+                "referenced_table": tt,
+                "referenced_column": tc,
+            })
+            # Also add reverse direction
+            rel_map.setdefault(tt, []).append({
+                "column": tc,
+                "referenced_table": ft,
+                "referenced_column": fc,
+            })
+    return rel_map
+
+
+def _expand_via_relationships(
+    tables: list[dict[str, Any]],
+    model_map: dict[str, dict],
+    rel_map: dict[str, list[dict]],
+    max_tables: int,
+) -> list[dict[str, Any]]:
+    """沿着关联关系扩展检索结果，把被引用的表也加进来。
+
+    例如：检索到 t_orders，但 t_orders.user_id -> t_users.id，
+    则自动把 t_users 也加入结果。
+    """
+    seen = {t["name"] for t in tables}
+    expanded = list(tables)
+
+    for t in tables:
+        for rel in t.get("relationships", []):
+            ref_table = rel.get("referenced_table", "")
+            if ref_table and ref_table not in seen and ref_table in model_map and len(expanded) < max_tables:
+                seen.add(ref_table)
+                full_model = model_map[ref_table]
+                expanded.append({
+                    "name": ref_table,
+                    "description": full_model.get("description", "") or "",
+                    "columns": full_model.get("columns", [])[:15],
+                    "relationships": rel_map.get(ref_table, []),
+                })
+
+    return expanded[:max_tables]
+
+
+async def _llm_retrieve_tables(
+    question: str,
+    models: list[dict],
+    max_tables: int = 5,
+) -> list[str]:
+    """Use LLM to identify relevant tables when keyword matching fails."""
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        return []
+
+    # Build concise table list for LLM
+    table_list = []
+    for m in models[:30]:
+        cols = [c.get("name", "") for c in m.get("columns", [])[:10]]
+        desc = m.get("description", "") or m.get("comment", "") or ""
+        table_list.append(f"- {m['name']} ({desc}): {', '.join(cols)}")
+
+    prompt = f"""根据用户问题和以下数据库表列表，找出最相关的 1-{max_tables} 张表。
+
+表列表:
+{chr(10).join(table_list)}
+
+用户问题: {question}
+
+要求:
+1. 只输出表名，每行一个
+2. 不要编号，不要解释
+3. 只输出确定相关的表"""
+
+    try:
+        llm = ChatOpenAI(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+            temperature=0.0,
+            max_tokens=200,
+        )
+        response = await llm.ainvoke(prompt)
+        text = response.content.strip()
+        table_names = {m["name"] for m in models}
+        result = []
+        for line in text.split("\n"):
+            name = line.strip().lstrip("-0123456789.) ")
+            if name in table_names and name not in result:
+                result.append(name)
+        return result[:max_tables]
+    except Exception as e:
+        logger.warning("LLM table retrieval failed: %s", e)
+        return []
+
+
+async def resolve_tables(
     question: str,
     metadata: dict[str, Any],
     max_tables: int = 5,
     datasource_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """主入口：Chroma 向量检索优先，关键词/同义词兜底。
+    """主入口：Chroma 向量检索优先，关键词/同义词兜底，LLM 补充，关联扩展。
 
-    1. 尝试用 Chroma 向量相似度检索（仅查询当前数据源的 collection）
-    2. 如果 Chroma 不可用或无结果，回退到关键词匹配
-    3. 合并两种结果（Chroma 优先），去重后返回
+    1. 尝试用 Chroma 向量相似度检索
+    2. 关键词/同义词匹配
+    3. 如果前两种结果不足，用 LLM 补充
+    4. 沿关联关系自动扩展相关表
+    5. 去重后返回
 
     返回值格式与 find_relevant_tables 一致，保证向后兼容。
     """
     models = metadata.get("models", [])
     model_map = {m["name"]: m for m in models}
+    all_rels = metadata.get("relationships", [])
+    rel_map = _build_relationship_map(all_rels)
 
     # --- Chroma retrieval (primary) ---
     chroma_tables = []
     chroma_service = get_chroma_service()
     if _CHROMA_AVAILABLE and chroma_service and datasource_id:
         try:
-            # Only query the specific datasource collection
             chroma_results = chroma_service.query_similar(
                 datasource_id=datasource_id,
                 query_text=question,
@@ -234,7 +349,7 @@ def resolve_tables(
                         "name": t_name,
                         "description": full_model.get("description", "") or "",
                         "columns": relevant_cols,
-                        "relationships": full_model.get("relationships") or [],
+                        "relationships": rel_map.get(t_name, []),
                         "_chroma_score": ct.get("score", 0),
                     })
         except Exception as e:
@@ -256,6 +371,26 @@ def resolve_tables(
         if t["name"] not in seen:
             seen.add(t["name"])
             merged.append(t)
+
+    # --- LLM retrieval to supplement keyword/Chroma results ---
+    # Always run LLM retrieval to catch tables that keyword matching missed
+    try:
+        llm_tables = await _llm_retrieve_tables(question, models, max_tables)
+        for t_name in llm_tables:
+            if t_name not in seen and t_name in model_map:
+                seen.add(t_name)
+                full_model = model_map[t_name]
+                merged.append({
+                    "name": t_name,
+                    "description": full_model.get("description", "") or "",
+                    "columns": full_model.get("columns", [])[:15],
+                    "relationships": rel_map.get(t_name, []),
+                })
+    except Exception as e:
+        logger.warning("LLM table retrieval failed (non-fatal): %s", e)
+
+    # --- Expand via relationships ---
+    merged = _expand_via_relationships(merged, model_map, rel_map, max_tables)
 
     return merged[:max_tables]
 
@@ -439,7 +574,7 @@ def prune_columns(
     return result
 
 
-def get_rag_schema(
+async def get_rag_schema(
     question: str,
     metadata_json: str,
     max_tables: int = 5,
@@ -452,7 +587,7 @@ def get_rag_schema(
         logger.warning("Failed to parse metadata JSON")
         return metadata_json  # fallback to raw metadata
 
-    relevant = resolve_tables(question, metadata, max_tables, datasource_id)
+    relevant = await resolve_tables(question, metadata, max_tables, datasource_id)
 
     # Stage 2: column pruning (two-stage retrieval)
     if settings.rag_pruning_enabled:

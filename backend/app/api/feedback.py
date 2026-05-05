@@ -7,6 +7,12 @@ from app.db.session import get_db
 from app.db.models import Feedback
 from app.core.security import get_current_user
 
+
+def _iso(dt) -> str:
+    if dt is None:
+        return ""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
 router = APIRouter(prefix="/feedback", tags=["反馈"])
 
 
@@ -58,7 +64,7 @@ async def list_feedback(
             "query_id": fb.query_id,
             "rating": fb.rating,
             "comment": fb.comment,
-            "created_at": str(fb.created_at),
+            "created_at": _iso(fb.created_at),
         }
         for fb in feedbacks
     ]

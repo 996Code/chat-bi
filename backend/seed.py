@@ -86,7 +86,7 @@ async def seed():
         await session.commit()
 
         ecommerce_schema = {
-            'tables': [
+            'models': [
                 {'name': 'orders', 'comment': '订单表', 'columns': [
                     {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '订单ID', 'is_pk': True},
                     {'name': 'user_id', 'type': 'bigint', 'nullable': False, 'comment': '用户ID'},
@@ -138,15 +138,15 @@ async def seed():
                 ]},
             ],
             'relationships': [
-                {'from': 'orders.user_id', 'to': 'users_e.id'},
-                {'from': 'order_items.order_id', 'to': 'orders.id'},
-                {'from': 'payments.order_id', 'to': 'orders.id'},
-                {'from': 'shipping.order_id', 'to': 'orders.id'},
+                {'from_table': 'orders', 'from_column': 'user_id', 'to_table': 'users_e', 'to_column': 'id'},
+                {'from_table': 'order_items', 'from_column': 'order_id', 'to_table': 'orders', 'to_column': 'id'},
+                {'from_table': 'payments', 'from_column': 'order_id', 'to_table': 'orders', 'to_column': 'id'},
+                {'from_table': 'shipping', 'from_column': 'order_id', 'to_table': 'orders', 'to_column': 'id'},
             ],
             'metrics': [
                 {'name': 'GMV', 'expression': 'SUM(orders.total_amount)', 'description': '总交易额'},
                 {'name': '订单数', 'expression': 'COUNT(orders.id)', 'description': '总订单数'},
-                {'name': '客单价', 'expression': 'AVG(orders.total_amount)', 'description': '平均'},
+                {'name': '客单价', 'expression': 'AVG(orders.total_amount)', 'description': '平均订单金额'},
             ],
         }
         metadata_configs = [
@@ -155,7 +155,7 @@ async def seed():
                           config=json.dumps(ecommerce_schema, ensure_ascii=False)),
             MetadataConfig(id=uuid.UUID('ffffffff-ffff-ffff-ffff-ffffffffffff'),
                           tenant_id=TENANT_1, datasource_id=DS_2,
-                          config=json.dumps({'tables': [], 'relationships': [], 'metrics': []})),
+                          config=json.dumps({'models': [], 'relationships': [], 'metrics': []})),
         ]
         for mc in metadata_configs:
             session.add(mc)

@@ -1,4 +1,4 @@
-"""Phase 2 additional tests: RAG schema, feedback, analytics, PostgreSQL pool, self-heal integration, chart type in response."""
+"""Phase 2 additional tests: Schema selection, feedback, analytics, PostgreSQL pool, self-heal integration, chart type in response."""
 import json
 import pytest
 import pytest_asyncio
@@ -8,7 +8,7 @@ from app.main import app
 from app.db.session import async_session_factory, get_db
 from app.db.models import Feedback, AnalyticsEvent
 from app.ai.chart_type import infer_chart_type
-from app.services.rag_schema_service import extract_keywords, find_relevant_tables, get_rag_schema, format_schema_context
+from app.ai.nodes.schema_selection import _build_schema_context
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -57,72 +57,70 @@ async def _register_and_login(client: AsyncClient, email: str = "test@test.com")
     return token
 
 
-# ─── RAG Schema Tests ───
+# ─── Schema Selection Tests ───
 
-def test_extract_keywords_chinese():
-    """关键词提取：中文分词 + 停用词过滤。"""
-    kw = extract_keywords("上个月的销售总额是多少？")
-    assert "销售" in "".join(kw) or any("销" in w for w in kw)
-
-
-def test_extract_keywords_english():
-    """关键词提取：英文单词。"""
-    kw = extract_keywords("Show me the user table")
-    assert "user" in kw
-
-
-def test_rag_find_relevant_tables():
-    """RAG 语义检索：根据问题找到相关表。"""
+def test_build_schema_context_includes_table_name():
+    """Schema context should include selected table names."""
     metadata = {
         "models": [
             {"name": "orders", "description": "订单表", "columns": [
                 {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
                 {"name": "amount", "type": "decimal", "nullable": False, "primary": False, "comment": "金额"},
-                {"name": "created_at", "type": "datetime", "nullable": False, "primary": False, "comment": "创建时间"},
-            ], "relationships": []},
-            {"name": "users", "description": "用户表", "columns": [
-                {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
-                {"name": "name", "type": "varchar", "nullable": False, "primary": False, "comment": "用户名"},
-            ], "relationships": []},
-        ]
+            ]},
+        ],
+        "relationships": [],
     }
-
-    # Question about orders should find orders table
-    results = find_relevant_tables("订单金额", metadata)
-    assert len(results) > 0
-    assert results[0]["name"] == "orders"
+    result = _build_schema_context(["orders"], {"orders": ["id", "amount"]}, metadata)
+    assert "表名: orders" in result
+    assert "amount" in result
 
 
-def test_rag_format_schema_context():
-    """RAG schema 格式化输出。"""
-    tables = [
-        {"name": "orders", "description": "订单表", "columns": [
-            {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
-            {"name": "amount", "type": "decimal", "nullable": False, "primary": False, "comment": "金额"},
-        ], "relationships": []}
-    ]
-    ctx = format_schema_context(tables)
-    assert "表名: orders" in ctx
-    assert "金额" in ctx
+def test_build_schema_context_empty_selection():
+    """Empty table selection returns header only."""
+    result = _build_schema_context([], {}, {"models": [], "relationships": []})
+    assert "可用的数据库表结构" in result
 
 
-def test_rag_schema_service_entry():
-    """RAG schema 入口函数：解析 JSON 并返回格式化文本。"""
-    metadata_json = json.dumps({
+def test_build_schema_context_fallback_all_columns():
+    """When LLM selects no columns, all columns are included as fallback."""
+    metadata = {
         "models": [
-            {"name": "sales", "description": "销售数据表", "columns": [
+            {"name": "products", "description": "", "columns": [
                 {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
-            ], "relationships": []}
-        ]
-    })
-    result = get_rag_schema("销售", metadata_json)
-    assert "表名: sales" in result
+                {"name": "name", "type": "varchar", "nullable": True, "primary": False, "comment": ""},
+                {"name": "price", "type": "decimal", "nullable": True, "primary": False, "comment": ""},
+            ]},
+        ],
+        "relationships": [],
+    }
+    result = _build_schema_context(["products"], {"products": []}, metadata)
+    assert "id" in result
+    assert "name" in result
+    assert "price" in result
 
 
-def test_rag_schema_invalid_json():
-    """RAG schema：无效 JSON 时回退到原始字符串。"""
-    result = get_rag_schema("test", "not json")
-    assert result == "not json"
+def test_build_schema_context_includes_relationships():
+    """Schema context includes relationship info."""
+    metadata = {
+        "models": [
+            {"name": "orders", "description": "", "columns": [
+                {"name": "user_id", "type": "int", "nullable": True, "primary": False, "comment": ""},
+            ]},
+            {"name": "users", "description": "", "columns": [
+                {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
+            ]},
+        ],
+        "relationships": [
+            {"from_table": "orders", "from_column": "user_id", "to_table": "users", "to_column": "id"},
+        ],
+    }
+    result = _build_schema_context(
+        ["orders", "users"],
+        {"orders": ["user_id"], "users": ["id"]},
+        metadata,
+    )
+    assert "关联" in result
+    assert "user_id" in result
 
 
 # ─── Feedback Tests ───
@@ -212,8 +210,6 @@ def test_pool_url_mysql():
         username_encrypted="",
         password_encrypted="",
     )
-    # Test URL construction logic (we can't actually connect)
-    # Just verify the pool manager recognizes the db_type
     assert ds.db_type == "mysql"
 
 

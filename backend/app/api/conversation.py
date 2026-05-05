@@ -14,8 +14,28 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/conversations", tags=["会话"])
 
 
+def _iso(dt) -> str:
+    """Format datetime as ISO 8601 with Z suffix so browsers parse as UTC."""
+    if dt is None:
+        return ""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _error(code: str, message: str) -> dict:
     return {"code": code, "message": message, "details": None}
+
+
+def _parse_messages(raw: str) -> list:
+    """Parse messages JSON, handling legacy double-encoding."""
+    if not raw:
+        return []
+    data = json.loads(raw)
+    # Handle double-encoded: if result is a string, parse again
+    if isinstance(data, str):
+        data = json.loads(data)
+    if not isinstance(data, list):
+        return []
+    return data
 
 
 @router.get("")
@@ -39,9 +59,9 @@ async def list_conversations(
             "id": str(c.id),
             "title": c.title or "新对话",
             "datasource_id": c.datasource_id,
-            "message_count": len(json.loads(c.messages or "[]")),
-            "created_at": str(c.created_at),
-            "updated_at": str(c.updated_at),
+            "message_count": len(_parse_messages(c.messages)),
+            "created_at": _iso(c.created_at),
+            "updated_at": _iso(c.updated_at),
         }
         for c in convs
     ]
@@ -73,9 +93,9 @@ async def get_conversation(
         "id": str(conv.id),
         "title": conv.title or "新对话",
         "datasource_id": conv.datasource_id,
-        "messages": json.loads(conv.messages or "[]"),
-        "created_at": str(conv.created_at),
-        "updated_at": str(conv.updated_at),
+        "messages": _parse_messages(conv.messages),
+        "created_at": _iso(conv.created_at),
+        "updated_at": _iso(conv.updated_at),
     }
 
 
@@ -101,9 +121,9 @@ async def create_conversation(
         "id": str(conv.id),
         "title": conv.title,
         "datasource_id": conv.datasource_id,
-        "message_count": len(json.loads(conv.messages)),
-        "created_at": str(conv.created_at),
-        "updated_at": str(conv.updated_at),
+        "message_count": len(_parse_messages(conv.messages)),
+        "created_at": _iso(conv.created_at),
+        "updated_at": _iso(conv.updated_at),
     }
 
 
@@ -134,12 +154,17 @@ async def update_conversation(
     if "title" in data:
         conv.title = data["title"]
     if "messages" in data:
-        conv.messages = json.dumps(data["messages"], ensure_ascii=False)
+        msgs = data["messages"]
+        # Handle both array and pre-serialized string from frontend
+        if isinstance(msgs, str):
+            conv.messages = msgs
+        else:
+            conv.messages = json.dumps(msgs, ensure_ascii=False)
     if "datasource_id" in data:
         conv.datasource_id = data["datasource_id"]
 
     await db.commit()
-    return {"id": str(conv.id), "title": conv.title, "message_count": len(json.loads(conv.messages))}
+    return {"id": str(conv.id), "title": conv.title, "message_count": len(_parse_messages(conv.messages))}
 
 
 @router.delete("/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)

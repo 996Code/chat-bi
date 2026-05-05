@@ -41,8 +41,8 @@
           <div class="flow-arrow">→</div>
           <div class="flow-item">
             <div class="flow-circle">2</div>
-            <div class="flow-label">Schema 检索</div>
-            <div class="flow-desc">通过关键词+同义词匹配相关表结构</div>
+            <div class="flow-label">Schema 选择</div>
+            <div class="flow-desc">LLM 两步选择：相关表 + 所需字段</div>
           </div>
           <div class="flow-arrow">→</div>
           <div class="flow-item">
@@ -53,24 +53,18 @@
           <div class="flow-arrow">→</div>
           <div class="flow-item">
             <div class="flow-circle">4</div>
-            <div class="flow-label">AST 校验</div>
-            <div class="flow-desc">SQLGlot 解析，仅允许 SELECT 查询</div>
-          </div>
-          <div class="flow-arrow">→</div>
-          <div class="flow-item">
-            <div class="flow-circle">5</div>
             <div class="flow-label">执行查询</div>
             <div class="flow-desc">连接数据库执行，30 秒超时保护</div>
           </div>
           <div class="flow-arrow">→</div>
           <div class="flow-item">
-            <div class="flow-circle">6</div>
+            <div class="flow-circle">5</div>
             <div class="flow-label">SQL 自愈</div>
             <div class="flow-desc">失败时自动分析错误并重试修正（最多 2 次）</div>
           </div>
           <div class="flow-arrow">→</div>
           <div class="flow-item">
-            <div class="flow-circle">7</div>
+            <div class="flow-circle">6</div>
             <div class="flow-label">图表推断</div>
             <div class="flow-desc">根据数据特征自动选择合适的图表类型</div>
           </div>

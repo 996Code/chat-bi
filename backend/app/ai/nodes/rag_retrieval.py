@@ -30,14 +30,17 @@ async def rag_retrieval_node(state: dict) -> dict:
         logger.warning("RAG node: missing datasource_id")
         return {"schema_context": "", "raw_metadata": ""}
 
+    if not tenant_id:
+        logger.warning("RAG node: missing tenant_id — skipping retrieval for security")
+        return {"schema_context": "", "raw_metadata": ""}
+
     # Fetch metadata from DB
     try:
         async with async_session_factory() as db:
             query = select(MetadataConfig).where(
                 MetadataConfig.datasource_id == datasource_id,
+                MetadataConfig.tenant_id == tenant_id,
             )
-            if tenant_id:
-                query = query.where(MetadataConfig.tenant_id == tenant_id)
             config_result = await db.execute(query)
             config = config_result.scalar_one_or_none()
             raw_metadata = config.config if config else ""
@@ -50,7 +53,7 @@ async def rag_retrieval_node(state: dict) -> dict:
         return {"schema_context": "", "raw_metadata": ""}
 
     # RAG retrieval
-    schema_context = get_rag_schema(question, raw_metadata, datasource_id=datasource_id)
+    schema_context = await get_rag_schema(question, raw_metadata, datasource_id=datasource_id)
 
     # Append all table names for LLM reference
     schema_context = append_all_table_names(schema_context, raw_metadata)

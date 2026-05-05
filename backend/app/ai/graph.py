@@ -11,7 +11,6 @@ class QueryState(TypedDict, total=False):
     schema_context: str
     raw_metadata: str
     intent: str
-    semantics: dict
     sql: str
     error: str
     columns: list[str]
@@ -25,7 +24,7 @@ class QueryState(TypedDict, total=False):
 def route_by_intent(state: QueryState) -> str:
     """根据意图路由到不同节点。"""
     if state.get("intent") == "DataQuery":
-        return "rag_retrieval"
+        return "schema_selection"
     return "misleading"
 
 
@@ -42,13 +41,13 @@ def build_graph():
     """构建 LangGraph StateGraph。
 
     流程：
-        classify_intent → (DataQuery) → rag_retrieval → semantic_parse → generate_sql → execute_sql → END
+        classify_intent → (DataQuery) → schema_selection → generate_sql → execute_sql → END
         classify_intent → (Other) → misleading → END
     """
     from app.ai.nodes.intent import classify_intent
     from app.ai.nodes.generation import generate_sql
     from app.ai.nodes.execution import execute_sql
-    from app.ai.nodes.rag_retrieval import rag_retrieval_node
+    from app.ai.nodes.schema_selection import schema_selection_node
 
     graph = StateGraph(QueryState)
 
@@ -57,11 +56,11 @@ def build_graph():
         intent = await classify_intent(state["question"])
         return {"intent": intent}
 
-    # RAG retrieval node: retrieves relevant tables/columns for the question
-    async def rag_node(state: QueryState) -> dict:
-        return await rag_retrieval_node(state)
+    # Schema selection node (two-step LLM: table selection + column selection)
+    async def schema_node(state: QueryState) -> dict:
+        return await schema_selection_node(state)
 
-    # Context resolution node: resolve follow-up question context
+    # Context resolution node
     async def resolve_context_node(state: QueryState) -> dict:
         from app.ai.nodes.context_resolver import resolve_context
         history = state.get("conversation_history", [])
@@ -70,18 +69,11 @@ def build_graph():
             return {"question": resolved}
         return {}
 
-    # Semantic parse node: extract structured intent/metric/dimensions/filters
-    async def semantic_node(state: QueryState) -> dict:
-        from app.ai.nodes.semantic_parser import parse_semantics
-        semantics = await parse_semantics(state["question"], state.get("schema_context", ""))
-        return {"semantics": semantics}
-
     # SQL generation node
     async def generation_node(state: QueryState) -> dict:
         sql = await generate_sql(
             state["question"],
             state.get("schema_context", ""),
-            semantics=state.get("semantics", {}),
             raw_metadata=state.get("raw_metadata", ""),
         )
         if not sql:
@@ -97,7 +89,7 @@ def build_graph():
         from app.ai.chart_type import infer_chart_type
         from app.ai.nodes.self_heal import self_heal_sql
 
-        result = await execute_sql(state["sql"], state["datasource_id"])
+        result = await execute_sql(state["sql"], state["datasource_id"], tenant_id=state.get("tenant_id"))
         final_sql = state["sql"]
 
         # Self-healing: retry with LLM fix on failure
@@ -108,11 +100,11 @@ def build_graph():
                 error=result.get("error", ""),
                 datasource_id=state.get("datasource_id", ""),
                 schema_context=state["schema_context"],
-                dialect="mysql",  # TODO: derive from datasource db_type
+                dialect="mysql",
             )
             if heal_result.get("success"):
                 final_sql = heal_result.get("sql", final_sql)
-                result = await execute_sql(final_sql, state["datasource_id"])
+                result = await execute_sql(final_sql, state["datasource_id"], tenant_id=state.get("tenant_id"))
 
         columns = result.get("columns", [])
         rows = result.get("rows", [])
@@ -133,8 +125,7 @@ def build_graph():
     # Add nodes
     graph.add_node("classify_intent", intent_node)
     graph.add_node("resolve_context", resolve_context_node)
-    graph.add_node("rag_retrieval", rag_node)
-    graph.add_node("semantic_parse", semantic_node)
+    graph.add_node("schema_selection", schema_node)
     graph.add_node("generate_sql", generation_node)
     graph.add_node("execute_sql", execution_node)
     graph.add_node("misleading", handle_misleading)
@@ -144,11 +135,10 @@ def build_graph():
     graph.add_conditional_edges(
         "classify_intent",
         route_by_intent,
-        {"rag_retrieval": "resolve_context", "misleading": "misleading"},
+        {"schema_selection": "resolve_context", "misleading": "misleading"},
     )
-    graph.add_edge("resolve_context", "rag_retrieval")
-    graph.add_edge("rag_retrieval", "semantic_parse")
-    graph.add_edge("semantic_parse", "generate_sql")
+    graph.add_edge("resolve_context", "schema_selection")
+    graph.add_edge("schema_selection", "generate_sql")
     graph.add_edge("generate_sql", "execute_sql")
     graph.add_edge("misleading", END)
     graph.add_edge("execute_sql", END)

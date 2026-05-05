@@ -11,11 +11,8 @@ services:
       - deploy/.env
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-["*"]}
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - chatbi-net
 
@@ -40,6 +37,8 @@ services:
       start_period: 30s
     networks:
       - chatbi-net
+    profiles:
+      - with-mysql
 
   redis:
     image: redis:7-alpine
@@ -51,6 +50,8 @@ services:
       - redis-data:/data
     networks:
       - chatbi-net
+    profiles:
+      - with-redis
 
 volumes:
   mysql-data:

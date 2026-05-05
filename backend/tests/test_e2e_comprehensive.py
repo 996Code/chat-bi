@@ -172,13 +172,14 @@ async def _execute_query(client: AsyncClient, token: str, datasource_id: str,
 
 
 def _make_token(user_id: str, tenant_id: str, email: str,
-                expire_minutes: int = 15) -> str:
+                expire_minutes: int = 15, role: str = "user") -> str:
     """Create a JWT access token with custom expiry."""
     from datetime import timedelta
     token_data = {
         "user_id": user_id,
         "email": email,
         "tenant_id": tenant_id,
+        "role": role,
     }
     return create_access_token(token_data, expires_delta=timedelta(minutes=expire_minutes))
 
@@ -203,6 +204,18 @@ async def test_full_lifecycle_journey(client):
     assert token is not None
     assert refresh_token is not None
 
+    # Make user admin for audit log access
+    from app.db.models import User
+    from sqlalchemy import select as sel
+    async with async_session_factory() as db:
+        result = await db.execute(sel(User).where(User.email == "e2e@example.com"))
+        u = result.scalar_one_or_none()
+        if u:
+            u.role = "admin"
+            await db.commit()
+    # Re-login to get admin token
+    token, refresh_token, _ = await _login(client, "e2e@example.com", "Test1234!")
+
     # Step 4: Create datasource
     resp = await _create_datasource(client, token, name="e2e-database")
     assert resp.status_code == 201
@@ -219,7 +232,31 @@ async def test_full_lifecycle_journey(client):
     # (either 200 if mocked properly, or 400 if connection fails)
 
     # Step 6: Execute query (mocked LLM)
-    resp = await _execute_query(client, token, ds_id, "Show me all users")
+    # Patch _check_datasource to skip is_active check (test DB has no real connection)
+    async def _check_ds_no_active(datasource_id, tenant_id, db):
+        from app.db.models import DataSource
+        from sqlalchemy import select
+        result = await db.execute(
+            select(DataSource).where(
+                DataSource.id == datasource_id,
+                DataSource.tenant_id == tenant_id,
+            )
+        )
+        ds = result.scalar_one_or_none()
+        if not ds:
+            from fastapi import HTTPException, status as st
+            raise HTTPException(status_code=st.HTTP_404_NOT_FOUND, detail={"code": "NOT_FOUND", "message": "数据源不存在", "details": None})
+        # Force is_active=True for test environment
+        ds.is_active = True
+        return ds
+
+    mock_graph = _build_graph_mock()
+    with patch("app.api.query.build_graph", return_value=mock_graph), \
+         patch("app.api.query._check_datasource", new=_check_ds_no_active):
+        resp = await client.post(f"{BASE}/query", json={
+            "question": "Show me all users",
+            "datasource_id": ds_id,
+        }, headers=_auth_header(token))
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
@@ -256,7 +293,7 @@ async def test_full_lifecycle_journey(client):
     assert "text/csv" in resp.headers.get("content-type", "")
 
     # Step 10: Check audit log — returns tenant-scoped logs for current user
-    resp = await client.get(f"{BASE}/audit", headers=_auth_header(token))
+    resp = await client.get(f"{BASE}/audit/logs", headers=_auth_header(token))
     assert resp.status_code == 200
 
 
@@ -804,7 +841,7 @@ async def test_access_without_token(client):
         ("GET", f"{BASE}/datasources"),
         ("GET", f"{BASE}/queries"),
         ("GET", f"{BASE}/feedback"),
-        ("GET", f"{BASE}/audit"),
+        ("GET", f"{BASE}/audit/logs"),
         ("POST", f"{BASE}/datasources"),
         ("POST", f"{BASE}/queries"),
     ]

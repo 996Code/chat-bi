@@ -83,7 +83,79 @@ def _fix_table_names(sql: str, invalid: set[str], valid: set[str]) -> str:
     return sql
 
 
-def _validate_and_fix_tables(sql: str, schema_context: str) -> str:
+# Extract column names from schema_context (format: "  - col_name (type)")
+_SCHEMA_COL_RE = re.compile(r'^\s+-\s+(\w+)\s+\(', re.MULTILINE)
+
+# Extract column names used in SQL (after WHERE, ON, GROUP BY, ORDER BY, etc.)
+_SQL_COL_RE = re.compile(
+    r'\b(\w+)\s*(?:=|!=|<>|>=|<=|>|<|\s+IS\s|\s+IN\s|\s+LIKE\s|\s+BETWEEN\s)',
+    re.IGNORECASE,
+)
+
+
+def _extract_schema_columns(schema_context: str) -> set[str]:
+    """从 schema_context 中提取所有合法列名。"""
+    return set(_SCHEMA_COL_RE.findall(schema_context))
+
+
+def _validate_and_fix_columns(sql: str, schema_context: str, raw_metadata: str = "") -> str:
+    """校验并修复 SQL 中的列名，特别是 created_at 幻觉问题。
+
+    策略：只检查 SQL 中实际引用的表的列，而不是所有表的列。
+    如果 feeding_records 没有 created_at，即使其他表有，也应该修复。
+    """
+    # Parse tables from SQL
+    sql_tables = _extract_sql_tables(sql)
+    if not sql_tables:
+        return sql
+
+    # Build a map of table -> columns from raw_metadata
+    table_cols: dict[str, set[str]] = {}
+    if raw_metadata:
+        try:
+            metadata = json.loads(raw_metadata)
+            for model in metadata.get("models", []):
+                tname = model.get("name", "").lower()
+                cols = {c.get("name", "") for c in model.get("columns", []) if c.get("name")}
+                table_cols[tname] = cols
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # For each table in SQL, check if hallucinated columns exist in that specific table
+    hallucinated_cols = {"created_at", "updated_at", "created_time", "update_time"}
+    for hc in hallucinated_cols:
+        if not re.search(r'\b' + hc + r'\b', sql, re.IGNORECASE):
+            continue
+
+        # Check if any SQL-referenced table has this column
+        has_valid_col = False
+        for t in sql_tables:
+            cols = table_cols.get(t.lower(), set())
+            if hc in cols:
+                has_valid_col = True
+                break
+
+        if has_valid_col:
+            continue  # Column exists in at least one referenced table
+
+        # Find replacement: look for time-like columns in the referenced tables
+        for t in sql_tables:
+            cols = table_cols.get(t.lower(), set())
+            time_cols = [c for c in cols if any(
+                kw in c.lower() for kw in ("time", "date", "at", "timestamp", "ts")
+            )]
+            if time_cols:
+                best = max(time_cols, key=lambda c: SequenceMatcher(None, hc, c).ratio())
+                ratio = SequenceMatcher(None, hc, best).ratio()
+                replacement = best if ratio > 0.2 else time_cols[0]
+                logger.info("Fixing hallucinated column '%s' -> '%s' (table: %s)", hc, replacement, t)
+                sql = re.sub(r'\b' + hc + r'\b', replacement, sql, flags=re.IGNORECASE)
+                break
+
+    return sql
+
+
+def _validate_and_fix_tables(sql: str, schema_context: str, raw_metadata: str = "") -> str:
     """校验 SQL 中的表名是否在 schema 中，不匹配则自动修复。"""
     # First strip Chinese comments
     sql = _strip_chinese_comments(sql)
@@ -96,6 +168,8 @@ def _validate_and_fix_tables(sql: str, schema_context: str) -> str:
     if invalid:
         logger.warning("LLM used invalid tables: %s, valid: %s", invalid, valid_tables)
         sql = _fix_table_names(sql, invalid, valid_tables)
+    # Also validate and fix column names (e.g. created_at hallucination)
+    sql = _validate_and_fix_columns(sql, schema_context, raw_metadata)
     return sql
 
 
@@ -178,40 +252,48 @@ async def _llm_generate(messages: list, llm: ChatOpenAI | None = None, attempt: 
     return sql if sql else None
 
 
+def _build_history_context(history: list[dict] | None) -> str:
+    """Build conversation history context string for multi-turn queries."""
+    if not history:
+        return ""
+    lines = ["\n## 对话历史（参考上下文，不要重复查询已有结果）"]
+    for msg in history[-6:]:  # Last 3 turns (user+assistant)
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        sql = msg.get("sql", "")
+        if role == "user" and content:
+            lines.append(f"用户: {content}")
+        elif role == "assistant":
+            if sql:
+                lines.append(f"助手(已执行SQL): {sql}")
+            elif content and content not in ("处理中...", "查询成功"):
+                lines.append(f"助手: {content}")
+    return "\n".join(lines)
+
+
 async def generate_sql(
     question: str,
     schema_context: str,
-    semantics: dict | None = None,
     raw_metadata: str = "",
+    history: list[dict] | None = None,
 ) -> str:
-    """生成 SQL：LLM → 语义增强重试 → 完整 schema → 更高温度。"""
-    # Attempt 1: with semantic analysis
-    if semantics and semantics.get("intent"):
-        messages = [
-            ("system", SYSTEM_PROMPT),
-            ("human", build_semantic_prompt(question, schema_context, semantics)),
-        ]
-    else:
-        messages = [
-            ("system", SYSTEM_PROMPT),
-            ("human", build_user_prompt(question, schema_context)),
-        ]
+    """生成 SQL：schema context 已经是 LLM 精选的，直接生成即可。"""
+    history_ctx = _build_history_context(history)
+    # Attempt 1: direct generation with selected schema
+    messages = [
+        ("system", SYSTEM_PROMPT),
+        ("human", build_user_prompt(question, schema_context) + history_ctx),
+    ]
     sql = await _llm_generate(messages, attempt="attempt1")
 
-    # Attempt 2: full schema context
+    # Attempt 2: full schema context (fallback if selected schema was insufficient)
     if sql is None and raw_metadata:
         logger.info("LLM returned empty, retrying with full schema")
         full_schema = _build_full_schema_context(raw_metadata)
-        if semantics and semantics.get("intent"):
-            retry_messages = [
-                ("system", SYSTEM_PROMPT),
-                ("human", build_semantic_prompt(question, full_schema, semantics)),
-            ]
-        else:
-            retry_messages = [
-                ("system", SYSTEM_PROMPT),
-                ("human", build_user_prompt(question, full_schema)),
-            ]
+        retry_messages = [
+            ("system", SYSTEM_PROMPT),
+            ("human", build_user_prompt(question, full_schema)),
+        ]
         sql = await _llm_generate(retry_messages, attempt="attempt2")
 
     # Attempt 3: higher temperature LLM with simpler prompt
@@ -235,5 +317,7 @@ async def generate_sql(
         return ""
 
     # Validate and fix table names + strip Chinese comments
-    sql = _validate_and_fix_tables(sql, schema_context)
+    logger.info("Before validation: sql=%s", sql[:200])
+    sql = _validate_and_fix_tables(sql, schema_context, raw_metadata)
+    logger.info("After validation: sql=%s", sql[:200])
     return sql

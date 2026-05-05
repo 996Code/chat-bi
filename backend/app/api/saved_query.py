@@ -1,8 +1,14 @@
 """查询保存与历史 API。"""
-import json
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, and_, or_
+
+
+def _iso(dt) -> str:
+    if dt is None:
+        return ""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 from app.db.session import get_db
 from app.db.models import SavedQuery
@@ -24,13 +30,31 @@ async def list_queries(
     db: AsyncSession = Depends(get_db),
     cursor: str | None = Query(None, description="游标：上次返回的最后一条记录的 created_at"),
     page_size: int = Query(20, ge=1, le=100),
+    text: str | None = Query(None, description="搜索问题文本"),
+    datasource_id: str | None = Query(None, description="按数据源筛选"),
+    status: str | None = Query(None, description="按状态筛选: success/error"),
 ):
-    """列出当前用户的查询历史（cursor-based 分页）。"""
+    """列出当前用户的查询历史（cursor-based 分页 + 搜索筛选）。"""
+    tenant_id = user["tenant_id"]
+    conditions = [
+        SavedQuery.tenant_id == tenant_id,
+        SavedQuery.user_id == user["user_id"],
+    ]
+
+    if text:
+        conditions.append(SavedQuery.query_text.ilike(f"%{text}%"))
+    if datasource_id:
+        conditions.append(SavedQuery.datasource_id == datasource_id)
+    if status == "success":
+        conditions.append(SavedQuery.success == True)  # noqa: E712
+    elif status == "error":
+        conditions.append(SavedQuery.success == False)  # noqa: E712
+
     query = (
         select(SavedQuery)
-        .where(SavedQuery.user_id == user["user_id"])
+        .where(and_(*conditions))
         .order_by(desc(SavedQuery.created_at))
-        .limit(page_size + 1)  # Fetch one extra to check if there's more
+        .limit(page_size + 1)
     )
 
     if cursor:
@@ -53,7 +77,12 @@ async def list_queries(
                 "query_text": q.query_text,
                 "generated_sql": q.generated_sql,
                 "datasource_id": str(q.datasource_id),
-                "created_at": str(q.created_at),
+                "success": q.success,
+                "execution_time_ms": q.execution_time_ms,
+                "row_count": q.row_count,
+                "error": q.error,
+                "chart_type": q.chart_type,
+                "created_at": _iso(q.created_at),
             }
             for q in queries
         ],
@@ -68,7 +97,8 @@ async def save_query(
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """保存当前查询。"""
+    """保存当前查询（手动收藏）。"""
+    tenant_id = user["tenant_id"]
     name = data.get("name", "").strip()
     query_text = data.get("query_text", "")
     generated_sql = data.get("generated_sql", "")
@@ -85,10 +115,9 @@ async def save_query(
             detail=_error("INVALID_INPUT", "数据源 ID 不能为空"),
         )
 
-    import uuid
     sq = SavedQuery(
         id=uuid.uuid4(),
-        tenant_id=user["tenant_id"],
+        tenant_id=tenant_id,
         user_id=user["user_id"],
         name=name,
         query_text=query_text,
@@ -99,9 +128,8 @@ async def save_query(
     await db.commit()
     await db.refresh(sq)
 
-    # Analytics
     from app.services.analytics_service import track_event, EVENT_QUERY_SAVE
-    await track_event(db, user["tenant_id"], user["user_id"], EVENT_QUERY_SAVE, {"name": sq.name})
+    await track_event(db, tenant_id, user["user_id"], EVENT_QUERY_SAVE, {"name": sq.name})
     await db.commit()
 
     return {
@@ -110,7 +138,7 @@ async def save_query(
         "query_text": sq.query_text,
         "generated_sql": sq.generated_sql,
         "datasource_id": str(sq.datasource_id),
-        "created_at": str(sq.created_at),
+        "created_at": _iso(sq.created_at),
     }
 
 
@@ -124,6 +152,7 @@ async def get_query(
     result = await db.execute(
         select(SavedQuery).where(
             SavedQuery.id == query_id,
+            SavedQuery.tenant_id == user["tenant_id"],
             SavedQuery.user_id == user["user_id"],
         )
     )
@@ -140,7 +169,12 @@ async def get_query(
         "query_text": sq.query_text,
         "generated_sql": sq.generated_sql,
         "datasource_id": str(sq.datasource_id),
-        "created_at": str(sq.created_at),
+        "success": sq.success,
+        "execution_time_ms": sq.execution_time_ms,
+        "row_count": sq.row_count,
+        "error": sq.error,
+        "chart_type": sq.chart_type,
+        "created_at": _iso(sq.created_at),
     }
 
 
@@ -154,6 +188,7 @@ async def delete_query(
     result = await db.execute(
         select(SavedQuery).where(
             SavedQuery.id == query_id,
+            SavedQuery.tenant_id == user["tenant_id"],
             SavedQuery.user_id == user["user_id"],
         )
     )
@@ -179,6 +214,7 @@ async def re_run_query(
     result = await db.execute(
         select(SavedQuery).where(
             SavedQuery.id == query_id,
+            SavedQuery.tenant_id == user["tenant_id"],
             SavedQuery.user_id == user["user_id"],
         )
     )

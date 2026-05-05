@@ -5,51 +5,18 @@ from sqlalchemy import select, desc
 
 from app.db.session import get_db
 from app.db.models import AnalyticsEvent
+from app.core.security import get_current_user, require_role
+
+
+def _iso(dt) -> str:
+    if dt is None:
+        return ""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 router = APIRouter(prefix="/analytics", tags=["分析"])
 
-# Placeholder UUID for anonymous events
 _ANONYMOUS_USER_ID = "00000000-0000-0000-0000-000000000000"
 
-
-# --- Admin-only dependency ---
-
-async def require_admin(user=Depends(lambda: None)) -> dict:
-    """Require the current user to have the admin role."""
-    if user.get("role") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "ADMIN_REQUIRED", "message": "需要管理员权限", "details": None},
-        )
-    return user
-
-
-# We need to re-define this properly with actual auth:
-from app.core.security import get_current_user
-from app.db.models import User
-
-
-async def get_current_admin_user(
-    current_user: dict = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Verify current user has admin role, return user dict."""
-    if current_user.get("role") == "admin":
-        return current_user
-    # Double-check against DB in case token is stale
-    user_id = current_user.get("sub")
-    if user_id:
-        result = await db.execute(select(User).where(User.id == user_id))
-        db_user = result.scalar_one_or_none()
-        if db_user and db_user.role == "admin":
-            return current_user
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail={"code": "ADMIN_REQUIRED", "message": "需要管理员权限", "details": None},
-    )
-
-
-# --- Endpoints ---
 
 @router.post("/event")
 async def track_single_event(
@@ -69,13 +36,12 @@ async def track_single_event(
             detail={"code": "MISSING_EVENT", "message": "缺少 event_name 字段", "details": None},
         )
 
-    # Try to get user from JWT (optional — anonymous allowed)
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         from app.core.security import verify_access_token
         payload = verify_access_token(auth.split(" ", 1)[1])
         if payload:
-            user_id = str(payload.get("sub", _ANONYMOUS_USER_ID))
+            user_id = str(payload.get("user_id", _ANONYMOUS_USER_ID))
             tenant_id = str(payload.get("tenant_id", ""))
         else:
             user_id = _ANONYMOUS_USER_ID
@@ -112,13 +78,12 @@ async def track_batch_events(
             detail={"code": "INVALID_BATCH", "message": "events 必须是数组", "details": None},
         )
 
-    # Resolve user info once (optional auth)
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         from app.core.security import verify_access_token
         payload = verify_access_token(auth.split(" ", 1)[1])
         if payload:
-            user_id = str(payload.get("sub", _ANONYMOUS_USER_ID))
+            user_id = str(payload.get("user_id", _ANONYMOUS_USER_ID))
             tenant_id = str(payload.get("tenant_id", ""))
         else:
             user_id = _ANONYMOUS_USER_ID
@@ -149,15 +114,17 @@ async def track_batch_events(
 
 @router.get("/events")
 async def list_events(
-    admin: dict = Depends(get_current_admin_user),
+    admin: dict = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
     event: str | None = Query(None),
     user_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    """列出分析事件（仅管理员）。"""
-    query = select(AnalyticsEvent).order_by(desc(AnalyticsEvent.created_at))
+    """列出分析事件（仅管理员，按租户隔离）。"""
+    query = select(AnalyticsEvent).where(
+        AnalyticsEvent.tenant_id == admin["tenant_id"]
+    ).order_by(desc(AnalyticsEvent.created_at))
 
     if event:
         query = query.where(AnalyticsEvent.event_name == event)
@@ -176,7 +143,7 @@ async def list_events(
             "user_id": str(e.user_id),
             "event_name": e.event_name,
             "event_data": e.event_data,
-            "created_at": str(e.created_at),
+            "created_at": _iso(e.created_at),
         }
         for e in events
     ]

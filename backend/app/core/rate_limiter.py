@@ -52,7 +52,7 @@ async def check_rate_limit(key: str, max_requests: int, window: int) -> bool:
         pipe.zremrangebyscore(key, 0, cutoff)
         # Count remaining entries
         pipe.zcard(key)
-        pipe.execute()
+        await pipe.execute()
 
         # Re-count after cleanup
         count = await redis.zcard(key)

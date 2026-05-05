@@ -4,6 +4,7 @@ from pydantic import BaseModel, field_validator
 class QueryRequest(BaseModel):
     question: str
     datasource_id: str
+    history: list[dict] | None = None  # Previous messages for multi-turn context
 
     @field_validator("question")
     @classmethod

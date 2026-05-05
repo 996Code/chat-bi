@@ -88,7 +88,8 @@ def verify_email_verification_token(token: str) -> Optional[str]:
 
 # --- Auth dependency ---
 
-from fastapi import Request, HTTPException, status
+from fastapi import Request, HTTPException, status, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def get_current_user(request: Request) -> dict:
@@ -106,3 +107,16 @@ async def get_current_user(request: Request) -> dict:
             detail={"code": "INVALID_TOKEN", "message": "无效的访问令牌", "details": None},
         )
     return payload
+
+
+def require_role(*allowed_roles: str):
+    """Dependency factory: require the current user to have one of the specified roles."""
+    async def _check(user=Depends(get_current_user), db: AsyncSession = Depends(lambda: None)) -> dict:
+        role = user.get("role", "user")
+        if role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "FORBIDDEN", "message": f"需要 {', '.join(allowed_roles)} 权限", "details": None},
+            )
+        return user
+    return _check

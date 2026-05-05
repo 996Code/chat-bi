@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.db.models import DataSource
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_role
 from app.core.logging import get_logger
 from app.schemas.datasource import (
     DataSourceCreate,
@@ -178,6 +178,39 @@ async def health_check_datasource(
     await db.commit()
 
     return {"healthy": result["healthy"], "error": result["error"]}
+
+
+@router.post("/{ds_id}/toggle", response_model=DataSourceResponse)
+async def toggle_datasource(
+    ds_id: str,
+    admin: dict = Depends(require_role("admin")),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """切换数据源启用/禁用状态（仅管理员）。"""
+    from app.services.audit_service import log_action
+
+    service = DataSourceService(db, tenant_id=user["tenant_id"])
+    ds = await service.get_by_id(ds_id)
+    if not ds:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("NOT_FOUND", "数据源不存在"),
+        )
+
+    ds.is_active = not ds.is_active
+    await db.commit()
+    await db.refresh(ds)
+
+    action = "DATASOURCE_ENABLE" if ds.is_active else "DATASOURCE_DISABLE"
+    await log_action(
+        db, user["tenant_id"], user["user_id"],
+        action, "datasource", ds_id,
+        f"name={ds.name} is_active={ds.is_active}",
+    )
+    await db.commit()
+
+    return _to_response(ds)
 
 
 @router.get("/{ds_id}/schema", response_model=dict)

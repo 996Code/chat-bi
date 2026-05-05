@@ -38,6 +38,7 @@ class DataSourceUpdate(BaseModel):
     database_name: str | None = None
     username: str | None = None
     password: str | None = None
+    is_active: bool | None = None
     extra_params: dict | None = None
 
 

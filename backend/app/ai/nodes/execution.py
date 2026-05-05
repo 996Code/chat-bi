@@ -27,7 +27,6 @@ def validate_sql(sql: str, dialect: str = "mysql") -> tuple[bool, str]:
     if not isinstance(parsed, sqlglot.exp.Select):
         return False, "仅支持 SELECT 查询"
 
-    # 检查是否包含危险操作（使用单词边界，避免 created_at 误匹配 CREATE）
     dangerous_keywords = ["DROP", "DELETE", "TRUNCATE", "ALTER", "CREATE", "INSERT", "UPDATE"]
     pattern = re.compile(r'\b(' + '|'.join(dangerous_keywords) + r')\b', re.IGNORECASE)
     match = pattern.search(sql)
@@ -37,7 +36,7 @@ def validate_sql(sql: str, dialect: str = "mysql") -> tuple[bool, str]:
     return True, ""
 
 
-async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql") -> dict[str, Any]:
+async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql", tenant_id: str | None = None) -> dict[str, Any]:
     """执行 SQL 并返回结果。带 30 秒超时保护。"""
     valid, error = validate_sql(sql, dialect)
     if not valid:
@@ -47,12 +46,15 @@ async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql") -> d
         engine = await pool_manager.get_pool_by_id(datasource_id)
         if not engine:
             async for db in get_db():
-                result = await db.execute(
-                    select(DataSource).where(DataSource.id == datasource_id)
-                )
+                query = select(DataSource).where(DataSource.id == datasource_id)
+                if tenant_id:
+                    query = query.where(DataSource.tenant_id == tenant_id)
+                result = await db.execute(query)
                 ds = result.scalar_one_or_none()
                 if not ds:
                     return {"success": False, "error": "数据源不存在"}
+                if not ds.is_active:
+                    return {"success": False, "error": "数据源已禁用"}
                 engine = await pool_manager.get_pool(ds)
                 break
             if not engine:
@@ -62,7 +64,6 @@ async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql") -> d
 
         async with asyncio.timeout(settings.sql_execution_timeout):
             async with engine.connect() as conn:
-                # MySQL uses SET SESSION TRANSACTION READ ONLY, PostgreSQL uses SET default_transaction_read_only
                 try:
                     await conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
                 except Exception:
@@ -73,13 +74,11 @@ async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql") -> d
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
-        # Truncate to MAX_ROWS
         truncated = False
         if len(rows) > settings.query_max_rows:
             rows = rows[:settings.query_max_rows]
             truncated = True
 
-        # Convert non-serializable types
         for row in rows:
             for k, v in row.items():
                 if isinstance(v, (datetime.datetime, datetime.date)):

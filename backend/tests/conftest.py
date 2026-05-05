@@ -20,6 +20,12 @@ from app.db.session import engine, async_session_factory
 @pytest.fixture(autouse=True)
 def setup_test_db():
     """Create tables before each test, drop after. Reset global state."""
+    # Reset rate limiter and login lock state BEFORE each test
+    from app.core.rate_limiter import _rate_limits
+    _rate_limits.clear()
+    from app.services.login_lock_service import _fallback
+    _fallback.clear()
+
     async def _setup():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -31,12 +37,35 @@ def setup_test_db():
     asyncio.run(_setup())
     yield
     # Reset rate limiter state between tests
-    from app.core.rate_limiter import _rate_limits
     _rate_limits.clear()
-    # Clear login lock fallback state
-    from app.services.login_lock_service import _fallback
     _fallback.clear()
     # Clear dependency overrides (in case test crashed before cleanup)
     from app.main import app
     app.dependency_overrides.clear()
     asyncio.run(_teardown())
+
+
+@pytest_asyncio.fixture
+async def client():
+    """Async HTTP client for API tests."""
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def auth_header(client):
+    """Register a test user and return auth headers."""
+    BASE = "/api/v1"
+    await client.post(f"{BASE}/auth/register", json={
+        "email": "admin@test.com",
+        "password": "Test1234!",
+    })
+    resp = await client.post(f"{BASE}/auth/login", json={
+        "email": "admin@test.com",
+        "password": "Test1234!",
+    })
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}

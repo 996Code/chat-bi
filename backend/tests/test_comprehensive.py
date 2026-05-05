@@ -1,4 +1,4 @@
-"""Comprehensive test suite covering RAG schema, analytics, feedback, chart inference,
+"""Comprehensive test suite covering schema selection, analytics, feedback, chart inference,
 SQL validation, connection pool, QueryResponse schema, and datasource schema edges."""
 import json
 import uuid
@@ -12,13 +12,15 @@ from app.db.session import async_session_factory, get_db
 from app.schemas.query import QueryResponse
 from app.ai.chart_type import infer_chart_type
 from app.services.connection_pool import pool_manager
-from app.services.rag_schema_service import (
-    extract_keywords,
-    find_relevant_tables,
-    similarity,
-    get_rag_schema,
-    format_schema_context,
-    STOP_WORDS,
+from app.ai.nodes.schema_selection import (
+    _build_schema_context,
+    schema_selection_node,
+)
+from app.ai.nodes.generation import (
+    _validate_and_fix_tables,
+    _validate_and_fix_columns,
+    _extract_sql_tables,
+    _clean_sql,
 )
 from app.services.analytics_service import (
     track_event,
@@ -122,93 +124,107 @@ def _create_metadata_with_tables(table_defs: list[dict]) -> dict:
 
 
 # =====================================================================
-# 1. RAG Schema Service Edge Cases
+# 1. Schema Selection & SQL Validation
 # =====================================================================
 
-class TestRagSchemaEdgeCases:
+class TestSchemaSelectionAndValidation:
 
-    def test_empty_metadata_returns_empty_tables(self):
-        """Metadata with no models should return empty results."""
-        metadata = {"models": []}
-        result = find_relevant_tables("anything", metadata)
-        assert result == []
+    @pytest.mark.asyncio
+    async def test_schema_selection_empty_tenant_id(self):
+        """Schema selection returns empty when tenant_id is missing."""
+        result = await schema_selection_node({
+            "question": "test",
+            "datasource_id": "some-ds-id",
+            "tenant_id": "",
+        })
+        assert result["schema_context"] == ""
+        assert result["raw_metadata"] == ""
 
-    def test_metadata_with_none_values_in_columns(self):
-        """Columns with None values should not crash the scorer."""
+    @pytest.mark.asyncio
+    async def test_schema_selection_empty_datasource_id(self):
+        """Schema selection returns empty when datasource_id is missing."""
+        result = await schema_selection_node({
+            "question": "test",
+            "datasource_id": "",
+            "tenant_id": "some-tenant-id",
+        })
+        assert result["schema_context"] == ""
+        assert result["raw_metadata"] == ""
+
+    def test_build_schema_context_empty_tables(self):
+        """Building context with no tables returns header only."""
+        result = _build_schema_context([], {}, {"models": [], "relationships": []})
+        assert "可用的数据库表结构" in result
+
+    def test_build_schema_context_with_columns(self):
+        """Building context includes selected columns."""
         metadata = {
-            "models": [{
-                "name": "sales",
-                "description": None,
-                "columns": [
-                    {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": None},
-                ],
-                "relationships": None,
-            }]
+            "models": [
+                {
+                    "name": "t_orders",
+                    "description": "订单表",
+                    "columns": [
+                        {"name": "id", "type": "INT", "primary": True, "nullable": False},
+                        {"name": "amount", "type": "DECIMAL", "primary": False, "nullable": True, "comment": "金额"},
+                    ],
+                }
+            ],
+            "relationships": [],
         }
-        result = find_relevant_tables("sales", metadata)
-        assert len(result) >= 1
-        assert result[0]["name"] == "sales"
+        result = _build_schema_context(["t_orders"], {"t_orders": ["id", "amount"]}, metadata)
+        assert "t_orders" in result
+        assert "id" in result
+        assert "amount" in result
 
-    def test_multiple_tables_same_score_returns_both(self):
-        """When two tables score equally, both should be returned."""
-        metadata = _create_metadata_with_tables([
-            {"name": "sales", "description": "销售数据", "columns": [
-                {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
-            ]},
-            {"name": "orders", "description": "销售订单", "columns": [
-                {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
-            ]},
-        ])
-        # Query "销售" will match description of both tables equally
-        results = find_relevant_tables("销售", metadata, max_tables=5)
-        # Both tables have "销售" in their description; both should appear
-        names = [r["name"] for r in results]
-        assert "sales" in names
-        assert "orders" in names
+    def test_extract_sql_tables_basic(self):
+        """Extract table names from SQL FROM/JOIN clauses."""
+        sql = "SELECT a.id FROM t_orders a JOIN t_users u ON a.user_id = u.id"
+        tables = _extract_sql_tables(sql)
+        assert "t_orders" in tables
+        assert "t_users" in tables
 
-    def test_max_tables_zero_boundary(self):
-        """max_tables=0 should return no tables."""
-        metadata = _create_metadata_with_tables([
-            {"name": "sales", "description": "销售", "columns": [
-                {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
-            ]},
-        ])
-        result = find_relevant_tables("销售", metadata, max_tables=0)
-        assert result == []
+    def test_extract_sql_tables_subquery(self):
+        """Extract tables from SQL with subquery."""
+        sql = "SELECT * FROM t_orders WHERE user_id IN (SELECT id FROM t_users)"
+        tables = _extract_sql_tables(sql)
+        assert "t_orders" in tables
+        assert "t_users" in tables
 
-    def test_keywords_only_chinese_stop_words(self):
-        """A question with only Chinese stop words should return no meaningful keywords."""
-        question = "的是了在我和"  # All stop words
-        kw = extract_keywords(question)
-        # After stop word removal, should be empty or only non-Chinese single chars
-        meaningful = [w for w in kw if len(w) > 1]
-        assert meaningful == [], f"Expected no meaningful keywords from stop words only, got {meaningful}"
+    def test_clean_sql_markdown(self):
+        """Clean SQL from markdown code blocks."""
+        raw = "```sql\nSELECT * FROM t_orders\n```"
+        assert _clean_sql(raw) == "SELECT * FROM t_orders"
 
-    def test_similarity_between_table_names(self):
-        """Similar table names should score via SequenceMatcher."""
-        sim1 = similarity("users", "users")
-        assert sim1 == 1.0
+    def test_clean_sql_with_explanation(self):
+        """Clean SQL strips trailing explanation text."""
+        raw = "SELECT * FROM t_orders; -- this gets all orders"
+        result = _clean_sql(raw)
+        assert result.startswith("SELECT")
 
-        sim2 = similarity("users", "user")
-        assert sim2 > 0.5  # Very similar
+    def test_validate_fix_tables_correct(self):
+        """Valid table names pass validation unchanged."""
+        schema = "表名: t_orders\n可用表名: t_orders, t_users"
+        sql = "SELECT * FROM t_orders"
+        result = _validate_and_fix_tables(sql, schema)
+        assert "t_orders" in result
 
-        sim3 = similarity("users", "orders")
-        assert 0 < sim3 < 1.0  # Different but not zero
-
-    def test_rag_schema_empty_question(self):
-        """Empty question should still return tables if metadata has content."""
-        metadata_json = json.dumps(_create_metadata_with_tables([
-            {"name": "sales", "description": "销售", "columns": [
-                {"name": "id", "type": "int", "nullable": False, "primary": True, "comment": ""},
-            ]},
-        ]))
-        result = get_rag_schema("", metadata_json)
-        # Should return formatted context (may be empty if no keywords match)
-        assert isinstance(result, str)
-
-    def test_format_schema_context_empty_tables(self):
-        """Empty table list should produce empty context string."""
-        assert format_schema_context([]) == ""
+    def test_validate_fix_columns_hallucination(self):
+        """Hallucinated created_at column gets replaced with actual time field."""
+        import json as _json
+        sql = "SELECT * FROM feeding_records WHERE created_at > NOW()"
+        schema = "表名: feeding_records\n  - timestamp (DATETIME) NOT NULL\n可用表名: feeding_records"
+        raw_metadata = _json.dumps({
+            "models": [{
+                "name": "feeding_records",
+                "columns": [
+                    {"name": "id", "type": "INT"},
+                    {"name": "timestamp", "type": "DATETIME"},
+                ],
+            }]
+        })
+        result = _validate_and_fix_columns(sql, schema, raw_metadata)
+        assert "timestamp" in result
+        assert "created_at" not in result
 
 
 # =====================================================================

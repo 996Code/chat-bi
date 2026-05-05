@@ -45,12 +45,6 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DataModelView.vue'),
     meta: { requiresAuth: true },
   },
-  {
-    path: '/query-history',
-    name: 'QueryHistory',
-    component: () => import('@/views/QueryHistory.vue'),
-    meta: { requiresAuth: true },
-  },
 ]
 
 const router = createRouter({

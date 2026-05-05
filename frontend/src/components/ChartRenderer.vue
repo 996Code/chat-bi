@@ -17,7 +17,7 @@
       <div class="metric-label">{{ columns[0] }}</div>
     </div>
     <!-- ECharts 图表 -->
-    <div v-else-if="chartType !== 'table'" ref="chartRef" class="echarts-wrapper"></div>
+    <div v-else-if="chartType !== 'table'" ref="chartRef" class="echarts-wrapper" :style="{ height: chartHeight + 'px' }"></div>
     <!-- 表格 -->
     <el-table v-else :data="rows" border size="small" max-height="400">
       <el-table-column v-for="col in columns" :key="col" :prop="col" :label="col" />
@@ -48,6 +48,14 @@ watch(() => props.chartType, (val) => {
 const chartRef = ref<HTMLElement>()
 let chart: echarts.ECharts | null = null
 
+const chartHeight = computed(() => {
+  const ct = currentType.value
+  const n = props.rows.length
+  if (ct === 'pie') return Math.max(300, Math.min(500, n * 30 + 200))
+  if (ct === 'bar' || ct === 'line') return Math.max(280, Math.min(600, n * 28 + 100))
+  return 320
+})
+
 const metricValue = computed(() => {
   if (props.rows.length > 0 && props.columns.length > 0) {
     const val = props.rows[0][props.columns[0]]
@@ -68,7 +76,7 @@ function getOption(): echarts.EChartsOption {
       xAxis: { type: 'category', data: rows.map(r => String(r[xCol])), axisLabel: { rotate: 30 } },
       yAxis: { type: 'value' },
       series: [{ name: yCol, type: 'line', data: rows.map(r => Number(r[yCol] ?? 0)), smooth: true }],
-      grid: { left: 50, right: 20, bottom: 40, top: 20 },
+      grid: { left: 60, right: 20, bottom: 50, top: 30, containLabel: true },
     }
   }
 
@@ -80,7 +88,7 @@ function getOption(): echarts.EChartsOption {
       xAxis: { type: 'category', data: rows.map(r => String(r[xCol])), axisLabel: { rotate: 30 } },
       yAxis: { type: 'value' },
       series: [{ name: yCol, type: 'bar', data: rows.map(r => Number(r[yCol] ?? 0)) }],
-      grid: { left: 50, right: 20, bottom: 40, top: 20 },
+      grid: { left: 60, right: 20, bottom: 50, top: 30, containLabel: true },
     }
   }
 
@@ -91,10 +99,11 @@ function getOption(): echarts.EChartsOption {
       tooltip: { trigger: 'item' },
       series: [{
         type: 'pie',
-        radius: ['40%', '70%'],
+        radius: ['35%', '65%'],
+        center: ['50%', '50%'],
         data: rows.map(r => ({ name: String(r[nameCol]), value: Number(r[valCol] ?? 0) })),
+        label: { formatter: '{b}: {d}%' },
       }],
-      grid: { left: 20, right: 20, top: 20, bottom: 20 },
     }
   }
 
@@ -109,7 +118,7 @@ function getOption(): echarts.EChartsOption {
         type: 'scatter',
         data: rows.map(r => [Number(r[xCol] ?? 0), Number(r[yCol] ?? 0)]),
       }],
-      grid: { left: 50, right: 20, bottom: 40, top: 20 },
+      grid: { left: 60, right: 20, bottom: 50, top: 30, containLabel: true },
     }
   }
 
@@ -156,6 +165,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
   chart?.dispose()
 })
+
+function getChartDataURL(): string | null {
+  if (!chart) return null
+  return chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' })
+}
+
+defineExpose({ getChartDataURL })
 </script>
 
 <style scoped>
@@ -190,6 +206,5 @@ onBeforeUnmount(() => {
 
 .echarts-wrapper {
   width: 100%;
-  height: 320px;
 }
 </style>

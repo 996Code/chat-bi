@@ -11,13 +11,9 @@
         </el-select>
         <el-button text @click="router.push('/datasources')">管理数据源</el-button>
         <el-button text @click="router.push('/data-models')">数据模型</el-button>
-        <el-button text @click="router.push('/query-history')">查询历史</el-button>
-        <el-button text @click="showDict = !showDict">
-          {{ showDict ? '收起' : '数据字典' }}
-        </el-button>
       </div>
       <div class="header-right">
-        <el-button text @click="showPipelineDialog = true">
+        <el-button text @click="pipelineTraceSteps = []; showPipelineDialog = true">
           <el-icon><QuestionFilled /></el-icon> 查询流程
         </el-button>
         <span class="user-email">{{ authStore.user?.email }}</span>
@@ -74,10 +70,8 @@
               </template>
             </el-empty>
             <div class="suggestions">
-              <el-button text @click="askSuggestion('各VIP等级的用户数量')">各VIP等级的用户数量</el-button>
-              <el-button text @click="askSuggestion('订单总金额是多少')">订单总金额是多少</el-button>
-              <el-button text @click="askSuggestion('各城市的已发货订单数量')">各城市已发货订单数量</el-button>
-              <el-button text @click="askSuggestion('哪个商品分类卖得最好')">哪个商品分类卖得最好</el-button>
+              <el-button v-for="q in suggestedQuestions" :key="q" text @click="askSuggestion(q)">{{ q }}</el-button>
+              <el-button v-if="suggestedQuestions.length === 0" text @click="askSuggestion('各VIP等级的用户数量')">各VIP等级的用户数量</el-button>
             </div>
           </div>
 
@@ -89,7 +83,7 @@
               <div v-if="msg.pipelineSteps && msg.pipelineSteps.length > 0" class="pipeline">
                 <div class="pipeline-header-row">
                   <span class="pipeline-title">查询流程</span>
-                  <el-button size="small" text @click="showPipelineDialog = true">
+                  <el-button size="small" text @click="pipelineTraceSteps = msg.pipelineSteps || []; showPipelineDialog = true">
                     <el-icon><QuestionFilled /></el-icon> 完整流程
                   </el-button>
                 </div>
@@ -122,24 +116,15 @@
               <!-- Data table / chart -->
               <div v-if="msg.rows && msg.rows.length > 0" class="data-table">
                 <ChartRenderer
+                  :ref="(el: any) => { if (el) chartRendererMap[msg.id] = el }"
                   :chart-type="msg.chart_type || 'table'"
                   :columns="msg.columns || []"
                   :rows="msg.rows"
                 />
                 <div class="table-footer">
-                  共 {{ msg.row_count }} 条结果
-                  <span v-if="msg.execution_time_ms">（耗时 {{ msg.execution_time_ms }}ms）</span>
-                  <span v-if="msg.traceId" class="trace-id">trace: {{ msg.traceId }}</span>
-                </div>
-                <div class="query-actions">
-                  <el-button size="small" text @click="saveQuery(msg)">
-                    <el-icon><Star /></el-icon> 保存查询
-                  </el-button>
-                  <el-button size="small" text @click="submitFeedback(msg, 'up')">
-                    <el-icon><CircleCheckFilled /></el-icon> 有用
-                  </el-button>
-                  <el-button size="small" text @click="submitFeedback(msg, 'down')">
-                    <el-icon><CircleCloseFilled /></el-icon> 不准
+                  <span>共 {{ msg.row_count }} 条结果<span v-if="msg.execution_time_ms">（耗时 {{ msg.execution_time_ms }}ms）</span></span>
+                  <el-button size="small" text class="export-btn" @click="exportExcel(msg)">
+                    <el-icon><Download /></el-icon> 导出 Excel
                   </el-button>
                 </div>
               </div>
@@ -168,20 +153,90 @@
         </div>
       </div>
 
-      <!-- Data Dictionary Sidebar -->
-      <DataDictionary
-        v-if="showDict"
-        :datasource-id="chatStore.currentDatasourceId"
-        @close="showDict = false"
-      />
-    </div>
+          </div>
 
     <!-- First Use Guide -->
     <FirstUseGuide />
 
-    <!-- Pipeline Flow Dialog -->
-    <el-dialog v-model="showPipelineDialog" title="AI 查询流程" width="720px">
-      <PipelineVisual ref="pipelineRef" :steps="[]" />
+    <!-- Pipeline Dialog -->
+    <el-dialog v-model="showPipelineDialog" :title="pipelineTraceSteps.length > 0 ? '查询执行记录' : '查询流程说明'" width="720px">
+      <!-- Per-query trace (from message button) -->
+      <div v-if="pipelineTraceSteps.length > 0" class="trace-table">
+        <div class="trace-header">
+          <span>本次查询的完整执行记录</span>
+        </div>
+        <el-table :data="pipelineTraceSteps" stripe size="small" style="width: 100%">
+          <el-table-column label="#" width="50" align="center">
+            <template #default="{ $index }">{{ $index + 1 }}</template>
+          </el-table-column>
+          <el-table-column label="步骤" width="140" prop="label" />
+          <el-table-column label="状态" width="80" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
+              <el-tag v-else-if="row.status === 'failed'" type="danger" size="small">失败</el-tag>
+              <el-tag v-else type="info" size="small">进行中</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="执行详情" min-width="300">
+            <template #default="{ row }">
+              <div v-if="row.type === 'sql' && row.detail" class="trace-sql">
+                <pre>{{ row.detail }}</pre>
+              </div>
+              <span v-else>{{ row.detail || '-' }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <!-- Static flow description (from header button) -->
+      <div v-else class="flow-desc">
+        <div class="flow-step-list">
+          <div class="flow-step-item">
+            <div class="flow-step-num">1</div>
+            <div class="flow-step-body">
+              <div class="flow-step-title">意图识别</div>
+              <div class="flow-step-text">判断用户问题是否为数据查询意图</div>
+            </div>
+          </div>
+          <div class="flow-step-item">
+            <div class="flow-step-num">2</div>
+            <div class="flow-step-body">
+              <div class="flow-step-title">Schema 选择</div>
+              <div class="flow-step-text">LLM 两步选择：先选相关表，再选相关列，构建精简 Schema 上下文</div>
+            </div>
+          </div>
+          <div class="flow-step-item">
+            <div class="flow-step-num">3</div>
+            <div class="flow-step-body">
+              <div class="flow-step-title">SQL 生成</div>
+              <div class="flow-step-text">基于 Schema 上下文和用户问题，生成 SQL 查询语句</div>
+            </div>
+          </div>
+          <div class="flow-step-item">
+            <div class="flow-step-num">4</div>
+            <div class="flow-step-body">
+              <div class="flow-step-title">执行查询</div>
+              <div class="flow-step-text">在数据源上执行生成的 SQL，返回查询结果</div>
+            </div>
+          </div>
+          <div class="flow-step-item">
+            <div class="flow-step-num">5</div>
+            <div class="flow-step-body">
+              <div class="flow-step-title">SQL 自愈（失败时）</div>
+              <div class="flow-step-text">若执行失败，LLM 分析错误原因并修正 SQL，最多重试 2 轮</div>
+            </div>
+          </div>
+          <div class="flow-step-item">
+            <div class="flow-step-num">6</div>
+            <div class="flow-step-body">
+              <div class="flow-step-title">图表推断</div>
+              <div class="flow-step-text">根据返回的列名和数据特征，推荐最佳可视化图表类型</div>
+            </div>
+          </div>
+        </div>
+        <div class="flow-note">
+          点击查询结果卡片上的「完整流程」按钮，可查看该次查询的实际执行记录。
+        </div>
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -192,13 +247,11 @@ import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chatStore'
 import { useDatasourceStore } from '@/stores/datasourceStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ChatDotRound, ChatLineSquare, Loading, CircleCheckFilled, CircleCloseFilled, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Star } from '@element-plus/icons-vue'
+import { ChatDotRound, ChatLineSquare, Loading, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Download } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import ChartRenderer from '@/components/ChartRenderer.vue'
-import DataDictionary from '@/components/DataDictionary.vue'
 import FirstUseGuide from '@/components/FirstUseGuide.vue'
-import PipelineVisual from '@/components/PipelineVisual.vue'
 
 const router = useRouter()
 const chatStore = useChatStore()
@@ -207,9 +260,11 @@ const authStore = useAuthStore()
 
 const inputText = ref('')
 const messagesRef = ref<HTMLElement>()
-const showDict = ref(false)
 const showConvSidebar = ref(true)
 const showPipelineDialog = ref(false)
+const pipelineTraceSteps = ref<any[]>([])
+const suggestedQuestions = ref<string[]>([])
+const chartRendererMap = ref<Record<string, any>>({})
 
 async function handleSend() {
   const text = inputText.value.trim()
@@ -236,33 +291,72 @@ function copySql(sql: string) {
   ElMessage.success('SQL 已复制')
 }
 
-async function submitFeedback(msg: any, rating: 'up' | 'down') {
-  try {
-    await api.post('/feedback', {
-      query_id: msg.id,
-      rating,
-    })
-    ElMessage.success(rating === 'up' ? '感谢反馈！' : '已记录，我们会持续改进')
-  } catch {
-    // Don't block UX on feedback failure
-  }
-}
+async function exportExcel(msg: any) {
+  const ExcelJS = await import('exceljs')
+  const columns: string[] = msg.columns || []
+  const rows: Record<string, any>[] = msg.rows || []
 
-async function saveQuery(msg: any) {
-  try {
-    const userMsg = chatStore.messages.find((m: any) => m.role === 'user' && m.id && chatStore.messages.indexOf(m) === chatStore.messages.indexOf(msg) - 1)
-    const question = userMsg?.content || '保存的查询'
-    await api.post('/queries', {
-      name: question.slice(0, 50),
-      query_text: question,
-      generated_sql: msg.sql || '',
-      datasource_id: chatStore.currentDatasourceId,
-    })
-    ElMessage.success('查询已保存')
-    await chatStore.loadConversations()
-  } catch {
-    ElMessage.error('保存失败，请稍后重试')
+  const workbook = new ExcelJS.Workbook()
+  const ws1 = workbook.addWorksheet('数据')
+
+  // Header row with styling
+  const headerRow = ws1.addRow(columns)
+  headerRow.eachCell((cell: any) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } }
+    cell.alignment = { horizontal: 'center' }
+    cell.border = {
+      top: { style: 'thin' }, bottom: { style: 'thin' },
+      left: { style: 'thin' }, right: { style: 'thin' },
+    }
+  })
+
+  // Data rows
+  for (const r of rows) {
+    ws1.addRow(columns.map((c: string) => r[c] ?? ''))
   }
+
+  // Auto-fit column widths
+  ws1.columns.forEach((col: any, i: number) => {
+    const maxLen = Math.max(
+      columns[i].length * 2,
+      ...rows.slice(0, 50).map((r: Record<string, any>) => String(r[columns[i]] ?? '').length)
+    )
+    col.width = Math.min(Math.max(maxLen + 2, 8), 40)
+  })
+
+  // Add chart screenshot as second sheet if available
+  const chartType = msg.chart_type || 'table'
+  if (chartType !== 'table' && chartType !== 'metric') {
+    await nextTick()
+    const renderer = chartRendererMap.value[msg.id]
+    const dataURL = renderer?.getChartDataURL?.()
+    if (dataURL) {
+      const ws2 = workbook.addWorksheet('图表')
+      const base64 = dataURL.split(',')[1]
+      const imageId = workbook.addImage({ base64, extension: 'png' })
+      // Use actual chart dimensions from the DOM
+      const chartEl = renderer?.$el?.querySelector?.('.echarts-wrapper')
+      const width = chartEl?.offsetWidth || 600
+      const height = chartEl?.offsetHeight || 320
+      ws2.addImage(imageId, {
+        tl: { col: 0, row: 0 },
+        ext: { width: width * 1.2, height: height * 1.2 },
+      })
+    }
+  }
+
+  // Download
+  const buffer = await workbook.xlsx.writeBuffer()
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(blob)
+  const now = new Date()
+  const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`
+  link.download = `chat-bi导出_${ts}.xlsx`
+  link.click()
+  URL.revokeObjectURL(link.href)
+  ElMessage.success('导出成功')
 }
 
 function handleLogout() {
@@ -272,6 +366,21 @@ function handleLogout() {
 
 function onDatasourceChange() {
   chatStore.clearMessages()
+  loadSuggestedQuestions()
+}
+
+async function loadSuggestedQuestions() {
+  if (!chatStore.currentDatasourceId) {
+    suggestedQuestions.value = []
+    return
+  }
+  try {
+    const res = await api.get(`/data-models/${chatStore.currentDatasourceId}`)
+    const config = res.data.config
+    suggestedQuestions.value = config.suggested_questions || []
+  } catch {
+    suggestedQuestions.value = []
+  }
 }
 
 function handleNewConversation() {
@@ -319,8 +428,13 @@ onMounted(async () => {
   if (datasourceStore.datasources.length > 0 && !chatStore.currentDatasourceId) {
     chatStore.currentDatasourceId = datasourceStore.datasources[0].id
   }
-  // Load conversation list
+  // Load conversation list and suggested questions
   await chatStore.loadConversations()
+  await loadSuggestedQuestions()
+  // Auto-scroll on SSE updates
+  chatStore.onMessageUpdate = () => {
+    nextTick(() => scrollToBottom())
+  }
 })
 </script>
 
@@ -650,8 +764,13 @@ onMounted(async () => {
   color: #909399;
   font-size: 12px;
   display: flex;
-  gap: 12px;
+  justify-content: space-between;
   align-items: center;
+}
+
+.export-btn {
+  color: #409eff;
+  font-size: 12px;
 }
 
 .trace-id {
@@ -680,9 +799,87 @@ onMounted(async () => {
   text-align: center;
 }
 
-.query-actions {
+/* Pipeline trace table */
+.trace-table {
+  padding: 8px 0;
+}
+
+.trace-header {
+  margin-bottom: 12px;
+  font-size: 14px;
+  color: #606266;
+}
+
+.trace-sql pre {
+  margin: 0;
+  padding: 6px 10px;
+  background: #1e1e1e;
+  color: #a5d6ff;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.trace-empty {
+  padding: 40px 0;
+}
+
+/* Static flow description */
+.flow-step-list {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.flow-step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.flow-step-num {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #6366f1;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.flow-step-body {
+  flex: 1;
+  padding-top: 4px;
+}
+
+.flow-step-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.flow-step-text {
+  font-size: 13px;
+  color: #909399;
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+.flow-note {
+  margin-top: 20px;
+  padding: 10px 14px;
+  background: #f0f5ff;
+  border-radius: 8px;
+  border: 1px solid #d0e0ff;
+  font-size: 13px;
+  color: #409eff;
 }
 </style>
