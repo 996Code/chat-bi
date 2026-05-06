@@ -1,8 +1,11 @@
 import axios from 'axios'
 import type { AxiosInstance } from 'axios'
 
+const API_PREFIX = import.meta.env.VITE_API_PREFIX || '/chat-bi/api/v1'
+const BASE_PATH = import.meta.env.VITE_BASE_PATH || '/chat-bi/'
+
 const api: AxiosInstance = axios.create({
-  baseURL: '/chat-bi/api/v1',
+  baseURL: API_PREFIX,
   timeout: 60000,
   headers: {
     'Content-Type': 'application/json',
@@ -23,25 +26,23 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Try refresh token
       const refreshToken = localStorage.getItem('refresh_token')
       if (refreshToken) {
         return api.post('/auth/refresh', { refresh_token: refreshToken })
           .then((res) => {
             localStorage.setItem('access_token', res.data.access_token)
             localStorage.setItem('refresh_token', res.data.refresh_token)
-            // Retry original request
             error.config.headers.Authorization = `Bearer ${res.data.access_token}`
             return api.request(error.config)
           })
           .catch(() => {
             localStorage.removeItem('access_token')
             localStorage.removeItem('refresh_token')
-            window.location.href = '/chat-bi/login'
+            window.location.href = `${BASE_PATH}login`
             return Promise.reject(error)
           })
       } else {
-        window.location.href = '/chat-bi/login'
+        window.location.href = `${BASE_PATH}login`
       }
     }
     return Promise.reject(error)

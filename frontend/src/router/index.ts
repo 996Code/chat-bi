@@ -66,7 +66,7 @@ const routes: RouteRecordRaw[] = [
 ]
 
 const router = createRouter({
-  history: createWebHistory('/chat-bi/'),
+  history: createWebHistory(import.meta.env.VITE_BASE_PATH || '/chat-bi/'),
   routes,
 })
 
