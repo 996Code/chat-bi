@@ -1,6 +1,7 @@
 """Seed script: populate MySQL with tenants, users, datasources, and business data."""
 import asyncio
 import json
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -11,6 +12,13 @@ from app.db.models import (
     Tenant, User, DataSource, MetadataConfig,
     AuditLog, SavedQuery, Feedback, AnalyticsEvent, Conversation,
 )
+
+# Database connection info from environment variables
+SEED_DB_HOST = os.environ.get('SEED_DB_HOST', '192.168.99.22')
+SEED_DB_PORT = int(os.environ.get('SEED_DB_PORT', '3306'))
+SEED_DB_USER = os.environ.get('SEED_DB_USER', 'root')
+SEED_DB_PASS = os.environ.get('SEED_DB_PASS', '52033384')
+SEED_DB_NAMES = os.environ.get('SEED_DB_NAMES', 'ecommerce,chatbi').split(',')
 
 TENANT_1 = uuid.UUID('11111111-1111-1111-1111-111111111111')
 TENANT_2 = uuid.UUID('22222222-2222-2222-2222-222222222222')
@@ -61,24 +69,24 @@ async def seed():
             session.add(u)
         await session.commit()
 
-        enc_user = encrypt_value('root')
-        enc_pass = encrypt_value('yjt_mysql')
+        enc_user = encrypt_value(SEED_DB_USER)
+        enc_pass = encrypt_value(SEED_DB_PASS)
         datasources = [
-            DataSource(id=DS_1, tenant_id=TENANT_1, name='婴儿护理平台',
-                       db_type='mysql', host='192.168.3.110', port=3306,
-                       database_name='baby_care_platform', username_encrypted=enc_user,
+            DataSource(id=DS_1, tenant_id=TENANT_1, name='电商业务库',
+                       db_type='mysql', host=SEED_DB_HOST, port=SEED_DB_PORT,
+                       database_name='ecommerce', username_encrypted=enc_user,
                        password_encrypted=enc_pass, is_active=True, last_health_check=NOW),
-            DataSource(id=DS_2, tenant_id=TENANT_1, name='Yudao 业务库',
-                       db_type='mysql', host='192.168.3.110', port=3306,
-                       database_name='yudao-996', username_encrypted=enc_user,
+            DataSource(id=DS_2, tenant_id=TENANT_1, name='ChatBI 自身库',
+                       db_type='mysql', host=SEED_DB_HOST, port=SEED_DB_PORT,
+                       database_name='chatbi', username_encrypted=enc_user,
                        password_encrypted=enc_pass, is_active=True, last_health_check=NOW),
-            DataSource(id=DS_3, tenant_id=TENANT_1, name='ChatBI 自身库',
-                       db_type='mysql', host='192.168.3.110', port=3306,
+            DataSource(id=DS_3, tenant_id=TENANT_1, name='ChatBI 元数据',
+                       db_type='mysql', host=SEED_DB_HOST, port=SEED_DB_PORT,
                        database_name='chatbi', username_encrypted=enc_user,
                        password_encrypted=enc_pass, is_active=True, last_health_check=NOW),
             DataSource(id=DS_4, tenant_id=TENANT_2, name='Demo 数据源',
-                       db_type='mysql', host='192.168.3.110', port=3306,
-                       database_name='chatbi', username_encrypted=enc_user,
+                       db_type='mysql', host=SEED_DB_HOST, port=SEED_DB_PORT,
+                       database_name='ecommerce', username_encrypted=enc_user,
                        password_encrypted=enc_pass, is_active=True, last_health_check=NOW),
         ]
         for ds in datasources:

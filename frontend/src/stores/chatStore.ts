@@ -202,8 +202,8 @@ export const useChatStore = defineStore('chat', () => {
     switch (eventType) {
       case 'intent':
         msg.pipelineSteps = [
-          { type: 'intent', label: `意图识别: ${data.intent === 'DataQuery' ? '数据查询' : '其他'}`, status: 'done', detail: data.detail },
-          { type: 'sql', label: 'Schema 选择', status: 'running' },
+          { type: 'intent', label: `意图识别: ${data.intent === 'DataQuery' ? '数据查询' : '其他'}`, status: 'done', detail: data.detail, duration_ms: data.duration_ms },
+          { type: 'semantics', label: 'Schema 选择', status: 'running' },
         ]
         if (data.intent !== 'DataQuery') {
           msg.content = data.error || '请提出数据查询相关的问题'
@@ -212,25 +212,35 @@ export const useChatStore = defineStore('chat', () => {
         break
 
       case 'semantics':
-        // Schema selection done (LLM two-step: table selection + column selection)
-        const schemaStep = msg.pipelineSteps?.find(s => s.type === 'sql' && s.status === 'running')
+        const schemaStep = msg.pipelineSteps?.find(s => s.type === 'semantics' && s.status === 'running')
         if (schemaStep) {
           schemaStep.label = 'Schema 选择'
           schemaStep.status = 'done'
           schemaStep.detail = data.detail
+          schemaStep.duration_ms = data.duration_ms
+          schemaStep.tables = data.tables
+          schemaStep.columns = data.columns
         }
         msg.pipelineSteps?.push({ type: 'sql', label: 'SQL 生成', status: 'running' })
         break
 
       case 'sql':
         msg.sql = data.sql
-        // Mark SQL generation done, start execution
         const sqlGenStep = msg.pipelineSteps?.find(s => s.type === 'sql' && s.status === 'running')
         if (sqlGenStep) {
           sqlGenStep.detail = data.detail || data.sql?.slice(0, 100)
           sqlGenStep.status = 'done'
+          sqlGenStep.sql = data.sql
+          sqlGenStep.duration_ms = data.duration_ms
+          sqlGenStep.attempt = data.attempt
+          sqlGenStep.validation = data.validation
+          sqlGenStep.error_code = data.error_code
+          sqlGenStep.retry = data.retry
         }
-        msg.pipelineSteps?.push({ type: 'data', label: '执行查询', status: 'running' })
+        // Only push execution step if there isn't one already (avoid duplicate on self-heal)
+        if (!msg.pipelineSteps?.some(s => s.type === 'data')) {
+          msg.pipelineSteps?.push({ type: 'data', label: '执行查询', status: 'running' })
+        }
         break
 
       case 'data':
@@ -243,6 +253,7 @@ export const useChatStore = defineStore('chat', () => {
           if (runStep) {
             runStep.status = 'done'
             runStep.detail = data.detail
+            runStep.duration_ms = data.duration_ms
           }
         } else {
           msg.error = data.error || '执行失败'
@@ -251,6 +262,7 @@ export const useChatStore = defineStore('chat', () => {
           if (runStep) {
             runStep.status = 'failed'
             runStep.detail = data.detail
+            runStep.duration_ms = data.duration_ms
           }
         }
         break

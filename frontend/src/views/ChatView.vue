@@ -159,29 +159,67 @@
     <FirstUseGuide />
 
     <!-- Pipeline Dialog -->
-    <el-dialog v-model="showPipelineDialog" :title="pipelineTraceSteps.length > 0 ? '查询执行记录' : '查询流程说明'" width="720px">
+    <el-dialog v-model="showPipelineDialog" :title="pipelineTraceSteps.length > 0 ? '查询执行记录' : '查询流程说明'" width="800px">
       <!-- Per-query trace (from message button) -->
       <div v-if="pipelineTraceSteps.length > 0" class="trace-table">
         <div class="trace-header">
           <span>本次查询的完整执行记录</span>
         </div>
         <el-table :data="pipelineTraceSteps" stripe size="small" style="width: 100%">
-          <el-table-column label="#" width="50" align="center">
+          <el-table-column label="#" width="40" align="center">
             <template #default="{ $index }">{{ $index + 1 }}</template>
           </el-table-column>
-          <el-table-column label="步骤" width="140" prop="label" />
-          <el-table-column label="状态" width="80" align="center">
+          <el-table-column label="步骤" width="120" prop="label" />
+          <el-table-column label="状态" width="70" align="center">
             <template #default="{ row }">
               <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
               <el-tag v-else-if="row.status === 'failed'" type="danger" size="small">失败</el-tag>
               <el-tag v-else type="info" size="small">进行中</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="执行详情" min-width="300">
+          <el-table-column label="耗时" width="80" align="center">
             <template #default="{ row }">
-              <div v-if="row.type === 'sql' && row.detail" class="trace-sql">
-                <pre>{{ row.detail }}</pre>
+              <span v-if="row.duration_ms">{{ row.duration_ms }}ms</span>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="执行详情" min-width="350">
+            <template #default="{ row }">
+              <!-- Schema selection: tables + columns -->
+              <div v-if="row.type === 'semantics' && row.tables" class="trace-detail-block">
+                <div class="trace-detail-line">{{ row.detail }}</div>
+                <div v-for="t in row.tables" :key="t" class="trace-detail-sub">
+                  <span class="trace-table-name">{{ t }}</span>
+                  <span v-if="row.columns?.[t]?.length" class="trace-col-list">
+                    字段: {{ row.columns[t].join(', ') }}
+                  </span>
+                </div>
               </div>
+              <!-- SQL generation: full SQL + validation + attempt -->
+              <div v-else-if="row.type === 'sql'" class="trace-detail-block">
+                <div v-if="row.sql" class="trace-sql"><pre>{{ row.sql }}</pre></div>
+                <div v-if="row.attempt && row.attempt > 1" class="trace-detail-sub">
+                  <el-tag size="small" type="warning">第 {{ row.attempt }} 次尝试</el-tag>
+                </div>
+                <div v-if="row.validation" class="trace-detail-sub">
+                  <div v-if="row.validation.table_fixes?.length">
+                    表名修复: {{ row.validation.table_fixes.join(', ') }}
+                  </div>
+                  <div v-if="row.validation.column_fixes?.length">
+                    列名修复: {{ row.validation.column_fixes.join(', ') }}
+                  </div>
+                </div>
+                <div v-if="row.error_code" class="trace-detail-sub">
+                  <el-tag size="small" type="danger">错误码: {{ row.error_code }}</el-tag>
+                  <span v-if="row.retry">第 {{ row.retry }} 次自愈</span>
+                </div>
+                <div v-if="!row.sql && row.detail">{{ row.detail }}</div>
+              </div>
+              <!-- Data execution -->
+              <div v-else-if="row.type === 'data'" class="trace-detail-block">
+                <div>{{ row.detail }}</div>
+              </div>
+              <!-- Other steps -->
               <span v-else>{{ row.detail || '-' }}</span>
             </template>
           </el-table-column>
@@ -822,6 +860,31 @@ onMounted(async () => {
   white-space: pre-wrap;
   word-break: break-all;
   line-height: 1.5;
+}
+
+.trace-detail-block {
+  line-height: 1.5;
+}
+
+.trace-detail-line {
+  color: #303133;
+  font-size: 13px;
+}
+
+.trace-detail-sub {
+  color: #909399;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.trace-table-name {
+  font-weight: 600;
+  color: #409eff;
+}
+
+.trace-col-list {
+  color: #909399;
+  margin-left: 4px;
 }
 
 .trace-empty {

@@ -205,8 +205,9 @@ class TestSchemaSelectionAndValidation:
         """Valid table names pass validation unchanged."""
         schema = "表名: t_orders\n可用表名: t_orders, t_users"
         sql = "SELECT * FROM t_orders"
-        result = _validate_and_fix_tables(sql, schema)
-        assert "t_orders" in result
+        result_sql, table_fixes, column_fixes = _validate_and_fix_tables(sql, schema)
+        assert "t_orders" in result_sql
+        assert table_fixes == []
 
     def test_validate_fix_columns_hallucination(self):
         """Hallucinated created_at column gets replaced with actual time field."""
@@ -222,9 +223,9 @@ class TestSchemaSelectionAndValidation:
                 ],
             }]
         })
-        result = _validate_and_fix_columns(sql, schema, raw_metadata)
-        assert "timestamp" in result
-        assert "created_at" not in result
+        result_sql, column_fixes = _validate_and_fix_columns(sql, schema, raw_metadata)
+        assert "timestamp" in result_sql
+        assert "created_at" not in result_sql
 
 
 # =====================================================================

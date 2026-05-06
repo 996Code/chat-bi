@@ -9,6 +9,9 @@ from app.ai.nodes.generation import get_llm
 
 logger = get_logger(__name__)
 
+# MySQL error code pattern: (errno: 1054)
+_ERROR_CODE_RE = re.compile(r'\(errno:\s*(\d+)\)')
+
 # 可自动修复的常见错误模式
 AUTO_FIX_RULES = {
     "1146": "表不存在",
@@ -50,6 +53,12 @@ def _strip_markdown(raw: str) -> str:
     sql = re.sub(r'^```(?:\w+)?\s*', '', raw, flags=re.MULTILINE).strip()
     sql = re.sub(r'\s*```\s*$', '', sql).strip()
     return sql
+
+
+def extract_error_code(error_msg: str) -> str:
+    """从 MySQL 错误消息中提取错误码。"""
+    m = _ERROR_CODE_RE.search(error_msg)
+    return m.group(1) if m else ""
 
 
 async def self_heal_sql(

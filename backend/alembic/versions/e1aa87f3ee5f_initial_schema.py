@@ -90,7 +90,7 @@ def upgrade() -> None:
         sa.Column("action", sa.String(100), nullable=False),
         sa.Column("resource_type", sa.String(100), nullable=True),
         sa.Column("resource_id", sa.String(100), nullable=True),
-        sa.Column("details", sa.Text(), server_default=sa.text("''"), nullable=False),
+        sa.Column("details", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
     )
     op.create_index("ix_audit_logs_tenant_id", "audit_logs", ["tenant_id"])
@@ -134,7 +134,7 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.String(36), nullable=False),
         sa.Column("user_id", sa.String(36), nullable=False),
         sa.Column("event_name", sa.String(100), nullable=False),
-        sa.Column("event_data", sa.Text(), server_default=sa.text("''"), nullable=False),
+        sa.Column("event_data", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
     )
     op.create_index("ix_analytics_events_tenant_id", "analytics_events", ["tenant_id"])
@@ -148,7 +148,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.String(36), nullable=False),
         sa.Column("datasource_id", sa.String(100), nullable=True),
         sa.Column("title", sa.String(200), server_default=sa.text("'新对话'"), nullable=False),
-        sa.Column("messages", sa.Text(), server_default=sa.text("'[]'"), nullable=True),
+        sa.Column("messages", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=True),
     )

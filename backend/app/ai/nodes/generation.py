@@ -98,16 +98,12 @@ def _extract_schema_columns(schema_context: str) -> set[str]:
     return set(_SCHEMA_COL_RE.findall(schema_context))
 
 
-def _validate_and_fix_columns(sql: str, schema_context: str, raw_metadata: str = "") -> str:
-    """校验并修复 SQL 中的列名，特别是 created_at 幻觉问题。
-
-    策略：只检查 SQL 中实际引用的表的列，而不是所有表的列。
-    如果 feeding_records 没有 created_at，即使其他表有，也应该修复。
-    """
+def _validate_and_fix_columns(sql: str, schema_context: str, raw_metadata: str = "") -> tuple[str, list[str]]:
+    """校验并修复 SQL 中的列名，特别是 created_at 幻觉问题。返回 (fixed_sql, column_fixes)。"""
     # Parse tables from SQL
     sql_tables = _extract_sql_tables(sql)
     if not sql_tables:
-        return sql
+        return sql, []
 
     # Build a map of table -> columns from raw_metadata
     table_cols: dict[str, set[str]] = {}
@@ -121,6 +117,7 @@ def _validate_and_fix_columns(sql: str, schema_context: str, raw_metadata: str =
         except (json.JSONDecodeError, TypeError):
             pass
 
+    column_fixes = []
     # For each table in SQL, check if hallucinated columns exist in that specific table
     hallucinated_cols = {"created_at", "updated_at", "created_time", "update_time"}
     for hc in hallucinated_cols:
@@ -149,28 +146,35 @@ def _validate_and_fix_columns(sql: str, schema_context: str, raw_metadata: str =
                 ratio = SequenceMatcher(None, hc, best).ratio()
                 replacement = best if ratio > 0.2 else time_cols[0]
                 logger.info("Fixing hallucinated column '%s' -> '%s' (table: %s)", hc, replacement, t)
+                column_fixes.append(f"{hc} -> {replacement}")
                 sql = re.sub(r'\b' + hc + r'\b', replacement, sql, flags=re.IGNORECASE)
                 break
 
-    return sql
+    return sql, column_fixes
 
 
-def _validate_and_fix_tables(sql: str, schema_context: str, raw_metadata: str = "") -> str:
-    """校验 SQL 中的表名是否在 schema 中，不匹配则自动修复。"""
+def _validate_and_fix_tables(sql: str, schema_context: str, raw_metadata: str = "") -> tuple[str, list[str], list[str]]:
+    """校验 SQL 中的表名是否在 schema 中，不匹配则自动修复。返回 (fixed_sql, table_fixes, column_fixes)。"""
     # First strip Chinese comments
     sql = _strip_chinese_comments(sql)
 
+    table_fixes = []
     valid_tables = _extract_all_valid_tables(schema_context)
-    if not valid_tables:
-        return sql
-    used_tables = _extract_sql_tables(sql)
-    invalid = used_tables - valid_tables
-    if invalid:
-        logger.warning("LLM used invalid tables: %s, valid: %s", invalid, valid_tables)
-        sql = _fix_table_names(sql, invalid, valid_tables)
-    # Also validate and fix column names (e.g. created_at hallucination)
-    sql = _validate_and_fix_columns(sql, schema_context, raw_metadata)
-    return sql
+    if valid_tables:
+        used_tables = _extract_sql_tables(sql)
+        invalid = used_tables - valid_tables
+        if invalid:
+            logger.warning("LLM used invalid tables: %s, valid: %s", invalid, valid_tables)
+            for bad in invalid:
+                best = max(valid_tables, key=lambda t: SequenceMatcher(None, bad, t).ratio())
+                if SequenceMatcher(None, bad, best).ratio() > _TABLE_NAME_SIM_THRESHOLD:
+                    table_fixes.append(f"{bad} -> {best}")
+            sql = _fix_table_names(sql, invalid, valid_tables)
+
+    # Validate and fix column names (e.g. created_at hallucination)
+    column_fixes = []
+    sql, column_fixes = _validate_and_fix_columns(sql, schema_context, raw_metadata)
+    return sql, table_fixes, column_fixes
 
 
 def _build_full_schema_context(raw_metadata: str) -> str:
@@ -276,9 +280,10 @@ async def generate_sql(
     schema_context: str,
     raw_metadata: str = "",
     history: list[dict] | None = None,
-) -> str:
-    """生成 SQL：schema context 已经是 LLM 精选的，直接生成即可。"""
+) -> dict:
+    """生成 SQL：schema context 已经是 LLM 精选的，直接生成即可。返回 dict 包含 sql, attempt, table_fixes, column_fixes。"""
     history_ctx = _build_history_context(history)
+    attempt = 1
     # Attempt 1: direct generation with selected schema
     messages = [
         ("system", SYSTEM_PROMPT),
@@ -289,6 +294,7 @@ async def generate_sql(
     # Attempt 2: full schema context (fallback if selected schema was insufficient)
     if sql is None and raw_metadata:
         logger.info("LLM returned empty, retrying with full schema")
+        attempt = 2
         full_schema = _build_full_schema_context(raw_metadata)
         retry_messages = [
             ("system", SYSTEM_PROMPT),
@@ -299,6 +305,7 @@ async def generate_sql(
     # Attempt 3: higher temperature LLM with simpler prompt
     if sql is None:
         logger.info("Retrying with higher temperature LLM")
+        attempt = 3
         simple_prompt = (
             f"Based on the question: {question}\n\n"
             f"And this database schema:\n{schema_context}\n\n"
@@ -314,10 +321,10 @@ async def generate_sql(
         )
 
     if sql is None:
-        return ""
+        return {"sql": "", "attempt": attempt, "table_fixes": [], "column_fixes": []}
 
     # Validate and fix table names + strip Chinese comments
     logger.info("Before validation: sql=%s", sql[:200])
-    sql = _validate_and_fix_tables(sql, schema_context, raw_metadata)
+    sql, table_fixes, column_fixes = _validate_and_fix_tables(sql, schema_context, raw_metadata)
     logger.info("After validation: sql=%s", sql[:200])
-    return sql
+    return {"sql": sql, "attempt": attempt, "table_fixes": table_fixes, "column_fixes": column_fixes}

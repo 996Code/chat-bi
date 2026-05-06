@@ -257,7 +257,7 @@ async def schema_selection_node(state: dict) -> dict:
 
     if not datasource_id or not tenant_id:
         logger.warning("Schema selection: missing datasource_id or tenant_id")
-        return {"schema_context": "", "raw_metadata": ""}
+        return {"schema_context": "", "raw_metadata": "", "selected_tables": [], "selected_columns": {}}
 
     # 从 DB 获取 metadata
     try:
@@ -275,7 +275,7 @@ async def schema_selection_node(state: dict) -> dict:
 
     if not raw_metadata:
         logger.info("Schema selection: no metadata for datasource %s", datasource_id)
-        return {"schema_context": "", "raw_metadata": ""}
+        return {"schema_context": "", "raw_metadata": "", "selected_tables": [], "selected_columns": {}}
 
     metadata = json.loads(raw_metadata)
 
@@ -303,4 +303,9 @@ async def schema_selection_node(state: dict) -> dict:
     )
     logger.info("Schema context preview:\n%s", schema_context[:800])
 
-    return {"schema_context": schema_context, "raw_metadata": raw_metadata}
+    return {
+        "schema_context": schema_context,
+        "raw_metadata": raw_metadata,
+        "selected_tables": selected_tables,
+        "selected_columns": selected_columns,
+    }

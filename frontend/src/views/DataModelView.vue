@@ -13,9 +13,9 @@
           <el-option v-for="ds in datasourceStore.datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
         </el-select>
         <el-dropdown trigger="click" @command="handleSync">
-          <el-button :disabled="!selectedDsId">
-            <el-icon><Refresh /></el-icon> 同步表结构
-            <el-icon><ArrowDown /></el-icon>
+          <el-button :disabled="!selectedDsId || syncing" :loading="syncing">
+            <el-icon><Refresh /></el-icon> {{ syncing ? syncStep || '同步中' : '同步表结构' }}
+            <el-icon v-if="!syncing"><ArrowDown /></el-icon>
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
@@ -24,6 +24,13 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <el-progress
+          v-if="syncing"
+          :percentage="syncProgress"
+          :stroke-width="6"
+          style="width: 160px"
+          :format="() => `${syncProgress}%`"
+        />
         <el-button type="primary" :disabled="!selectedDsId" @click="handleSave">
           <el-icon><Check /></el-icon> 保存
         </el-button>
@@ -293,6 +300,10 @@ const configMetrics = ref<any[]>([])
 
 const showSyncResult = ref(false)
 const syncResult = ref<any>(null)
+const syncing = ref(false)
+const syncTaskId = ref('')
+const syncProgress = ref(0)
+const syncStep = ref('')
 
 const activeTables = computed(() => configTables.value.filter(t => !t._deleted))
 const selectedTable = computed(() => activeTables.value[selectedTableIndex.value] || null)
@@ -343,28 +354,97 @@ function removeMetric(idx: number) {
   configMetrics.value.splice(idx, 1)
 }
 
+async function pollSyncStatus(taskId: string) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 2000))
+    try {
+      const statusRes = await api.get(`/data-models/sync-status/${taskId}`)
+      const task = statusRes.data
+      syncProgress.value = task.progress || 0
+      syncStep.value = task.step || ''
+
+      if (task.status === 'completed') {
+        syncResult.value = task.result
+        showSyncResult.value = true
+        syncing.value = false
+        syncProgress.value = 0
+        syncStep.value = ''
+        await onDatasourceChange()
+        const relCount = task.result?.relationships_count ?? 0
+        const metCount = task.result?.metrics_count ?? 0
+        ElMessage.success(`同步完成：${task.result?.total_tables ?? 0} 张表，${relCount} 个关联关系，${metCount} 个指标`)
+        break
+      } else if (task.status === 'failed') {
+        syncing.value = false
+        syncProgress.value = 0
+        syncStep.value = ''
+        ElMessage.error(task.error || '同步失败')
+        break
+      }
+    } catch (pollErr: any) {
+      if (pollErr.response?.status === 404) {
+        syncing.value = false
+        syncProgress.value = 0
+        syncStep.value = ''
+        ElMessage.error('同步任务已过期，请重试')
+        break
+      }
+    }
+  }
+}
+
 async function handleSync(mode: string) {
-  if (!selectedDsId.value) return
+  if (!selectedDsId.value || syncing.value) return
+  syncing.value = true
+  syncProgress.value = 0
+  syncStep.value = '准备中'
+  syncResult.value = null
+
   try {
     const res = await api.post(`/data-models/${selectedDsId.value}/sync`, { mode })
-    syncResult.value = res.data
-    showSyncResult.value = true
-
-    if (res.data.status !== 'up_to_date') {
-      await onDatasourceChange()
-    }
+    syncTaskId.value = res.data.task_id
+    await pollSyncStatus(syncTaskId.value)
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.message || '同步失败')
+    syncing.value = false
+    syncProgress.value = 0
+    syncStep.value = ''
+    if (e.response?.status === 409) {
+      ElMessage.warning('该数据源已有同步任务进行中，请稍候')
+    } else {
+      ElMessage.error(e.response?.data?.detail?.message || e.response?.data?.detail || '同步失败')
+    }
   }
 }
 
 async function onDatasourceChange() {
   if (!selectedDsId.value) return
+  // Reset sync state when switching datasource
+  syncing.value = false
+  syncProgress.value = 0
+  syncStep.value = ''
+  syncTaskId.value = ''
+
   configTables.value = []
   configRelationships.value = []
   configMetrics.value = []
   selectedTableIndex.value = 0
   activeTab.value = 'table'
+
+  // Check for active sync task (page refresh recovery)
+  try {
+    const activeRes = await api.get(`/data-models/sync-active/${selectedDsId.value}`)
+    const activeTask = activeRes.data
+    if (activeTask.task_id && (activeTask.status === 'running' || activeTask.status === 'pending')) {
+      syncing.value = true
+      syncTaskId.value = activeTask.task_id
+      syncProgress.value = activeTask.progress || 0
+      syncStep.value = activeTask.step || ''
+      // Poll in background, update UI when done
+      pollSyncStatus(activeTask.task_id)
+    }
+  } catch {
+    // Ignore — not critical
+  }
 
   try {
     const res = await api.get(`/data-models/${selectedDsId.value}`)
@@ -407,6 +487,11 @@ async function handleSave() {
 
 onMounted(async () => {
   await datasourceStore.list()
+  // Auto-select first datasource
+  if (!selectedDsId.value && datasourceStore.datasources.length > 0) {
+    selectedDsId.value = datasourceStore.datasources[0].id
+    await onDatasourceChange()
+  }
 })
 </script>
 

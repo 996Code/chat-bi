@@ -71,11 +71,12 @@ def build_graph():
 
     # SQL generation node
     async def generation_node(state: QueryState) -> dict:
-        sql = await generate_sql(
+        result = await generate_sql(
             state["question"],
             state.get("schema_context", ""),
             raw_metadata=state.get("raw_metadata", ""),
         )
+        sql = result.get("sql", "") if isinstance(result, dict) else (result or "")
         if not sql:
             return {
                 "sql": "",

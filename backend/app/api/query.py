@@ -235,17 +235,21 @@ async def stream_query(
         nonlocal final_success, final_sql, final_error, final_row_count
         try:
             # Step 1: Intent
+            step_start = time.monotonic()
             from app.ai.nodes.intent import classify_intent
             intent = await classify_intent(data.question)
+            intent_duration = int((time.monotonic() - step_start) * 1000)
             intent_label = "数据查询" if intent == "DataQuery" else "非数据查询"
-            yield f"event: intent\ndata: {json.dumps({'intent': intent, 'detail': f'识别为{intent_label}意图'}, ensure_ascii=False)}\n\n"
+            yield f"event: intent\ndata: {json.dumps({'intent': intent, 'detail': f'识别为{intent_label}意图', 'duration_ms': intent_duration}, ensure_ascii=False)}\n\n"
 
             if intent != "DataQuery":
-                final_error = "请提出数据查询相关的问题"
-                yield f"event: complete\ndata: {json.dumps({'success': False, 'error': final_error}, ensure_ascii=False)}\n\n"
+                friendly_msg = "我是数据查询助手，可以帮你查询和分析数据。请试试这样的问题：\n• 各城市的订单数量\n• 上个月的销售额是多少\n• VIP 等级的用户分布"
+                final_error = friendly_msg
+                yield f"event: complete\ndata: {json.dumps({'success': False, 'error': friendly_msg}, ensure_ascii=False)}\n\n"
                 return
 
             # Step 2: Schema selection (LLM two-step: table selection + column selection)
+            step_start = time.monotonic()
             from app.ai.nodes.schema_selection import schema_selection_node
             state = {
                 "question": data.question,
@@ -255,18 +259,39 @@ async def stream_query(
             schema_result = await schema_selection_node(state)
             schema_context = schema_result.get("schema_context", "")
             raw_metadata = schema_result.get("raw_metadata", "")
+            selected_tables = schema_result.get("selected_tables", [])
+            selected_columns = schema_result.get("selected_columns", {})
+            schema_duration = int((time.monotonic() - step_start) * 1000)
 
-            # Extract selected tables from schema context for display
-            selected_tables = re.findall(r'^表名:\s*(\S+)', schema_context, re.MULTILINE)
             schema_detail = f"选择了 {len(selected_tables)} 个表: {', '.join(selected_tables)}" if selected_tables else "未找到相关表"
-            yield f"event: semantics\ndata: {json.dumps({'intent': 'schema_selected', 'detail': schema_detail}, ensure_ascii=False)}\n\n"
+            yield f"event: semantics\ndata: {json.dumps({'intent': 'schema_selected', 'detail': schema_detail, 'duration_ms': schema_duration, 'tables': selected_tables, 'columns': selected_columns}, ensure_ascii=False)}\n\n"
 
             # Step 3: SQL generation
+            step_start = time.monotonic()
             from app.ai.nodes.generation import generate_sql
-            sql = await generate_sql(data.question, schema_context, raw_metadata=raw_metadata, history=data.history)
+            gen_result = await generate_sql(data.question, schema_context, raw_metadata=raw_metadata, history=data.history)
+            gen_duration = int((time.monotonic() - step_start) * 1000)
+
+            # Handle dict return from generate_sql
+            if isinstance(gen_result, dict):
+                sql = gen_result.get("sql", "")
+                gen_attempt = gen_result.get("attempt", 1)
+                table_fixes = gen_result.get("table_fixes", [])
+                column_fixes = gen_result.get("column_fixes", [])
+            else:
+                sql = gen_result or ""
+                gen_attempt = 1
+                table_fixes = []
+                column_fixes = []
+
             final_sql = sql
             sql_detail = f"生成 SQL: {sql[:80]}..." if sql and len(sql) > 80 else f"生成 SQL: {sql or '空'}"
-            yield f"event: sql\ndata: {json.dumps({'sql': sql, 'detail': sql_detail}, ensure_ascii=False)}\n\n"
+            validation = {}
+            if table_fixes:
+                validation["table_fixes"] = table_fixes
+            if column_fixes:
+                validation["column_fixes"] = column_fixes
+            yield f"event: sql\ndata: {json.dumps({'sql': sql, 'detail': sql_detail, 'duration_ms': gen_duration, 'attempt': gen_attempt, 'validation': validation if validation else None}, ensure_ascii=False)}\n\n"
 
             if not sql:
                 final_error = "无法生成 SQL"
@@ -274,17 +299,21 @@ async def stream_query(
                 return
 
             # Step 4: Execute
+            step_start = time.monotonic()
             from app.ai.nodes.execution import execute_sql
             exec_result = await execute_sql(sql, data.datasource_id, tenant_id=tenant_id)
+            exec_duration = int((time.monotonic() - step_start) * 1000)
             final_success = exec_result.get("success", False)
             final_row_count = exec_result.get("row_count", 0)
             final_error = exec_result.get("error")
             exec_detail = f"查询成功，返回 {final_row_count} 行" if final_success else f"执行失败: {final_error}"
-            yield f"event: data\ndata: {json.dumps({**exec_result, 'detail': exec_detail}, ensure_ascii=False, default=str)}\n\n"
+            yield f"event: data\ndata: {json.dumps({**exec_result, 'detail': exec_detail, 'duration_ms': exec_duration}, ensure_ascii=False, default=str)}\n\n"
 
             # Step 5: Self-heal on failure
             if not final_success and schema_context:
                 from app.ai.nodes.self_heal import self_heal_sql
+                from app.ai.nodes.self_heal import extract_error_code
+                error_code = extract_error_code(final_error or "")
                 heal_result = await self_heal_sql(
                     question=data.question,
                     sql=sql,
@@ -300,7 +329,7 @@ async def stream_query(
                     final_row_count = exec_result.get("row_count", 0)
                     final_error = exec_result.get("error")
                     heal_detail = f"自愈成功，修正后 SQL: {final_sql[:60]}..." if len(final_sql) > 60 else f"自愈成功，修正后 SQL: {final_sql}"
-                    yield f"event: sql\ndata: {json.dumps({'sql': final_sql, 'detail': heal_detail}, ensure_ascii=False)}\n\n"
+                    yield f"event: sql\ndata: {json.dumps({'sql': final_sql, 'detail': heal_detail, 'error_code': error_code, 'retry': 1}, ensure_ascii=False)}\n\n"
                     exec_detail = f"查询成功，返回 {final_row_count} 行" if final_success else f"执行失败: {final_error}"
                     yield f"event: data\ndata: {json.dumps({**exec_result, 'detail': exec_detail}, ensure_ascii=False, default=str)}\n\n"
 
