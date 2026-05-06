@@ -15,11 +15,12 @@ from app.db.models import (
 )
 
 # Database connection info from environment variables
-SEED_DB_HOST = os.environ.get('SEED_DB_HOST', '192.168.99.22')
+SEED_DB_HOST = os.environ.get('SEED_DB_HOST', '192.168.3.110')
 SEED_DB_PORT = int(os.environ.get('SEED_DB_PORT', '3306'))
 SEED_DB_USER = os.environ.get('SEED_DB_USER', 'root')
-SEED_DB_PASS = os.environ.get('SEED_DB_PASS', '52033384')
-SEED_DB_NAMES = os.environ.get('SEED_DB_NAMES', 'ecommerce,chatbi').split(',')
+SEED_DB_PASS = os.environ.get('SEED_DB_PASS', 'yjt_mysql')
+# Single test database: chatbi_test
+TEST_DB_NAME = os.environ.get('TEST_DB_NAME', 'chatbi_test')
 
 TENANT_1 = uuid.UUID('11111111-1111-1111-1111-111111111111')
 TENANT_2 = uuid.UUID('22222222-2222-2222-2222-222222222222')
@@ -84,7 +85,7 @@ async def seed():
         datasources = [
             DataSource(id=DS_1, tenant_id=TENANT_1, name='电商业务库',
                        db_type='mysql', host=SEED_DB_HOST, port=SEED_DB_PORT,
-                       database_name='ecommerce', username_encrypted=enc_user,
+                       database_name=TEST_DB_NAME, username_encrypted=enc_user,
                        password_encrypted=enc_pass, is_active=True, last_health_check=NOW),
             DataSource(id=DS_2, tenant_id=TENANT_1, name='ChatBI 自身库',
                        db_type='mysql', host=SEED_DB_HOST, port=SEED_DB_PORT,
@@ -96,7 +97,7 @@ async def seed():
                        password_encrypted=enc_pass, is_active=True, last_health_check=NOW),
             DataSource(id=DS_4, tenant_id=TENANT_2, name='Demo 数据源',
                        db_type='mysql', host=SEED_DB_HOST, port=SEED_DB_PORT,
-                       database_name='ecommerce', username_encrypted=enc_user,
+                       database_name=TEST_DB_NAME, username_encrypted=enc_user,
                        password_encrypted=enc_pass, is_active=True, last_health_check=NOW),
         ]
         for ds in datasources:
@@ -105,66 +106,177 @@ async def seed():
 
         ecommerce_schema = {
             'models': [
-                {'name': 'orders', 'comment': '订单表', 'columns': [
+                {'name': 't_users', 'comment': '用户表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '用户ID', 'is_pk': True},
+                    {'name': 'username', 'type': 'varchar(100)', 'nullable': False, 'comment': '用户名'},
+                    {'name': 'email', 'type': 'varchar(255)', 'nullable': True, 'comment': '邮箱'},
+                    {'name': 'phone', 'type': 'varchar(20)', 'nullable': True, 'comment': '手机号'},
+                    {'name': 'city', 'type': 'varchar(100)', 'nullable': True, 'comment': '城市'},
+                    {'name': 'province', 'type': 'varchar(50)', 'nullable': True, 'comment': '省份'},
+                    {'name': 'vip_level', 'type': 'int', 'nullable': False, 'comment': 'VIP等级'},
+                    {'name': 'points', 'type': 'int', 'nullable': False, 'comment': '积分'},
+                    {'name': 'total_orders', 'type': 'int', 'nullable': False, 'comment': '总订单数'},
+                    {'name': 'total_spent', 'type': 'decimal(12,2)', 'nullable': False, 'comment': '总消费额'},
+                    {'name': 'created_at', 'type': 'datetime', 'nullable': False, 'comment': '注册时间'},
+                ]},
+                {'name': 't_orders', 'comment': '订单表', 'columns': [
                     {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '订单ID', 'is_pk': True},
                     {'name': 'user_id', 'type': 'bigint', 'nullable': False, 'comment': '用户ID'},
-                    {'name': 'total_amount', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '订单金额'},
-                    {'name': 'status', 'type': 'varchar(50)', 'nullable': False, 'comment': '订单状态'},
-                    {'name': 'created_at', 'type': 'datetime', 'nullable': False, 'comment': '创建时间'},
+                    {'name': 'order_no', 'type': 'varchar(50)', 'nullable': False, 'comment': '订单号'},
+                    {'name': 'total_amount', 'type': 'decimal(12,2)', 'nullable': False, 'comment': '订单金额'},
+                    {'name': 'discount_amount', 'type': 'decimal(10,2)', 'nullable': True, 'comment': '优惠金额'},
+                    {'name': 'shipping_fee', 'type': 'decimal(10,2)', 'nullable': True, 'comment': '运费'},
+                    {'name': 'coupon_code', 'type': 'varchar(50)', 'nullable': True, 'comment': '优惠券码'},
+                    {'name': 'status', 'type': 'varchar(20)', 'nullable': False, 'comment': '订单状态'},
                     {'name': 'city', 'type': 'varchar(100)', 'nullable': True, 'comment': '城市'},
+                    {'name': 'province', 'type': 'varchar(50)', 'nullable': True, 'comment': '省份'},
+                    {'name': 'note', 'type': 'varchar(500)', 'nullable': True, 'comment': '备注'},
+                    {'name': 'created_at', 'type': 'datetime', 'nullable': False, 'comment': '创建时间'},
+                    {'name': 'paid_at', 'type': 'datetime', 'nullable': True, 'comment': '支付时间'},
+                    {'name': 'shipped_at', 'type': 'datetime', 'nullable': True, 'comment': '发货时间'},
+                    {'name': 'delivered_at', 'type': 'datetime', 'nullable': True, 'comment': '签收时间'},
+                    {'name': 'completed_at', 'type': 'datetime', 'nullable': True, 'comment': '完成时间'},
                 ]},
-                {'name': 'order_items', 'comment': '订单明细表', 'columns': [
+                {'name': 't_order_items', 'comment': '订单明细表', 'columns': [
                     {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '明细ID', 'is_pk': True},
                     {'name': 'order_id', 'type': 'bigint', 'nullable': False, 'comment': '订单ID'},
                     {'name': 'product_id', 'type': 'bigint', 'nullable': False, 'comment': '商品ID'},
+                    {'name': 'product_name', 'type': 'varchar(200)', 'nullable': True, 'comment': '商品名'},
                     {'name': 'quantity', 'type': 'int', 'nullable': False, 'comment': '数量'},
                     {'name': 'price', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '单价'},
+                    {'name': 'subtotal', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '小计'},
                 ]},
-                {'name': 'users_e', 'comment': '用户表', 'columns': [
-                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '用户ID', 'is_pk': True},
-                    {'name': 'name', 'type': 'varchar(100)', 'nullable': False, 'comment': '用户名'},
-                    {'name': 'email', 'type': 'varchar(255)', 'nullable': True, 'comment': '邮箱'},
-                    {'name': 'phone', 'type': 'varchar(20)', 'nullable': True, 'comment': '手机号'},
-                    {'name': 'id_card', 'type': 'varchar(18)', 'nullable': True, 'comment': '身份证号'},
-                ]},
-                {'name': 'products', 'comment': '商品表', 'columns': [
+                {'name': 't_products', 'comment': '商品表', 'columns': [
                     {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '商品ID', 'is_pk': True},
                     {'name': 'name', 'type': 'varchar(200)', 'nullable': False, 'comment': '商品名'},
-                    {'name': 'category', 'type': 'varchar(100)', 'nullable': True, 'comment': '类目'},
-                    {'name': 'price', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '价格'},
+                    {'name': 'category_id', 'type': 'bigint', 'nullable': False, 'comment': '分类ID'},
+                    {'name': 'brand_id', 'type': 'bigint', 'nullable': True, 'comment': '品牌ID'},
+                    {'name': 'price', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '售价'},
+                    {'name': 'cost_price', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '成本价'},
+                    {'name': 'market_price', 'type': 'decimal(10,2)', 'nullable': True, 'comment': '市场价'},
                     {'name': 'stock', 'type': 'int', 'nullable': False, 'comment': '库存'},
+                    {'name': 'sku', 'type': 'varchar(50)', 'nullable': True, 'comment': 'SKU'},
+                    {'name': 'status', 'type': 'varchar(20)', 'nullable': False, 'comment': '状态'},
+                    {'name': 'tags', 'type': 'varchar(500)', 'nullable': True, 'comment': '标签'},
                 ]},
-                {'name': 'categories', 'comment': '类目表', 'columns': [
-                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '类目ID', 'is_pk': True},
-                    {'name': 'name', 'type': 'varchar(100)', 'nullable': False, 'comment': '类目名'},
+                {'name': 't_categories', 'comment': '分类表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '分类ID', 'is_pk': True},
+                    {'name': 'name', 'type': 'varchar(100)', 'nullable': False, 'comment': '分类名'},
+                    {'name': 'parent_id', 'type': 'bigint', 'nullable': True, 'comment': '父分类ID'},
+                    {'name': 'sort_order', 'type': 'int', 'nullable': False, 'comment': '排序'},
+                    {'name': 'is_active', 'type': 'tinyint', 'nullable': False, 'comment': '是否启用'},
                 ]},
-                {'name': 'payments', 'comment': '支付记录表', 'columns': [
+                {'name': 't_brands', 'comment': '品牌表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '品牌ID', 'is_pk': True},
+                    {'name': 'name', 'type': 'varchar(100)', 'nullable': False, 'comment': '品牌名'},
+                    {'name': 'description', 'type': 'text', 'nullable': True, 'comment': '描述'},
+                    {'name': 'is_active', 'type': 'tinyint', 'nullable': False, 'comment': '是否启用'},
+                ]},
+                {'name': 't_payments', 'comment': '支付记录表', 'columns': [
                     {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '支付ID', 'is_pk': True},
                     {'name': 'order_id', 'type': 'bigint', 'nullable': False, 'comment': '订单ID'},
                     {'name': 'amount', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '支付金额'},
                     {'name': 'method', 'type': 'varchar(50)', 'nullable': False, 'comment': '支付方式'},
+                    {'name': 'transaction_id', 'type': 'varchar(100)', 'nullable': True, 'comment': '交易号'},
+                    {'name': 'status', 'type': 'varchar(20)', 'nullable': False, 'comment': '状态'},
+                    {'name': 'refund_amount', 'type': 'decimal(10,2)', 'nullable': True, 'comment': '退款金额'},
+                    {'name': 'paid_at', 'type': 'datetime', 'nullable': False, 'comment': '支付时间'},
                 ]},
-                {'name': 'shipping', 'comment': '物流表', 'columns': [
+                {'name': 't_shipping', 'comment': '物流表', 'columns': [
                     {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '物流ID', 'is_pk': True},
                     {'name': 'order_id', 'type': 'bigint', 'nullable': False, 'comment': '订单ID'},
                     {'name': 'carrier', 'type': 'varchar(100)', 'nullable': True, 'comment': '快递公司'},
+                    {'name': 'tracking_no', 'type': 'varchar(100)', 'nullable': True, 'comment': '运单号'},
+                    {'name': 'shipped_at', 'type': 'datetime', 'nullable': False, 'comment': '发货时间'},
+                    {'name': 'delivered_at', 'type': 'datetime', 'nullable': True, 'comment': '签收时间'},
+                    {'name': 'status', 'type': 'varchar(20)', 'nullable': False, 'comment': '物流状态'},
                 ]},
-                {'name': 'reviews', 'comment': '评价表', 'columns': [
+                {'name': 't_reviews', 'comment': '评价表', 'columns': [
                     {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '评价ID', 'is_pk': True},
                     {'name': 'order_id', 'type': 'bigint', 'nullable': False, 'comment': '订单ID'},
+                    {'name': 'product_id', 'type': 'bigint', 'nullable': False, 'comment': '商品ID'},
+                    {'name': 'user_id', 'type': 'bigint', 'nullable': False, 'comment': '用户ID'},
                     {'name': 'rating', 'type': 'int', 'nullable': False, 'comment': '评分(1-5)'},
+                    {'name': 'content', 'type': 'varchar(1000)', 'nullable': True, 'comment': '评价内容'},
+                    {'name': 'images', 'type': 'int', 'nullable': True, 'comment': '图片数'},
+                    {'name': 'helpful_count', 'type': 'int', 'nullable': True, 'comment': '有帮助数'},
+                ]},
+                {'name': 't_returns', 'comment': '退换货表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '退货ID', 'is_pk': True},
+                    {'name': 'order_id', 'type': 'bigint', 'nullable': False, 'comment': '订单ID'},
+                    {'name': 'user_id', 'type': 'bigint', 'nullable': False, 'comment': '用户ID'},
+                    {'name': 'reason', 'type': 'varchar(200)', 'nullable': True, 'comment': '退货原因'},
+                    {'name': 'refund_amount', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '退款金额'},
+                    {'name': 'status', 'type': 'varchar(20)', 'nullable': False, 'comment': '状态'},
+                    {'name': 'created_at', 'type': 'datetime', 'nullable': False, 'comment': '申请时间'},
+                ]},
+                {'name': 't_addresses', 'comment': '收货地址表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '地址ID', 'is_pk': True},
+                    {'name': 'user_id', 'type': 'bigint', 'nullable': False, 'comment': '用户ID'},
+                    {'name': 'name', 'type': 'varchar(100)', 'nullable': False, 'comment': '收货人'},
+                    {'name': 'phone', 'type': 'varchar(20)', 'nullable': False, 'comment': '电话'},
+                    {'name': 'province', 'type': 'varchar(50)', 'nullable': False, 'comment': '省份'},
+                    {'name': 'city', 'type': 'varchar(100)', 'nullable': False, 'comment': '城市'},
+                    {'name': 'district', 'type': 'varchar(100)', 'nullable': True, 'comment': '区县'},
+                    {'name': 'detail', 'type': 'varchar(500)', 'nullable': False, 'comment': '详细地址'},
+                ]},
+                {'name': 't_coupons', 'comment': '优惠券表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '优惠券ID', 'is_pk': True},
+                    {'name': 'code', 'type': 'varchar(50)', 'nullable': False, 'comment': '优惠券码'},
+                    {'name': 'name', 'type': 'varchar(200)', 'nullable': True, 'comment': '名称'},
+                    {'name': 'discount_type', 'type': 'varchar(20)', 'nullable': False, 'comment': '类型'},
+                    {'name': 'discount_value', 'type': 'decimal(10,2)', 'nullable': False, 'comment': '优惠值'},
+                    {'name': 'min_order', 'type': 'decimal(10,2)', 'nullable': True, 'comment': '最低订单额'},
+                    {'name': 'max_uses', 'type': 'int', 'nullable': True, 'comment': '最大使用次数'},
+                    {'name': 'valid_from', 'type': 'datetime', 'nullable': False, 'comment': '有效开始'},
+                    {'name': 'valid_until', 'type': 'datetime', 'nullable': False, 'comment': '有效结束'},
+                ]},
+                {'name': 't_user_coupons', 'comment': '用户优惠券表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': 'ID', 'is_pk': True},
+                    {'name': 'user_id', 'type': 'bigint', 'nullable': False, 'comment': '用户ID'},
+                    {'name': 'coupon_id', 'type': 'bigint', 'nullable': False, 'comment': '优惠券ID'},
+                    {'name': 'status', 'type': 'varchar(20)', 'nullable': False, 'comment': '状态'},
+                ]},
+                {'name': 't_warehouses', 'comment': '仓库表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '仓库ID', 'is_pk': True},
+                    {'name': 'name', 'type': 'varchar(200)', 'nullable': False, 'comment': '仓库名'},
+                    {'name': 'city', 'type': 'varchar(100)', 'nullable': True, 'comment': '城市'},
+                    {'name': 'capacity', 'type': 'int', 'nullable': True, 'comment': '容量'},
+                    {'name': 'address', 'type': 'varchar(500)', 'nullable': True, 'comment': '地址'},
+                ]},
+                {'name': 't_inventory', 'comment': '库存表', 'columns': [
+                    {'name': 'id', 'type': 'bigint', 'nullable': False, 'comment': '库存ID', 'is_pk': True},
+                    {'name': 'product_id', 'type': 'bigint', 'nullable': False, 'comment': '商品ID'},
+                    {'name': 'warehouse_id', 'type': 'bigint', 'nullable': False, 'comment': '仓库ID'},
+                    {'name': 'quantity', 'type': 'int', 'nullable': False, 'comment': '数量'},
+                    {'name': 'reserved', 'type': 'int', 'nullable': False, 'comment': '预留数量'},
+                    {'name': 'min_stock', 'type': 'int', 'nullable': True, 'comment': '最低库存预警'},
                 ]},
             ],
             'relationships': [
-                {'from_table': 'orders', 'from_column': 'user_id', 'to_table': 'users_e', 'to_column': 'id'},
-                {'from_table': 'order_items', 'from_column': 'order_id', 'to_table': 'orders', 'to_column': 'id'},
-                {'from_table': 'payments', 'from_column': 'order_id', 'to_table': 'orders', 'to_column': 'id'},
-                {'from_table': 'shipping', 'from_column': 'order_id', 'to_table': 'orders', 'to_column': 'id'},
+                {'from_table': 't_orders', 'from_column': 'user_id', 'to_table': 't_users', 'to_column': 'id'},
+                {'from_table': 't_order_items', 'from_column': 'order_id', 'to_table': 't_orders', 'to_column': 'id'},
+                {'from_table': 't_order_items', 'from_column': 'product_id', 'to_table': 't_products', 'to_column': 'id'},
+                {'from_table': 't_payments', 'from_column': 'order_id', 'to_table': 't_orders', 'to_column': 'id'},
+                {'from_table': 't_shipping', 'from_column': 'order_id', 'to_table': 't_orders', 'to_column': 'id'},
+                {'from_table': 't_reviews', 'from_column': 'order_id', 'to_table': 't_orders', 'to_column': 'id'},
+                {'from_table': 't_reviews', 'from_column': 'product_id', 'to_table': 't_products', 'to_column': 'id'},
+                {'from_table': 't_returns', 'from_column': 'order_id', 'to_table': 't_orders', 'to_column': 'id'},
+                {'from_table': 't_returns', 'from_column': 'user_id', 'to_table': 't_users', 'to_column': 'id'},
+                {'from_table': 't_addresses', 'from_column': 'user_id', 'to_table': 't_users', 'to_column': 'id'},
+                {'from_table': 't_user_coupons', 'from_column': 'user_id', 'to_table': 't_users', 'to_column': 'id'},
+                {'from_table': 't_user_coupons', 'from_column': 'coupon_id', 'to_table': 't_coupons', 'to_column': 'id'},
+                {'from_table': 't_inventory', 'from_column': 'product_id', 'to_table': 't_products', 'to_column': 'id'},
+                {'from_table': 't_inventory', 'from_column': 'warehouse_id', 'to_table': 't_warehouses', 'to_column': 'id'},
+                {'from_table': 't_products', 'from_column': 'category_id', 'to_table': 't_categories', 'to_column': 'id'},
+                {'from_table': 't_products', 'from_column': 'brand_id', 'to_table': 't_brands', 'to_column': 'id'},
             ],
             'metrics': [
-                {'name': 'GMV', 'expression': 'SUM(orders.total_amount)', 'description': '总交易额'},
-                {'name': '订单数', 'expression': 'COUNT(orders.id)', 'description': '总订单数'},
-                {'name': '客单价', 'expression': 'AVG(orders.total_amount)', 'description': '平均订单金额'},
+                {'name': 'GMV', 'expression': 'SUM(t_orders.total_amount)', 'description': '总交易额'},
+                {'name': '订单数', 'expression': 'COUNT(t_orders.id)', 'description': '总订单数'},
+                {'name': '客单价', 'expression': 'AVG(t_orders.total_amount)', 'description': '平均订单金额'},
+                {'name': '退款率', 'expression': 'COUNT(CASE WHEN t_payments.status="refunded" THEN 1 END) / COUNT(t_payments.id) * 100', 'description': '退款订单占比'},
+                {'name': '平均评分', 'expression': 'AVG(t_reviews.rating)', 'description': '平均评价分数'},
             ],
         }
         metadata_configs = [
