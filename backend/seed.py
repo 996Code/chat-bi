@@ -5,6 +5,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
 from app.core.security import hash_password
 from app.core.encryption import encrypt_value
 from app.db.session import async_session_factory
@@ -40,6 +41,15 @@ NOW = datetime.now(timezone.utc)
 
 async def seed():
     async with async_session_factory() as session:
+        # Truncate all tables in dependency order (children first, then parents)
+        for table_name in [
+            'analytics_events', 'feedback', 'saved_queries', 'conversations',
+            'audit_logs', 'metadata_config_versions', 'metadata_configs',
+            'data_sources', 'users', 'tenants',
+        ]:
+            await session.execute(text(f'TRUNCATE TABLE {table_name}'))
+        await session.commit()
+
         tenants = [
             Tenant(id=TENANT_1, name='杭州星辰科技有限公司'),
             Tenant(id=TENANT_2, name='Demo 演示租户'),

@@ -11,6 +11,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 config = context.config
 
+# Override alembic.ini URL with DATABASE_URL from app config
+from app.core.config import settings as app_settings
+config.set_main_option("sqlalchemy.url", app_settings.database_url)
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
