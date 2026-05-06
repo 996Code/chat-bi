@@ -21,16 +21,16 @@ services:
     container_name: chatbi-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-yjt_mysql}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-chatbi}
+      MYSQL_ROOT_PASSWORD: ${DEPLOY_MYSQL_ROOT_PASSWORD:-yjt_mysql}
+      MYSQL_DATABASE: ${DEPLOY_MYSQL_DATABASE:-chatbi}
       MYSQL_CHARSET: utf8mb4
       MYSQL_COLLATION: utf8mb4_unicode_ci
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "${DEPLOY_MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-yjt_mysql}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DEPLOY_MYSQL_ROOT_PASSWORD:-yjt_mysql}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -45,7 +45,7 @@ services:
     container_name: chatbi-redis
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${DEPLOY_REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     networks:
