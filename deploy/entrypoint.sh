@@ -30,7 +30,7 @@ export REDIS_URL="${REDIS_URL:-redis://host.docker.internal:6379/0}"
 export LLM_BASE_URL="${LLM_BASE_URL:-https://coding.dashscope.aliyuncs.com/v1}"
 export LLM_MODEL="${LLM_MODEL:-qwen3.6-plus}"
 export CORS_ORIGINS="${CORS_ORIGINS:-[\"*\"]}"
-export FRONTEND_URL="${FRONTEND_URL:-http://localhost:8080}"
+export FRONTEND_URL="${FRONTEND_URL:-http://localhost:28080/chat-bi/}"
 export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
 echo "[entrypoint] App environment: $APP_ENV"

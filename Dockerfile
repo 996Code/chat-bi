@@ -52,6 +52,6 @@ ENTRYPOINT ["/entrypoint.sh"]
 EXPOSE 28080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:28080/health || exit 1
+  CMD wget -qO- http://127.0.0.1:28080/chat-bi/health || exit 1
 
 CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/conf.d/chatbi.conf"]
