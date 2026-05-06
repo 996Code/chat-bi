@@ -1,6 +1,9 @@
 # Stage 1: Frontend build
 FROM node:20-alpine AS frontend-builder
 
+# Use domestic mirror for npm
+RUN npm config set registry https://registry.npmmirror.com
+
 WORKDIR /app/frontend
 
 COPY frontend/package.json frontend/package-lock.json* ./
@@ -14,13 +17,14 @@ FROM python:3.12-slim AS backend-builder
 
 WORKDIR /app/backend
 COPY backend/pyproject.toml ./
-RUN pip install --no-cache-dir --prefix=/install .
+RUN pip install --no-cache-dir --prefix=/install . -i https://mirrors.aliyun.com/pypi/simple/
 
 # Stage 3: Combined runtime
 FROM nginx:1.25-alpine
 
 # System deps
-RUN apk add --no-cache supervisor python3 && \
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+    apk add --no-cache supervisor python3 && \
     ln -sf python3 /usr/bin/python
 
 # Backend
