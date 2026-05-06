@@ -37,11 +37,11 @@ api.interceptors.response.use(
           .catch(() => {
             localStorage.removeItem('access_token')
             localStorage.removeItem('refresh_token')
-            window.location.href = '/login'
+            window.location.href = '/chat-bi/login'
             return Promise.reject(error)
           })
       } else {
-        window.location.href = '/login'
+        window.location.href = '/chat-bi/login'
       }
     }
     return Promise.reject(error)
