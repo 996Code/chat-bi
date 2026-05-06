@@ -17,6 +17,7 @@ env/
 # Environment files
 .env
 *.env.local
+!deploy/.env
 
 # Database
 *.db
