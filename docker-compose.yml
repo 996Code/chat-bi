@@ -6,7 +6,7 @@ services:
     container_name: chatbi
     restart: unless-stopped
     ports:
-      - "${CHATBI_PORT:-8080}:8080"
+      - "${CHATBI_PORT:-28080}:28080"
     env_file:
       - deploy/.env
     environment:

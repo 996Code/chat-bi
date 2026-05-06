@@ -118,11 +118,11 @@ sleep 5
 MAX_RETRIES=30
 RETRY=0
 while [ $RETRY -lt $MAX_RETRIES ]; do
-  if curl -sf http://127.0.0.1:${CHATBI_PORT:-8080}/health > /dev/null 2>&1; then
+  if curl -sf http://127.0.0.1:${CHATBI_PORT:-28080}/health > /dev/null 2>&1; then
     log_info "ChatBI 启动成功！"
     echo ""
-    echo "  访问地址: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${CHATBI_PORT:-8080}"
-    echo "  健康检查: http://127.0.0.1:${CHATBI_PORT:-8080}/health"
+    echo "  访问地址: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${CHATBI_PORT:-28080}"
+    echo "  健康检查: http://127.0.0.1:${CHATBI_PORT:-28080}/health"
     echo ""
     log_info "查看日志: docker compose logs -f chatbi"
     log_info "停止服务: docker compose down"
