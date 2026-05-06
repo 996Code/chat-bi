@@ -180,6 +180,35 @@ async def health_check_datasource(
     return {"healthy": result["healthy"], "error": result["error"]}
 
 
+@router.get("/health")
+async def bulk_health_check(
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量获取所有数据源的健康状态（3.17 数据源监控）。"""
+    tenant_id = user["tenant_id"]
+    result = await db.execute(
+        select(DataSource)
+        .where(DataSource.tenant_id == tenant_id)
+        .order_by(DataSource.name)
+    )
+    datasources = result.scalars().all()
+
+    health_results = []
+    for ds in datasources:
+        hc = {
+            "id": str(ds.id),
+            "name": ds.name,
+            "db_type": ds.db_type,
+            "is_active": ds.is_active,
+            "last_health_check": ds.last_health_check.isoformat() if ds.last_health_check else None,
+            "health_check_error": ds.health_check_error,
+        }
+        health_results.append(hc)
+
+    return {"datasources": health_results, "total": len(health_results)}
+
+
 @router.post("/{ds_id}/toggle", response_model=DataSourceResponse)
 async def toggle_datasource(
     ds_id: str,

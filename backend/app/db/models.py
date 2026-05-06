@@ -67,6 +67,19 @@ class MetadataConfig(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 
 
+class MetadataConfigVersion(Base):
+    __tablename__ = "metadata_config_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    config_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    config_snapshot: Mapped[str] = mapped_column(Text, nullable=False)  # JSON snapshot at this version
+    change_summary: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

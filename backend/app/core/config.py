@@ -99,6 +99,15 @@ class Settings(BaseSettings):
     redis_url: str = "redis://192.168.3.110:6379/0"  # Redis for query cache, rate limits, login lock
     query_cache_ttl_seconds: int = 3600
 
+    # Slow query alerting
+    slow_query_threshold_ms: int = 5000  # 5s
+    slow_query_alert_enabled: bool = False
+
+    # Metadata auto-refresh
+    metadata_auto_refresh_enabled: bool = False
+    metadata_auto_refresh_interval_minutes: int = 60
+    metadata_auto_refresh_datasources: list[str] = []  # empty = all active datasources
+
     # Logging
     log_level: str = "INFO"
 

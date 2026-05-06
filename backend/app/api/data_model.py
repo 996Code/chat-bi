@@ -3,7 +3,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, text
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -13,8 +13,8 @@ def _iso(dt) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 from app.db.session import get_db
-from app.db.models import DataSource, MetadataConfig
-from app.core.security import get_current_user
+from app.db.models import DataSource, MetadataConfig, MetadataConfigVersion
+from app.core.security import get_current_user, require_role
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -516,15 +516,35 @@ async def update_data_model(
         )
 
     config_id = row.id
+    old_config = row.config
+
+    # Create version snapshot before update
     if "config" in data:
         new_config = json.dumps(data["config"], ensure_ascii=False)
+        # Compute next version number
+        ver_stmt = select(func.max(MetadataConfigVersion.version_number)).where(
+            MetadataConfigVersion.config_id == config_id
+        )
+        ver_result = await db.execute(ver_stmt)
+        next_ver = (ver_result.scalar_one_or_none() or 0) + 1
+
+        version = MetadataConfigVersion(
+            config_id=config_id,
+            tenant_id=uuid.UUID(tenant_id),
+            datasource_id=uuid.UUID(ds_id),
+            version_number=next_ver,
+            config_snapshot=old_config,
+            change_summary=data.get("change_summary", f"手动更新 v{next_ver}"),
+        )
+        db.add(version)
+
         await db.execute(
             text("UPDATE metadata_configs SET config = :config, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
             {"config": new_config, "id": str(config_id)},
         )
         await db.commit()
     else:
-        new_config = row.config
+        new_config = old_config
 
     return {
         "id": str(config_id),
@@ -622,6 +642,229 @@ async def sync_data_model(
     asyncio.create_task(_run_sync_background(task_id, ds_id, tenant_id, mode))
 
     return {"task_id": task_id, "status": "pending", "mode": mode}
+
+
+# ── Metadata Version Management (3.20) ──
+
+from sqlalchemy import func
+
+
+@router.get("/{ds_id}/versions")
+async def list_metadata_versions(
+    ds_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出元数据配置的历史版本。"""
+    tenant_id = user["tenant_id"]
+    result = await db.execute(
+        select(MetadataConfigVersion)
+        .where(
+            MetadataConfigVersion.datasource_id == uuid.UUID(ds_id),
+            MetadataConfigVersion.tenant_id == uuid.UUID(tenant_id),
+        )
+        .order_by(MetadataConfigVersion.version_number.desc())
+    )
+    versions = result.scalars().all()
+    return [
+        {
+            "id": str(v.id),
+            "version_number": v.version_number,
+            "change_summary": v.change_summary,
+            "created_at": _iso(v.created_at),
+            "tables_count": len(json.loads(v.config_snapshot).get("models", [])),
+        }
+        for v in versions
+    ]
+
+
+@router.get("/{ds_id}/versions/{version_num}")
+async def get_metadata_version(
+    ds_id: str,
+    version_num: int,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取指定版本的内容。"""
+    tenant_id = user["tenant_id"]
+    result = await db.execute(
+        select(MetadataConfigVersion).where(
+            MetadataConfigVersion.datasource_id == uuid.UUID(ds_id),
+            MetadataConfigVersion.tenant_id == uuid.UUID(tenant_id),
+            MetadataConfigVersion.version_number == version_num,
+        ).limit(1)
+    )
+    ver = result.scalar_one_or_none()
+    if not ver:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("NOT_FOUND", "版本不存在"),
+        )
+    return {
+        "id": str(ver.id),
+        "version_number": ver.version_number,
+        "change_summary": ver.change_summary,
+        "config": json.loads(ver.config_snapshot),
+        "created_at": _iso(ver.created_at),
+    }
+
+
+@router.post("/{ds_id}/rollback")
+async def rollback_metadata(
+    ds_id: str,
+    data: dict,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """回滚到指定版本的元数据配置。"""
+    tenant_id = user["tenant_id"]
+    version_num = data.get("version_number")
+    if not version_num:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_error("INVALID_INPUT", "需要 version_number 字段"),
+        )
+
+    result = await db.execute(
+        select(MetadataConfigVersion).where(
+            MetadataConfigVersion.datasource_id == uuid.UUID(ds_id),
+            MetadataConfigVersion.tenant_id == uuid.UUID(tenant_id),
+            MetadataConfigVersion.version_number == version_num,
+        ).limit(1)
+    )
+    ver = result.scalar_one_or_none()
+    if not ver:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("NOT_FOUND", "版本不存在"),
+        )
+
+    # Save current as version before rollback
+    current = await db.execute(
+        select(MetadataConfig.id, MetadataConfig.config).where(
+            MetadataConfig.datasource_id == uuid.UUID(ds_id),
+            MetadataConfig.tenant_id == uuid.UUID(tenant_id),
+        ).order_by(MetadataConfig.updated_at.desc()).limit(1)
+    )
+    current_row = current.one_or_none()
+    if current_row:
+        ver_stmt = select(func.max(MetadataConfigVersion.version_number)).where(
+            MetadataConfigVersion.config_id == current_row.id
+        )
+        ver_result = await db.execute(ver_stmt)
+        next_ver = (ver_result.scalar_one_or_none() or 0) + 1
+        rollback_ver = MetadataConfigVersion(
+            config_id=current_row.id,
+            tenant_id=uuid.UUID(tenant_id),
+            datasource_id=uuid.UUID(ds_id),
+            version_number=next_ver,
+            config_snapshot=current_row.config,
+            change_summary=f"回滚前备份 v{next_ver}",
+        )
+        db.add(rollback_ver)
+
+        await db.execute(
+            text("UPDATE metadata_configs SET config = :config, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
+            {"config": ver.config_snapshot, "id": str(current_row.id)},
+        )
+        await db.commit()
+
+    return {
+        "id": ds_id,
+        "rolled_back_to_version": version_num,
+        "config": json.loads(ver.config_snapshot),
+    }
+
+
+# ── Metadata Auto-Refresh Config (3.16) ──
+
+AUTO_REFRESH_PREFIX = "metadata_auto_refresh:"
+AUTO_REFRESH_TTL = 86400 * 7  # 7 days
+
+
+@router.get("/auto-refresh/config")
+async def get_auto_refresh_config(
+    admin: dict = Depends(require_role("admin")),
+):
+    """获取元数据自动刷新配置。"""
+    from app.core.redis_client import get_redis
+    redis = await get_redis()
+    raw = await redis.get(f"{AUTO_REFRESH_PREFIX}config")
+    if raw:
+        return json.loads(raw)
+    return {
+        "enabled": settings.metadata_auto_refresh_enabled,
+        "interval_minutes": settings.metadata_auto_refresh_interval_minutes,
+        "datasources": settings.metadata_auto_refresh_datasources,
+    }
+
+
+@router.put("/auto-refresh/config")
+async def set_auto_refresh_config(
+    data: dict,
+    admin: dict = Depends(require_role("admin")),
+):
+    """设置元数据自动刷新配置。"""
+    from app.core.redis_client import get_redis
+    redis = await get_redis()
+    config = {
+        "enabled": data.get("enabled", False),
+        "interval_minutes": data.get("interval_minutes", 60),
+        "datasources": data.get("datasources", []),
+    }
+    await redis.set(f"{AUTO_REFRESH_PREFIX}config", json.dumps(config), ex=AUTO_REFRESH_TTL)
+    return config
+
+
+@router.post("/auto-refresh/trigger")
+async def trigger_auto_refresh(
+    admin: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发一次自动刷新。扫描所有活跃数据源，检测表结构变更并自动同步。"""
+    from app.core.redis_client import get_redis
+    from app.services.datasource_service import DataSourceService
+    from app.services.mysql_schema_scanner import scan_mysql_schema
+    from app.services.connection_pool import pool_manager
+    from app.db.session import async_session_factory
+
+    # Get auto-refresh config
+    redis = await get_redis()
+    raw = await redis.get(f"{AUTO_REFRESH_PREFIX}config")
+    config = json.loads(raw) if raw else {
+        "enabled": settings.metadata_auto_refresh_enabled,
+        "interval_minutes": settings.metadata_auto_refresh_interval_minutes,
+        "datasources": settings.metadata_auto_refresh_datasources,
+    }
+
+    if not config.get("enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_error("DISABLED", "自动刷新未启用，请先在配置中开启"),
+        )
+
+    tenant_id = admin["tenant_id"]
+    # Get datasources to refresh
+    if config.get("datasources"):
+        ds_ids = config["datasources"]
+    else:
+        # All active datasources
+        result = await db.execute(
+            select(DataSource.id).where(
+                DataSource.tenant_id == uuid.UUID(tenant_id),
+                DataSource.is_active == True,
+            )
+        )
+        ds_ids = [str(r.id) for r in result.scalars().all()]
+
+    refreshed = []
+    for ds_id in ds_ids:
+        task_id = str(uuid.uuid4())
+        await _create_sync_task(task_id, ds_id, tenant_id, "incremental")
+        asyncio.create_task(_run_sync_background(task_id, ds_id, tenant_id, "incremental"))
+        refreshed.append({"datasource_id": ds_id, "task_id": task_id})
+
+    return {"triggered": len(refreshed), "tasks": refreshed}
 
 
 def _merge_model(existing: dict, scanned: dict) -> dict:

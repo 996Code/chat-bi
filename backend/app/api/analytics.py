@@ -147,3 +147,28 @@ async def list_events(
         }
         for e in events
     ]
+
+
+@router.get("/slow-queries")
+async def list_slow_queries(
+    admin: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+    hours: int = Query(24, ge=1, le=168),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """列出慢查询（仅管理员，按租户隔离）。"""
+    from app.services.audit_service import get_slow_queries
+    tenant_id = admin["tenant_id"]
+    return await get_slow_queries(db, tenant_id, limit=limit, hours=hours)
+
+
+@router.get("/slow-queries/stats")
+async def get_slow_query_stats(
+    admin: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+    hours: int = Query(24, ge=1, le=168),
+):
+    """获取慢查询统计（仅管理员）。"""
+    from app.services.audit_service import get_slow_query_stats
+    tenant_id = admin["tenant_id"]
+    return await get_slow_query_stats(db, tenant_id, hours=hours)

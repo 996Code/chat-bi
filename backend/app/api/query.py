@@ -92,7 +92,7 @@ async def create_query(
 
     ds = await _check_datasource(data.datasource_id, tenant_id, db)
 
-    # Check cache first
+    # Check exact-match cache first
     cached = await cache_get(data.question, data.datasource_id, tenant_id)
     if cached:
         elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -112,6 +112,30 @@ async def create_query(
             error=cached.get("error"),
             execution_time_ms=elapsed_ms,
             chart_type=cached.get("chart_type", "table"),
+        )
+
+    # Fallback: semantic cache
+    from app.services.cache_service import semantic_cache_get
+    sem_cached = await semantic_cache_get(data.question, data.datasource_id, tenant_id)
+    if sem_cached:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        from app.services.analytics_service import track_event, EVENT_QUERY_SUCCESS
+        await track_event(db, tenant_id, user["user_id"], EVENT_QUERY_SUCCESS, {
+            "question": data.question,
+            "cached": True,
+            "semantic": True,
+        })
+        await db.commit()
+        return QueryResponse(
+            success=sem_cached.get("success", False),
+            intent=sem_cached.get("intent"),
+            sql=sem_cached.get("sql"),
+            columns=sem_cached.get("columns", []),
+            rows=sem_cached.get("rows", []),
+            row_count=sem_cached.get("row_count", 0),
+            error=sem_cached.get("error"),
+            execution_time_ms=elapsed_ms,
+            chart_type=sem_cached.get("chart_type", "table"),
         )
 
     # Build graph and execute
@@ -400,6 +424,80 @@ async def explain_sql(
     await db.commit()
 
     return {"explanation": explanation}
+
+
+@router.post("/raw")
+async def execute_raw_sql(
+    data: dict,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """直接执行 SQL（3.14 SQL 内联编辑）。仅允许 SELECT 查询。"""
+    import time
+    from app.ai.nodes.execution import validate_sql as do_validate
+    from app.ai.chart_type import infer_chart_type
+    from app.services.data_masking import mask_sensitive_data
+    from app.services.audit_service import log_action
+    from app.services.analytics_service import track_event, EVENT_QUERY_EXECUTE, EVENT_QUERY_SUCCESS, EVENT_QUERY_ERROR
+
+    start = time.monotonic()
+    tenant_id = user["tenant_id"]
+    sql = data.get("sql", "").strip()
+    datasource_id = data.get("datasource_id")
+
+    if not sql:
+        raise HTTPException(status_code=400, detail=_error("EMPTY_SQL", "SQL 不能为空"))
+
+    ds = await _check_datasource(datasource_id, tenant_id, db)
+
+    # Validate: only SELECT allowed
+    validation = do_validate(sql)
+    if not validation.get("safe", True):
+        raise HTTPException(
+            status_code=403,
+            detail=_error("UNSAFE_SQL", f"仅允许 SELECT 查询: {validation.get('reason', '')}"),
+        )
+
+    # Execute
+    from app.ai.nodes.execution import execute_sql
+    result = await execute_sql(sql, datasource_id, tenant_id=tenant_id)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    columns = result.get("columns", [])
+    rows = result.get("rows", [])
+    chart_type = "none"
+    if rows and columns:
+        chart_type = infer_chart_type(columns, rows)
+
+    # Mask sensitive data
+    columns, rows = mask_sensitive_data(columns, rows)
+
+    event_name = EVENT_QUERY_SUCCESS if result.get("success") else EVENT_QUERY_ERROR
+    await log_action(
+        db, tenant_id, user["user_id"],
+        "RAW_QUERY_EXECUTE", "query", datasource_id,
+        details=f"sql={sql[:200]}",
+        sql_text=sql,
+        result_count=result.get("row_count", 0),
+        execution_time_ms=elapsed_ms,
+        error_message=result.get("error") if not result.get("success") else None,
+    )
+    await track_event(db, tenant_id, user["user_id"], event_name, {
+        "question": f"RAW: {sql[:100]}",
+        "success": result.get("success"),
+    })
+    await db.commit()
+
+    return {
+        "success": result.get("success", False),
+        "sql": sql,
+        "columns": columns,
+        "rows": rows,
+        "row_count": result.get("row_count", 0),
+        "error": result.get("error"),
+        "execution_time_ms": elapsed_ms,
+        "chart_type": chart_type,
+    }
 
 
 @router.post("/export", dependencies=[Depends(require_role("admin", "user"))])
