@@ -31,8 +31,9 @@ Thumbs.db
 .planning
 docs
 
-# Deploy (not needed inside image)
-deploy
+# Deploy (only exclude .env, keep config files)
+deploy/.env
+deploy/.env.*
 deploy.sh
 docker-compose.yml
 
