@@ -8,17 +8,17 @@ Usage:
   .venv/bin/python init_test_dbs.py --pg-only
 
 Environment variables:
-  MYSQL_HOST=192.168.3.110     (default)
-  MYSQL_PORT=3306              (default)
-  MYSQL_USER=root              (default)
-  MYSQL_PASS=yjt_mysql         (default)
-  MYSQL_DB=chatbi_test         (default)
+  MYSQL_TEST_HOST=192.168.3.110  (default: 127.0.0.1)
+  MYSQL_TEST_PORT=3306           (default: 3306)
+  MYSQL_TEST_USER=root           (default: root)
+  MYSQL_TEST_PASS=yjt_mysql      (default: '')
+  MYSQL_TEST_DB=chatbi_test      (default: chatbi_test)
 
-  PG_HOST=192.168.3.110        (default)
-  PG_PORT=5432                 (default)
-  PG_USER=postgres             (default)
-  PG_PASS=postgres             (default)
-  PG_DB=chatbi_test            (default)
+  PG_TEST_HOST=192.168.3.110     (default: 127.0.0.1)
+  PG_TEST_PORT=5432              (default: 5432)
+  PG_TEST_USER=postgres          (default: postgres)
+  PG_TEST_PASS=postgres          (default: '')
+  PG_TEST_DB=chatbi_test         (default: chatbi_test)
 """
 import argparse
 import asyncio
@@ -31,17 +31,17 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 
 # ===== Environment =====
-MYSQL_HOST = os.environ.get('MYSQL_HOST', '127.0.0.1')
-MYSQL_PORT = os.environ.get('MYSQL_PORT', '3306')
-MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
-MYSQL_PASS = os.environ.get('MYSQL_PASS', '')
-MYSQL_DB = os.environ.get('MYSQL_DB', 'chatbi_test')
+MYSQL_HOST = os.environ.get('MYSQL_TEST_HOST', '127.0.0.1')
+MYSQL_PORT = os.environ.get('MYSQL_TEST_PORT', '3306')
+MYSQL_USER = os.environ.get('MYSQL_TEST_USER', 'root')
+MYSQL_PASS = os.environ.get('MYSQL_TEST_PASS', '')
+MYSQL_DB = os.environ.get('MYSQL_TEST_DB', 'chatbi_test')
 
-PG_HOST = os.environ.get('PG_HOST', '127.0.0.1')
-PG_PORT = os.environ.get('PG_PORT', '5432')
-PG_USER = os.environ.get('PG_USER', 'postgres')
-PG_PASS = os.environ.get('PG_PASS', '')
-PG_DB = os.environ.get('PG_DB', 'chatbi_test')
+PG_HOST = os.environ.get('PG_TEST_HOST', '127.0.0.1')
+PG_PORT = os.environ.get('PG_TEST_PORT', '5432')
+PG_USER = os.environ.get('PG_TEST_USER', 'postgres')
+PG_PASS = os.environ.get('PG_TEST_PASS', '')
+PG_DB = os.environ.get('PG_TEST_DB', 'chatbi_test')
 
 
 CITIES = ['北京', '上海', '广州', '深圳', '杭州', '成都', '武汉', '南京', '重庆', '西安',
