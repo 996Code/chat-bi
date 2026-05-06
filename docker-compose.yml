@@ -3,12 +3,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/chat-bi/}
+        API_PREFIX: ${API_PREFIX:-/chat-bi/api/v1}
     container_name: chatbi
     restart: unless-stopped
     ports:
       - "${CHATBI_PORT:-28080}:28080"
     env_file:
-      - deploy/.env
+      - .env
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-["*"]}
     extra_hosts:

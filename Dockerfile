@@ -1,6 +1,10 @@
 # Stage 1: Frontend build
 FROM node:20-alpine AS frontend-builder
 
+ARG VITE_BASE_PATH=/chat-bi/
+ARG API_PREFIX=/chat-bi/api/v1
+ENV VITE_API_PREFIX=${API_PREFIX}
+
 # Use domestic mirror for npm
 RUN npm config set registry https://registry.npmmirror.com
 
@@ -10,7 +14,9 @@ COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
 
 COPY frontend/ ./
-RUN npm run build
+# Root .env is copied here for Vite envDir (points to project root)
+COPY .env /app/.env
+RUN VITE_BASE_PATH=$VITE_BASE_PATH VITE_API_PREFIX=$VITE_API_PREFIX npm run build
 
 # Stage 2: Backend dependencies
 FROM python:3.12-slim AS backend-builder

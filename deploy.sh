@@ -4,8 +4,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 COMPOSE_FILE="$PROJECT_DIR/docker-compose.yml"
-ENV_FILE="$PROJECT_DIR/deploy/.env"
-ENV_EXAMPLE="$PROJECT_DIR/deploy/.env.example"
+ENV_FILE="$PROJECT_DIR/.env"
+ENV_EXAMPLE="$PROJECT_DIR/.env.example"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -43,8 +43,21 @@ fi
 
 # ---- Step 1: 初始化 .env ----
 if [ ! -f "$ENV_FILE" ]; then
-  log_warn "deploy/.env 不存在，从 .env.example 复制"
-  cp "$ENV_EXAMPLE" "$ENV_FILE"
+  log_warn ".env 不存在，请选择环境模板："
+  log_warn "  cp .env.home .env    # Home 环境 (192.168.3.110)"
+  log_warn "  cp .env.office .env  # Office 环境"
+  log_warn "  cp .env.example .env # 空白模板"
+
+  if [ -f "$PROJECT_DIR/.env.home" ]; then
+    log_warn "默认使用 .env.home 模板"
+    cp "$PROJECT_DIR/.env.home" "$ENV_FILE"
+  elif [ -f "$PROJECT_DIR/.env.example" ]; then
+    cp "$PROJECT_DIR/.env.example" "$ENV_FILE"
+  else
+    log_error "未找到环境模板文件"
+    exit 1
+  fi
+
   log_warn "请编辑 $ENV_FILE 填入实际配置"
   log_warn "按回车继续，或 Ctrl+C 退出修改配置"
   read -r

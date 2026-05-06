@@ -16,8 +16,12 @@ env/
 
 # Environment files
 .env
+.env.local
 *.env.local
-!deploy/.env
+frontend/.env
+!.env.example
+!.env.home
+!.env.office
 
 # Database
 *.db

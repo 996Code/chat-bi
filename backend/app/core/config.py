@@ -126,6 +126,16 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # ---- Docker-compose / frontend only (recognized so pydantic doesn't forbid) ----
+    chatbi_port: int = 28080
+    deploy_mysql_port: int = 3306
+    deploy_mysql_root_password: str = ""
+    deploy_mysql_database: str = "chatbi"
+    deploy_redis_port: int = 6379
+    vite_base_path: str = "/chat-bi/"
+    vite_api_prefix: str = "/chat-bi/api/v1"
+    api_prefix: str = "/chat-bi/api/v1"
+
     @field_validator("secret_key", "data_source_encryption_key")
     @classmethod
     def not_empty(cls, v: str) -> str:
