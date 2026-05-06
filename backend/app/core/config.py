@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     query_cache_ttl_seconds: int = 3600
 
     # Slow query alerting
-    slow_query_threshold_ms: int = 5000  # 5s
+    slow_query_threshold_ms: int = 1000  # 1s (开发环境方便测试)
     slow_query_alert_enabled: bool = False
 
     # Metadata auto-refresh
@@ -118,7 +118,7 @@ class Settings(BaseSettings):
             raise ValueError("This field must be set via environment variable")
         return v
 
-    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8", extra="forbid")
+    model_config = ConfigDict(env_file=str(BASE_DIR / ".env"), env_file_encoding="utf-8", extra="forbid")
 
 
 settings = Settings()

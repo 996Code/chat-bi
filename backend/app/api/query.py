@@ -6,7 +6,7 @@ import time
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -166,17 +166,44 @@ async def create_query(
         from app.services.data_masking import mask_sensitive_data
         columns, rows = mask_sensitive_data(columns, rows)
 
+        # Find conversation_id for audit log linkage
+        conv_id = None
+        try:
+            from app.db.models import Conversation
+            from datetime import datetime, timedelta
+            cutoff = datetime.now() - timedelta(minutes=2)
+            conv_stmt = (
+                select(Conversation)
+                .where(
+                    Conversation.tenant_id == tenant_id,
+                    Conversation.user_id == user["user_id"],
+                    Conversation.datasource_id == data.datasource_id,
+                    Conversation.updated_at >= cutoff,
+                )
+                .order_by(desc(Conversation.updated_at))
+                .limit(1)
+            )
+            conv_result = await db.execute(conv_stmt)
+            conv_row = conv_result.scalar_one_or_none()
+            if conv_row:
+                conv_id = str(conv_row.id)
+        except Exception:
+            pass
+
         # Audit log with structured fields
         from app.services.audit_service import log_action
         from app.services.analytics_service import track_event, EVENT_QUERY_EXECUTE, EVENT_QUERY_SUCCESS, EVENT_QUERY_ERROR
+        sql_exec_ms = final_state.get("execution_time_ms")  # Pure SQL execution time from execute_sql node
         await log_action(
             db, tenant_id, user["user_id"],
             "QUERY_EXECUTE", "query", data.datasource_id,
             details=f"question={data.question[:200]} intent={final_state.get('intent')}",
             sql_text=final_state.get("sql"),
             result_count=final_state.get("row_count", 0),
-            execution_time_ms=elapsed_ms,
+            execution_time_ms=elapsed_ms,  # Total pipeline time
+            sql_execution_time_ms=sql_exec_ms,  # Pure SQL execution time
             error_message=final_state.get("error") if not final_state.get("success") else None,
+            conversation_id=conv_id,
         )
         event_name = EVENT_QUERY_SUCCESS if final_state.get("success") else EVENT_QUERY_ERROR
         await track_event(db, tenant_id, user["user_id"], event_name, {
@@ -194,6 +221,7 @@ async def create_query(
             error=final_state.get("error"),
             chart_type=chart_type,
         )
+
         await db.commit()
 
         response = QueryResponse(
@@ -254,9 +282,57 @@ async def stream_query(
     final_sql = None
     final_error = None
     final_row_count = 0
+    final_rows = []
+    final_columns = []
+    cache_hit = False
+    cache_type = None
+    sql_execution_ms = None  # Pure SQL execution time
 
     async def event_stream():
-        nonlocal final_success, final_sql, final_error, final_row_count
+        nonlocal final_success, final_sql, final_error, final_row_count, final_rows, final_columns, cache_hit, cache_type
+
+        # Step 0: Check cache
+        step_start = time.monotonic()
+        cached = await cache_get(data.question, data.datasource_id, tenant_id)
+        if cached:
+            cache_hit = True
+            cache_type = "exact"
+            cache_duration = int((time.monotonic() - step_start) * 1000)
+            yield f"event: cache\ndata: {json.dumps({'hit': True, 'type': 'exact', 'duration_ms': cache_duration}, ensure_ascii=False)}\n\n"
+            # Return cached result as data event
+            yield f"event: data\ndata: {json.dumps({'success': cached.get('success', False), 'columns': cached.get('columns', []), 'rows': cached.get('rows', []), 'row_count': cached.get('row_count', 0), 'detail': f'精确缓存命中 ({cache_duration}ms)', 'duration_ms': cache_duration}, ensure_ascii=False, default=str)}\n\n"
+            final_success = cached.get("success", False)
+            final_row_count = cached.get("row_count", 0)
+            if cached.get("sql"):
+                final_sql = cached.get("sql")
+                yield f"event: sql\ndata: {json.dumps({'sql': final_sql, 'detail': '缓存 SQL', 'duration_ms': 0}, ensure_ascii=False)}\n\n"
+            if cached.get("chart_type"):
+                yield f"event: chart\ndata: {json.dumps({'chart_type': cached.get('chart_type'), 'detail': '缓存图表'}, ensure_ascii=False)}\n\n"
+            yield f"event: complete\ndata: {json.dumps({'success': final_success, 'is_slow': False, 'cached': True, 'cache_type': 'exact'}, ensure_ascii=False)}\n\n"
+            return
+
+        from app.services.cache_service import semantic_cache_get
+        sem_cached = await semantic_cache_get(data.question, data.datasource_id, tenant_id)
+        if sem_cached:
+            cache_hit = True
+            cache_type = "semantic"
+            cache_duration = int((time.monotonic() - step_start) * 1000)
+            yield f"event: cache\ndata: {json.dumps({'hit': True, 'type': 'semantic', 'duration_ms': cache_duration}, ensure_ascii=False)}\n\n"
+            yield f"event: data\ndata: {json.dumps({'success': sem_cached.get('success', False), 'columns': sem_cached.get('columns', []), 'rows': sem_cached.get('rows', []), 'row_count': sem_cached.get('row_count', 0), 'detail': f'语义缓存命中 ({cache_duration}ms)', 'duration_ms': cache_duration}, ensure_ascii=False, default=str)}\n\n"
+            final_success = sem_cached.get("success", False)
+            final_row_count = sem_cached.get("row_count", 0)
+            if sem_cached.get("sql"):
+                final_sql = sem_cached.get("sql")
+                yield f"event: sql\ndata: {json.dumps({'sql': final_sql, 'detail': '缓存 SQL', 'duration_ms': 0}, ensure_ascii=False)}\n\n"
+            if sem_cached.get("chart_type"):
+                yield f"event: chart\ndata: {json.dumps({'chart_type': sem_cached.get('chart_type'), 'detail': '缓存图表'}, ensure_ascii=False)}\n\n"
+            yield f"event: complete\ndata: {json.dumps({'success': final_success, 'is_slow': False, 'cached': True, 'cache_type': 'semantic'}, ensure_ascii=False)}\n\n"
+            return
+
+        # Cache miss
+        cache_duration = int((time.monotonic() - step_start) * 1000)
+        yield f"event: cache\ndata: {json.dumps({'hit': False, 'duration_ms': cache_duration}, ensure_ascii=False)}\n\n"
+
         try:
             # Step 1: Intent
             step_start = time.monotonic()
@@ -327,8 +403,11 @@ async def stream_query(
             from app.ai.nodes.execution import execute_sql
             exec_result = await execute_sql(sql, data.datasource_id, tenant_id=tenant_id)
             exec_duration = int((time.monotonic() - step_start) * 1000)
+            sql_execution_ms = exec_duration
             final_success = exec_result.get("success", False)
             final_row_count = exec_result.get("row_count", 0)
+            final_rows = exec_result.get("rows", [])
+            final_columns = exec_result.get("columns", [])
             final_error = exec_result.get("error")
             exec_detail = f"查询成功，返回 {final_row_count} 行" if final_success else f"执行失败: {final_error}"
             yield f"event: data\ndata: {json.dumps({**exec_result, 'detail': exec_detail, 'duration_ms': exec_duration}, ensure_ascii=False, default=str)}\n\n"
@@ -348,7 +427,9 @@ async def stream_query(
                 )
                 if heal_result.get("success"):
                     final_sql = heal_result.get("sql", final_sql)
+                    exec_start_heal = time.monotonic()
                     exec_result = await execute_sql(final_sql, data.datasource_id, tenant_id=tenant_id)
+                    sql_execution_ms = int((time.monotonic() - exec_start_heal) * 1000)
                     final_success = exec_result.get("success", False)
                     final_row_count = exec_result.get("row_count", 0)
                     final_error = exec_result.get("error")
@@ -364,7 +445,10 @@ async def stream_query(
                 chart_detail = f"推荐图表: {chart_labels.get(chart_type, chart_type)}"
                 yield f"event: chart\ndata: {json.dumps({'chart_type': chart_type, 'detail': chart_detail}, ensure_ascii=False)}\n\n"
 
-            yield f"event: complete\ndata: {json.dumps({'success': final_success}, ensure_ascii=False)}\n\n"
+            # Slow query check
+            total_ms = int((time.monotonic() - start_time) * 1000)
+            is_slow = total_ms > settings.slow_query_threshold_ms
+            yield f"event: complete\ndata: {json.dumps({'success': final_success, 'is_slow': is_slow, 'cached': False}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             logger.exception("Stream query error")
@@ -382,6 +466,7 @@ async def stream_query(
                 sql_text=final_sql,
                 result_count=final_row_count,
                 execution_time_ms=elapsed_ms,
+                sql_execution_time_ms=sql_execution_ms,
                 error_message=final_error if not final_success else None,
             )
             await _auto_save_history(
@@ -392,6 +477,19 @@ async def stream_query(
                 execution_time_ms=elapsed_ms,
                 error=final_error,
             )
+
+            # Cache successful stream result
+            if final_success and final_rows:
+                await cache_set(data.question, data.datasource_id, {
+                    "success": True,
+                    "intent": None,
+                    "sql": final_sql,
+                    "columns": final_columns,
+                    "rows": final_rows,
+                    "row_count": final_row_count,
+                    "chart_type": None,
+                }, tenant_id=tenant_id)
+
             await db.commit()
         except Exception:
             logger.exception("Failed to save stream query audit/history")

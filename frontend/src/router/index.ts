@@ -45,6 +45,24 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DataModelView.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/monitoring',
+    name: 'Monitoring',
+    component: () => import('@/views/MonitoringView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/evaluation',
+    name: 'Evaluation',
+    component: () => import('@/views/EvaluationView.vue'),
+    meta: { requiresAuth: true, adminOnly: true },
+  },
+  {
+    path: '/query-history',
+    name: 'QueryHistory',
+    component: () => import('@/views/QueryHistory.vue'),
+    meta: { requiresAuth: true },
+  },
 ]
 
 const router = createRouter({
@@ -60,6 +78,10 @@ router.beforeEach((to, _from) => {
     return { name: 'Login', query: { redirect: to.fullPath } }
   }
   if (to.meta.guest && authStore.isAuthenticated) {
+    return { name: 'Chat' }
+  }
+  // Admin-only routes: check from decoded JWT in store
+  if (to.meta.adminOnly && authStore.user?.role !== 'admin') {
     return { name: 'Chat' }
   }
 })

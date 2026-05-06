@@ -32,8 +32,11 @@
         <div class="card-header">
           <span class="card-title">{{ conv.title || '新对话' }}</span>
           <div class="card-actions">
-            <el-button size="small" text @click="loadConversation(conv)">
-              <el-icon><View /></el-icon> 查看
+            <el-button size="small" type="primary" @click="jumpToConversation(conv)">
+              <el-icon><ChatDotRound /></el-icon> 打开对话
+            </el-button>
+            <el-button size="small" text @click="loadConvQueries(conv)">
+              <el-icon><View /></el-icon> 查询记录
             </el-button>
             <el-button size="small" text type="danger" @click="deleteConv(conv)">
               <el-icon><Delete /></el-icon>
@@ -45,33 +48,56 @@
           <span>{{ conv.message_count }} 条消息</span>
           <span class="card-time">{{ formatDate(conv.updated_at) }}</span>
         </div>
-        <!-- Preview: first user message -->
         <div v-if="conv.first_question" class="card-preview">
           {{ conv.first_question }}
         </div>
       </div>
     </div>
 
-    <!-- Conversation detail dialog -->
-    <el-dialog v-model="showDetail" :title="selectedConv?.title || '对话详情'" width="720px">
-      <div v-if="selectedConv" class="conv-detail">
-        <div class="msg-list">
-          <div
-            v-for="(msg, idx) in selectedConv.messages"
-            :key="idx"
-            :class="['msg-item', msg.role]"
-          >
-            <div class="msg-role">{{ msg.role === 'user' ? '你' : '助手' }}</div>
-            <div class="msg-content">
-              <div class="msg-text">{{ msg.content }}</div>
-              <pre v-if="msg.sql" class="msg-sql">{{ msg.sql }}</pre>
+    <!-- Query records dialog with trace -->
+    <el-dialog v-model="showQueries" :title="selectedConv?.title || '查询记录'" width="800px">
+      <div v-if="selectedConv" class="query-list">
+        <div v-if="queryMessages.length === 0" class="empty-msg">暂无查询记录</div>
+        <div
+          v-for="(msg, idx) in queryMessages"
+          :key="msg.id"
+          class="query-card"
+        >
+          <div class="query-card-header">
+            <span class="query-num">#{{ idx + 1 }}</span>
+            <span class="query-question">{{ msg.content }}</span>
+            <div class="query-actions">
+              <el-button size="small" type="primary" link @click="showTrace(msg)" :disabled="!msg.pipelineSteps?.length">
+                完整流程
+              </el-button>
             </div>
           </div>
-          <div v-if="!selectedConv.messages?.length" class="empty-msg">
-            暂无消息
+          <div class="query-card-body" v-if="msg.sql">
+            <div class="query-sql"><pre>{{ msg.sql }}</pre></div>
+            <div class="query-meta">
+              <el-tag v-if="msg.error" type="danger" size="small">失败</el-tag>
+              <el-tag v-else type="success" size="small">成功 {{ msg.row_count }} 行</el-tag>
+              <span v-if="msg.execution_time_ms">{{ msg.execution_time_ms }}ms</span>
+            </div>
+          </div>
+          <div class="query-card-body" v-else-if="msg.error">
+            <div class="query-error">{{ msg.error }}</div>
           </div>
         </div>
       </div>
+    </el-dialog>
+
+    <!-- Pipeline trace dialog -->
+    <PipelineTraceDialog v-model="showTraceDialog" :steps="traceSteps" title="查询执行记录" />
+
+    <!-- Jump to conversation confirmation -->
+    <el-dialog v-model="showJumpConfirm" title="跳转确认" width="480px">
+      <p>将跳转到对话：<b>{{ jumpTarget?.title }}</b></p>
+      <p class="text-muted">当前对话的未保存内容将丢失</p>
+      <template #footer>
+        <el-button @click="showJumpConfirm = false">取消</el-button>
+        <el-button type="primary" @click="doJump">确认跳转</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -79,20 +105,28 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Search, Delete, View } from '@element-plus/icons-vue'
+import { ArrowLeft, Search, Delete, View, ChatDotRound } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useDatasourceStore } from '@/stores/datasourceStore'
+import { useChatStore } from '@/stores/chatStore'
 import api from '@/api'
+import PipelineTraceDialog from '@/components/PipelineTraceDialog.vue'
 
 const router = useRouter()
 const datasourceStore = useDatasourceStore()
+const chatStore = useChatStore()
 
 const loading = ref(false)
 const filterDsId = ref('')
 const searchText = ref('')
 const conversations = ref<any[]>([])
-const showDetail = ref(false)
+const showQueries = ref(false)
 const selectedConv = ref<any>(null)
+const queryMessages = ref<any[]>([])
+const showTraceDialog = ref(false)
+const traceSteps = ref<any[]>([])
+const showJumpConfirm = ref(false)
+const jumpTarget = ref<any>(null)
 
 const filteredConvs = computed(() => {
   let list = conversations.value
@@ -141,13 +175,36 @@ async function loadHistory() {
   }
 }
 
-async function loadConversation(conv: any) {
+async function loadConvQueries(conv: any) {
   try {
     const res = await api.get(`/conversations/${conv.id}`)
     selectedConv.value = res.data
-    showDetail.value = true
+    // Extract assistant messages with query info
+    queryMessages.value = (res.data.messages || [])
+      .filter((m: any) => m.role === 'assistant' && (m.sql || m.error || m.pipelineSteps?.length))
+    showQueries.value = true
   } catch {
-    ElMessage.error('加载对话详情失败')
+    ElMessage.error('加载查询记录失败')
+  }
+}
+
+function showTrace(msg: any) {
+  traceSteps.value = msg.pipelineSteps || []
+  showTraceDialog.value = true
+}
+
+function jumpToConversation(conv: any) {
+  jumpTarget.value = conv
+  showJumpConfirm.value = true
+}
+
+async function doJump() {
+  showJumpConfirm.value = false
+  try {
+    await chatStore.loadConversation(jumpTarget.value.id)
+    router.push('/')
+  } catch {
+    ElMessage.error('加载对话失败')
   }
 }
 
@@ -296,60 +353,84 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
-.conv-detail {
+.text-muted {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+/* Query records dialog */
+.query-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   max-height: 60vh;
   overflow-y: auto;
 }
 
-.msg-list {
+.query-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.query-card-header {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.msg-item {
-  display: flex;
-  gap: 12px;
-}
-
-.msg-item.user {
-  flex-direction: row-reverse;
-}
-
-.msg-role {
-  font-size: 12px;
-  color: #94a3b8;
-  flex-shrink: 0;
-  padding-top: 4px;
-}
-
-.msg-content {
-  max-width: 80%;
+  align-items: center;
+  gap: 8px;
   padding: 10px 14px;
-  border-radius: 10px;
-  background: #f1f5f9;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
 }
 
-.msg-item.user .msg-content {
-  background: #6366f1;
-  color: white;
+.query-num {
+  font-weight: 700;
+  color: #6366f1;
+  flex-shrink: 0;
 }
 
-.msg-text {
-  font-size: 14px;
-  line-height: 1.5;
+.query-question {
+  flex: 1;
+  font-size: 13px;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.msg-sql {
-  margin-top: 6px;
+.query-actions {
+  flex-shrink: 0;
+}
+
+.query-card-body {
+  padding: 10px 14px;
+}
+
+.query-sql pre {
+  margin: 0;
   padding: 6px 10px;
   background: #1e1e1e;
   color: #a5d6ff;
   font-size: 12px;
-  font-family: 'SF Mono', monospace;
+  font-family: 'SF Mono', 'Fira Code', monospace;
   border-radius: 6px;
   overflow-x: auto;
   white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.query-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #909399;
+}
+
+.query-error {
+  color: #f56c6c;
+  font-size: 13px;
 }
 
 .empty-msg {

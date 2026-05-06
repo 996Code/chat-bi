@@ -9,15 +9,42 @@
         <el-select v-model="chatStore.currentDatasourceId" placeholder="选择数据源" style="width: 200px" @change="onDatasourceChange">
           <el-option v-for="ds in datasourceStore.datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
         </el-select>
-        <el-button text @click="router.push('/datasources')">管理数据源</el-button>
-        <el-button text @click="router.push('/data-models')">数据模型</el-button>
       </div>
       <div class="header-right">
-        <el-button text @click="pipelineTraceSteps = []; showPipelineDialog = true">
-          <el-icon><QuestionFilled /></el-icon> 查询流程
-        </el-button>
-        <span class="user-email">{{ authStore.user?.email }}</span>
-        <el-button text @click="handleLogout">退出</el-button>
+        <el-popover trigger="click" placement="bottom-end" :width="180">
+          <template #reference>
+            <span class="nav-dropdown-trigger">
+              <el-icon><UserFilled /></el-icon> {{ authStore.user?.email }}
+              <el-icon><ArrowDown /></el-icon>
+            </span>
+          </template>
+          <div class="header-menu">
+            <div class="header-menu-item" @click="goTo('/datasources')">
+              <el-icon><Connection /></el-icon> 数据源管理
+            </div>
+            <div class="header-menu-item" @click="goTo('/data-models')">
+              <el-icon><Grid /></el-icon> 数据模型
+            </div>
+            <div class="header-menu-divider"></div>
+            <div class="header-menu-item" @click="goTo('/monitoring')">
+              <el-icon><Monitor /></el-icon> 监控面板
+            </div>
+            <div class="header-menu-item" @click="goTo('/evaluation')">
+              <el-icon><Histogram /></el-icon> 评估测试
+            </div>
+            <div class="header-menu-divider"></div>
+            <div class="header-menu-item" @click="goTo('/query-history')">
+              <el-icon><Clock /></el-icon> 查询历史
+            </div>
+            <div class="header-menu-item" @click="showPipelineDialog = true">
+              <el-icon><Help /></el-icon> 查询流程
+            </div>
+            <div class="header-menu-divider"></div>
+            <div class="header-menu-item danger" @click="handleLogout">
+              <el-icon><SwitchButton /></el-icon> 退出登录
+            </div>
+          </div>
+        </el-popover>
       </div>
     </div>
 
@@ -159,123 +186,7 @@
     <FirstUseGuide />
 
     <!-- Pipeline Dialog -->
-    <el-dialog v-model="showPipelineDialog" :title="pipelineTraceSteps.length > 0 ? '查询执行记录' : '查询流程说明'" width="800px">
-      <!-- Per-query trace (from message button) -->
-      <div v-if="pipelineTraceSteps.length > 0" class="trace-table">
-        <div class="trace-header">
-          <span>本次查询的完整执行记录</span>
-        </div>
-        <el-table :data="pipelineTraceSteps" stripe size="small" style="width: 100%">
-          <el-table-column label="#" width="40" align="center">
-            <template #default="{ $index }">{{ $index + 1 }}</template>
-          </el-table-column>
-          <el-table-column label="步骤" width="120" prop="label" />
-          <el-table-column label="状态" width="70" align="center">
-            <template #default="{ row }">
-              <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
-              <el-tag v-else-if="row.status === 'failed'" type="danger" size="small">失败</el-tag>
-              <el-tag v-else type="info" size="small">进行中</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="耗时" width="80" align="center">
-            <template #default="{ row }">
-              <span v-if="row.duration_ms">{{ row.duration_ms }}ms</span>
-              <span v-else>-</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="执行详情" min-width="350">
-            <template #default="{ row }">
-              <!-- Schema selection: tables + columns -->
-              <div v-if="row.type === 'semantics' && row.tables" class="trace-detail-block">
-                <div class="trace-detail-line">{{ row.detail }}</div>
-                <div v-for="t in row.tables" :key="t" class="trace-detail-sub">
-                  <span class="trace-table-name">{{ t }}</span>
-                  <span v-if="row.columns?.[t]?.length" class="trace-col-list">
-                    字段: {{ row.columns[t].join(', ') }}
-                  </span>
-                </div>
-              </div>
-              <!-- SQL generation: full SQL + validation + attempt -->
-              <div v-else-if="row.type === 'sql'" class="trace-detail-block">
-                <div v-if="row.sql" class="trace-sql"><pre>{{ row.sql }}</pre></div>
-                <div v-if="row.attempt && row.attempt > 1" class="trace-detail-sub">
-                  <el-tag size="small" type="warning">第 {{ row.attempt }} 次尝试</el-tag>
-                </div>
-                <div v-if="row.validation" class="trace-detail-sub">
-                  <div v-if="row.validation.table_fixes?.length">
-                    表名修复: {{ row.validation.table_fixes.join(', ') }}
-                  </div>
-                  <div v-if="row.validation.column_fixes?.length">
-                    列名修复: {{ row.validation.column_fixes.join(', ') }}
-                  </div>
-                </div>
-                <div v-if="row.error_code" class="trace-detail-sub">
-                  <el-tag size="small" type="danger">错误码: {{ row.error_code }}</el-tag>
-                  <span v-if="row.retry">第 {{ row.retry }} 次自愈</span>
-                </div>
-                <div v-if="!row.sql && row.detail">{{ row.detail }}</div>
-              </div>
-              <!-- Data execution -->
-              <div v-else-if="row.type === 'data'" class="trace-detail-block">
-                <div>{{ row.detail }}</div>
-              </div>
-              <!-- Other steps -->
-              <span v-else>{{ row.detail || '-' }}</span>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-      <!-- Static flow description (from header button) -->
-      <div v-else class="flow-desc">
-        <div class="flow-step-list">
-          <div class="flow-step-item">
-            <div class="flow-step-num">1</div>
-            <div class="flow-step-body">
-              <div class="flow-step-title">意图识别</div>
-              <div class="flow-step-text">判断用户问题是否为数据查询意图</div>
-            </div>
-          </div>
-          <div class="flow-step-item">
-            <div class="flow-step-num">2</div>
-            <div class="flow-step-body">
-              <div class="flow-step-title">Schema 选择</div>
-              <div class="flow-step-text">LLM 两步选择：先选相关表，再选相关列，构建精简 Schema 上下文</div>
-            </div>
-          </div>
-          <div class="flow-step-item">
-            <div class="flow-step-num">3</div>
-            <div class="flow-step-body">
-              <div class="flow-step-title">SQL 生成</div>
-              <div class="flow-step-text">基于 Schema 上下文和用户问题，生成 SQL 查询语句</div>
-            </div>
-          </div>
-          <div class="flow-step-item">
-            <div class="flow-step-num">4</div>
-            <div class="flow-step-body">
-              <div class="flow-step-title">执行查询</div>
-              <div class="flow-step-text">在数据源上执行生成的 SQL，返回查询结果</div>
-            </div>
-          </div>
-          <div class="flow-step-item">
-            <div class="flow-step-num">5</div>
-            <div class="flow-step-body">
-              <div class="flow-step-title">SQL 自愈（失败时）</div>
-              <div class="flow-step-text">若执行失败，LLM 分析错误原因并修正 SQL，最多重试 2 轮</div>
-            </div>
-          </div>
-          <div class="flow-step-item">
-            <div class="flow-step-num">6</div>
-            <div class="flow-step-body">
-              <div class="flow-step-title">图表推断</div>
-              <div class="flow-step-text">根据返回的列名和数据特征，推荐最佳可视化图表类型</div>
-            </div>
-          </div>
-        </div>
-        <div class="flow-note">
-          点击查询结果卡片上的「完整流程」按钮，可查看该次查询的实际执行记录。
-        </div>
-      </div>
-    </el-dialog>
+    <PipelineTraceDialog v-model="showPipelineDialog" :steps="pipelineTraceSteps" />
   </div>
 </template>
 
@@ -285,11 +196,12 @@ import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chatStore'
 import { useDatasourceStore } from '@/stores/datasourceStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ChatDotRound, ChatLineSquare, Loading, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Download } from '@element-plus/icons-vue'
+import { ChatDotRound, ChatLineSquare, Loading, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Download, UserFilled, ArrowDown, Connection, Grid, Monitor, Histogram, Clock, Help, SwitchButton } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import ChartRenderer from '@/components/ChartRenderer.vue'
 import FirstUseGuide from '@/components/FirstUseGuide.vue'
+import PipelineTraceDialog from '@/components/PipelineTraceDialog.vue'
 
 const router = useRouter()
 const chatStore = useChatStore()
@@ -402,6 +314,10 @@ function handleLogout() {
   router.push('/login')
 }
 
+function goTo(path: string) {
+  router.push(path)
+}
+
 function onDatasourceChange() {
   chatStore.clearMessages()
   loadSuggestedQuestions()
@@ -469,6 +385,16 @@ onMounted(async () => {
   // Load conversation list and suggested questions
   await chatStore.loadConversations()
   await loadSuggestedQuestions()
+
+  // Handle jump from slow query trace
+  const convId = router.currentRoute.value.query.conv as string
+  if (convId) {
+    const conv = chatStore.conversations.find(c => c.id === convId)
+    if (conv) {
+      await handleLoadConversation(conv)
+    }
+  }
+
   // Auto-scroll on SSE updates
   chatStore.onMessageUpdate = () => {
     nextTick(() => scrollToBottom())
@@ -618,6 +544,64 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 150px;
+}
+
+.nav-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #606266;
+  font-size: 13px;
+  padding: 0 10px;
+  border-radius: 4px;
+  transition: color 0.2s;
+  user-select: none;
+  max-width: 200px;
+}
+.nav-dropdown-trigger:hover {
+  color: #409eff;
+}
+
+.admin-menu-list, .header-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 4px;
+}
+.admin-menu-item, .header-menu-item {
+  padding: 7px 8px;
+  font-size: 14px;
+  color: #606266;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+  text-align: left;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.admin-menu-item:hover, .header-menu-item:hover {
+  background: #f0f2f5;
+  color: #409eff;
+}
+.header-menu-item .el-icon {
+  flex-shrink: 0;
+  font-size: 15px;
+}
+.header-menu-item.danger {
+  color: #ef4444;
+}
+.header-menu-item.danger:hover {
+  color: #dc2626;
+  background: #fef2f2;
+}
+.header-menu-divider {
+  height: 1px;
+  background: #e4e7ed;
+  margin: 4px 4px;
 }
 
 .messages {
@@ -837,112 +821,4 @@ onMounted(async () => {
   text-align: center;
 }
 
-/* Pipeline trace table */
-.trace-table {
-  padding: 8px 0;
-}
-
-.trace-header {
-  margin-bottom: 12px;
-  font-size: 14px;
-  color: #606266;
-}
-
-.trace-sql pre {
-  margin: 0;
-  padding: 6px 10px;
-  background: #1e1e1e;
-  color: #a5d6ff;
-  font-size: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  border-radius: 6px;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.5;
-}
-
-.trace-detail-block {
-  line-height: 1.5;
-}
-
-.trace-detail-line {
-  color: #303133;
-  font-size: 13px;
-}
-
-.trace-detail-sub {
-  color: #909399;
-  font-size: 12px;
-  margin-top: 4px;
-}
-
-.trace-table-name {
-  font-weight: 600;
-  color: #409eff;
-}
-
-.trace-col-list {
-  color: #909399;
-  margin-left: 4px;
-}
-
-.trace-empty {
-  padding: 40px 0;
-}
-
-/* Static flow description */
-.flow-step-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.flow-step-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-}
-
-.flow-step-num {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: #6366f1;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 14px;
-}
-
-.flow-step-body {
-  flex: 1;
-  padding-top: 4px;
-}
-
-.flow-step-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.flow-step-text {
-  font-size: 13px;
-  color: #909399;
-  margin-top: 2px;
-  line-height: 1.5;
-}
-
-.flow-note {
-  margin-top: 20px;
-  padding: 10px 14px;
-  background: #f0f5ff;
-  border-radius: 8px;
-  border: 1px solid #d0e0ff;
-  font-size: 13px;
-  color: #409eff;
-}
 </style>

@@ -92,8 +92,10 @@ class AuditLog(Base):
     details: Mapped[str] = mapped_column(Text, default="")
     sql_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     result_count: Mapped[Optional[int]] = mapped_column(nullable=True)
-    execution_time_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
+    execution_time_ms: Mapped[Optional[int]] = mapped_column(nullable=True)  # Total pipeline time
+    sql_execution_time_ms: Mapped[Optional[int]] = mapped_column(nullable=True)  # Pure SQL execution time
     error_message: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    conversation_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
 
 

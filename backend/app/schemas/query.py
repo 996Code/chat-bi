@@ -27,6 +27,9 @@ class QueryResponse(BaseModel):
     error: str | None = None
     execution_time_ms: int | None = None
     chart_type: str = "none"
+    cached: bool = False  # Whether this was a cache hit
+    cache_type: str | None = None  # "exact" or "semantic"
+    is_slow: bool = False  # Whether total time exceeded slow query threshold
 
 
 class ExplainRequest(BaseModel):

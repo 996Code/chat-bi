@@ -15,7 +15,7 @@ export interface QueryResponse {
 }
 
 export interface PipelineStep {
-  type: 'intent' | 'semantics' | 'sql' | 'data' | 'chart' | 'complete'
+  type: 'intent' | 'semantics' | 'sql' | 'data' | 'chart' | 'complete' | 'cache'
   label: string
   status: 'running' | 'done' | 'failed'
   detail?: string
@@ -27,6 +27,9 @@ export interface PipelineStep {
   validation?: { table_fixes?: string[]; column_fixes?: string[] }
   error_code?: string
   retry?: number
+  cached?: boolean
+  cache_type?: 'exact' | 'semantic'
+  is_slow?: boolean
 }
 
 export interface Message {
@@ -208,14 +211,43 @@ export const useChatStore = defineStore('chat', () => {
 
   function handleSSEEvent(eventType: string, data: any, msg: Message): void {
     switch (eventType) {
+      case 'cache':
+        // Cache check step
+        if (data.hit) {
+          const cacheLabel = data.type === 'semantic' ? '语义缓存命中' : '精确缓存命中'
+          msg.pipelineSteps = [{
+            type: 'intent', label: cacheLabel, status: 'done',
+            detail: `缓存命中，${data.duration_ms}ms 返回`,
+            duration_ms: data.duration_ms,
+            cached: true,
+            cache_type: data.type,
+          }]
+        } else {
+          msg.pipelineSteps = [{
+            type: 'intent', label: '缓存检查', status: 'done',
+            detail: '缓存未命中，进入 AI 查询管线',
+            duration_ms: data.duration_ms,
+            cached: false,
+          }]
+        }
+        break
+
       case 'intent':
-        msg.pipelineSteps = [
-          { type: 'intent', label: `意图识别: ${data.intent === 'DataQuery' ? '数据查询' : '其他'}`, status: 'done', detail: data.detail, duration_ms: data.duration_ms },
-          { type: 'semantics', label: 'Schema 选择', status: 'running' },
-        ]
+        // If cache was hit, we already have the pipelineSteps array with cache step
+        if (msg.pipelineSteps?.length === 0 || !msg.pipelineSteps?.some(s => s.cached)) {
+          msg.pipelineSteps = [
+            { type: 'intent', label: `意图识别: ${data.intent === 'DataQuery' ? '数据查询' : '其他'}`, status: 'done', detail: data.detail, duration_ms: data.duration_ms },
+            { type: 'semantics', label: 'Schema 选择', status: 'running' },
+          ]
+        } else {
+          // After cache hit, add remaining steps
+          msg.pipelineSteps.push({
+            type: 'intent', label: `意图识别: ${data.intent === 'DataQuery' ? '数据查询' : '其他'}`, status: 'done', detail: data.detail, duration_ms: data.duration_ms
+          })
+        }
         if (data.intent !== 'DataQuery') {
           msg.content = data.error || '请提出数据查询相关的问题'
-          msg.pipelineSteps[1].status = 'failed'
+          msg.pipelineSteps[msg.pipelineSteps.length - 1].status = 'failed'
         }
         break
 
@@ -266,7 +298,7 @@ export const useChatStore = defineStore('chat', () => {
         } else {
           msg.error = data.error || '执行失败'
           msg.content = msg.error || '执行失败'
-          const runStep = msg.pipelineSteps?.find(s => s.status === 'running')
+          const runStep = msg.pipelineSteps?.find(s => s.type === 'data' && s.status === 'running')
           if (runStep) {
             runStep.status = 'failed'
             runStep.detail = data.detail
@@ -286,6 +318,14 @@ export const useChatStore = defineStore('chat', () => {
         msg.pipelineSteps?.forEach(s => {
           if (s.status === 'running') s.status = 'done'
         })
+        // Add slow query warning
+        if (data.is_slow) {
+          msg.pipelineSteps?.push({
+            type: 'complete', label: '慢查询', status: 'done',
+            detail: '总耗时超过慢查询阈值',
+            is_slow: true,
+          })
+        }
         break
 
       case 'error':

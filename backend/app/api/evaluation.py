@@ -24,9 +24,14 @@ async def run_eval(
     请求体: {
         "datasource_id": "...",
         "dataset": [
-            {"question": "...", "expected_sql": "SELECT ...", "expected_columns": ["col1", "col2"]}
+            {"question": "各城市订单数量"}
         ]
     }
+
+    评估管线和正常对话查询完全一致：
+    缓存检查 → 意图识别 → Schema 选择 → SQL 生成 → 执行查询 → 图表推断
+    缓存命中时只复用 SQL，查询结果仍从数据库实时获取。
+    非数据查询意图会显示友好提示，和对话界面一致。
     """
     tenant_id = admin["tenant_id"]
     datasource_id = data.get("datasource_id")
@@ -38,5 +43,5 @@ async def run_eval(
             detail=_error("INVALID_INPUT", "需要 datasource_id 和 dataset 字段"),
         )
 
-    result = await run_evaluation(db, tenant_id, datasource_id, dataset)
+    result = await run_evaluation(db, tenant_id, datasource_id, dataset, admin["user_id"])
     return result
