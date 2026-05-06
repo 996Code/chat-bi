@@ -19,6 +19,8 @@ class QueryState(TypedDict, total=False):
     execution_time_ms: int
     success: bool
     chart_type: str
+    table_fixes: list[str]
+    column_fixes: list[str]
 
 
 def route_by_intent(state: QueryState) -> str:
@@ -83,7 +85,11 @@ def build_graph():
                 "success": False,
                 "error": "无法根据您的问题生成 SQL，请提供更具体的查询条件",
             }
-        return {"sql": sql}
+        return {
+            "sql": sql,
+            "table_fixes": result.get("table_fixes", []),
+            "column_fixes": result.get("column_fixes", []),
+        }
 
     # Execution node with self-healing
     async def execution_node(state: QueryState) -> dict:

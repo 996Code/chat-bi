@@ -9,8 +9,9 @@ from app.ai.nodes.generation import get_llm
 
 logger = get_logger(__name__)
 
-# MySQL error code pattern: (errno: 1054)
-_ERROR_CODE_RE = re.compile(r'\(errno:\s*(\d+)\)')
+# MySQL error code patterns: (errno: 1054) or just (1054)
+_ERRNO_RE = re.compile(r'\(errno:\s*(\d+)\)')
+_GENERIC_RE = re.compile(r'\((\d{3,4})\)')
 
 # 可自动修复的常见错误模式
 AUTO_FIX_RULES = {
@@ -21,17 +22,20 @@ AUTO_FIX_RULES = {
 }
 
 
-def extract_error_code(error: str) -> str | None:
-    """从 MySQL 错误信息中提取错误代码。"""
-    match = re.search(r"\((\d+)\)", error)
-    if match:
-        return match.group(1)
-    return None
+def extract_error_code(error_msg: str) -> str:
+    """从 MySQL 错误消息中提取错误码。先试 errno 格式，再试通用数字。"""
+    m = _ERRNO_RE.search(error_msg)
+    if m:
+        return m.group(1)
+    m = _GENERIC_RE.search(error_msg)
+    if m:
+        return m.group(1)
+    return ""
 
 
 def build_fix_prompt(question: str, failed_sql: str, error: str, retry_count: int, schema_context: str) -> str:
     """构建 SQL 修正 prompt。"""
-    error_code = extract_error_code(error) or ""
+    error_code = extract_error_code(error)
     error_desc = AUTO_FIX_RULES.get(error_code, error[:200])
 
     return f"""你是 SQL 修复专家。请修复以下 SQL 的错误。
@@ -53,12 +57,6 @@ def _strip_markdown(raw: str) -> str:
     sql = re.sub(r'^```(?:\w+)?\s*', '', raw, flags=re.MULTILINE).strip()
     sql = re.sub(r'\s*```\s*$', '', sql).strip()
     return sql
-
-
-def extract_error_code(error_msg: str) -> str:
-    """从 MySQL 错误消息中提取错误码。"""
-    m = _ERROR_CODE_RE.search(error_msg)
-    return m.group(1) if m else ""
 
 
 async def self_heal_sql(

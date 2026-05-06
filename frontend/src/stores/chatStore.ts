@@ -15,10 +15,18 @@ export interface QueryResponse {
 }
 
 export interface PipelineStep {
-  type: 'intent' | 'sql' | 'data' | 'chart' | 'complete'
+  type: 'intent' | 'semantics' | 'sql' | 'data' | 'chart' | 'complete'
   label: string
   status: 'running' | 'done' | 'failed'
   detail?: string
+  duration_ms?: number
+  tables?: string[]
+  columns?: Record<string, string[]>
+  sql?: string
+  attempt?: number
+  validation?: { table_fixes?: string[]; column_fixes?: string[] }
+  error_code?: string
+  retry?: number
 }
 
 export interface Message {
