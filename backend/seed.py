@@ -22,6 +22,12 @@ SEED_DB_PASS = os.environ.get('SEED_DB_PASS', 'yjt_mysql')
 # Single test database: chatbi_test
 TEST_DB_NAME = os.environ.get('TEST_DB_NAME', 'chatbi_test')
 
+# PostgreSQL test DB (optional — skip if PG_TEST_PASS not set)
+PG_TEST_HOST = os.environ.get('PG_TEST_HOST', '')
+PG_TEST_PORT = int(os.environ.get('PG_TEST_PORT', '5432'))
+PG_TEST_USER = os.environ.get('PG_TEST_USER', 'postgresql')
+PG_TEST_PASS = os.environ.get('PG_TEST_PASS', '')
+
 TENANT_1 = uuid.UUID('11111111-1111-1111-1111-111111111111')
 TENANT_2 = uuid.UUID('22222222-2222-2222-2222-222222222222')
 
@@ -29,6 +35,7 @@ DS_1 = uuid.UUID('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
 DS_2 = uuid.UUID('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')
 DS_3 = uuid.UUID('cccccccc-cccc-cccc-cccc-cccccccccccc')
 DS_4 = uuid.UUID('dddddddd-dddd-dddd-dddd-dddddddddddd')
+DS_5_PG = uuid.UUID('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee')
 
 USER_ADMIN   = uuid.UUID('aaaaaaaa-0000-0000-0000-000000000001')
 USER_ANALYST = uuid.UUID('aaaaaaaa-0000-0000-0000-000000000002')
@@ -100,6 +107,16 @@ async def seed():
                        database_name=TEST_DB_NAME, username_encrypted=enc_user,
                        password_encrypted=enc_pass, is_active=True, last_health_check=NOW),
         ]
+        # PostgreSQL test datasource (if configured)
+        if PG_TEST_HOST and PG_TEST_PASS:
+            pg_user = encrypt_value(PG_TEST_USER)
+            pg_pass = encrypt_value(PG_TEST_PASS)
+            datasources.append(
+                DataSource(id=DS_5_PG, tenant_id=TENANT_1, name='电商业务库 (PostgreSQL)',
+                           db_type='postgresql', host=PG_TEST_HOST, port=PG_TEST_PORT,
+                           database_name=TEST_DB_NAME, username_encrypted=pg_user,
+                           password_encrypted=pg_pass, is_active=True, last_health_check=NOW),
+            )
         for ds in datasources:
             session.add(ds)
         await session.commit()

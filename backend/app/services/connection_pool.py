@@ -29,9 +29,8 @@ def _build_url(ds: DataSource) -> URL:
     elif ds.db_type == "sqlite":
         return URL.create("sqlite+aiosqlite", database=ds.database_name)
     else:
-        # Default to MySQL with asyncmy (supports caching_sha2_password)
         return URL.create(
-            "mysql+asyncmy",
+            "mysql+aiomysql",
             username=username,
             password=password,
             host=ds.host,
