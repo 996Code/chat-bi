@@ -102,7 +102,8 @@ if echo "${REDIS_URL:-}" | grep -q "//redis:"; then
 fi
 
 log_info "构建并启动新容器..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" $PROFILES up -d --build --no-cache
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" $PROFILES build --no-cache
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" $PROFILES up -d --build
 
 # ---- Step 5: 检查状态 ----
 echo ""
