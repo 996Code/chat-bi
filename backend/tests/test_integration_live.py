@@ -142,11 +142,11 @@ async def _run_integration():
         resp = await c.post(f"{API}/datasources", json={
             "name": "Integration Test DB",
             "type": "mysql",
-            "host": "192.168.3.110",
+            "host": os.environ.get("INTEGRATION_TEST_DB_HOST", "127.0.0.1"),
             "port": 3306,
             "database_name": "test_integration",
-            "username": "root",
-            "password": "yjt_mysql"
+            "username": os.environ.get("INTEGRATION_TEST_DB_USER", "root"),
+            "password": os.environ.get("INTEGRATION_TEST_DB_PASS", "")
         }, headers=headers)
         if resp.status_code == 201:
             new_ds_id = resp.json()["id"]

@@ -96,8 +96,23 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
 
     # Redis (query cache, rate limits, login lock)
-    redis_url: str = "redis://192.168.3.110:6379/0"  # Redis for query cache, rate limits, login lock
+    redis_url: str = "redis://127.0.0.1:6379/0"  # Redis for query cache, rate limits, login lock
     query_cache_ttl_seconds: int = 3600
+
+    # --- Test database ---
+    # MySQL test DB (used by init_test_dbs.py, seed_test_db.py)
+    mysql_test_host: str = ""  # empty = skip MySQL test init
+    mysql_test_port: int = 3306
+    mysql_test_user: str = "root"
+    mysql_test_pass: str = ""
+    mysql_test_db: str = "chatbi_test"
+
+    # PostgreSQL test DB (used by init_test_dbs.py)
+    pg_test_host: str = ""  # empty = skip PG test init
+    pg_test_port: int = 5432
+    pg_test_user: str = ""
+    pg_test_pass: str = ""
+    pg_test_db: str = "chatbi_test"
 
     # Slow query alerting
     slow_query_threshold_ms: int = 1000  # 1s (开发环境方便测试)

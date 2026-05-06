@@ -31,16 +31,16 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 
 # ===== Environment =====
-MYSQL_HOST = os.environ.get('MYSQL_HOST', '192.168.3.110')
+MYSQL_HOST = os.environ.get('MYSQL_HOST', '127.0.0.1')
 MYSQL_PORT = os.environ.get('MYSQL_PORT', '3306')
 MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
-MYSQL_PASS = os.environ.get('MYSQL_PASS', 'yjt_mysql')
+MYSQL_PASS = os.environ.get('MYSQL_PASS', '')
 MYSQL_DB = os.environ.get('MYSQL_DB', 'chatbi_test')
 
-PG_HOST = os.environ.get('PG_HOST', '192.168.3.110')
+PG_HOST = os.environ.get('PG_HOST', '127.0.0.1')
 PG_PORT = os.environ.get('PG_PORT', '5432')
 PG_USER = os.environ.get('PG_USER', 'postgres')
-PG_PASS = os.environ.get('PG_PASS', 'postgres')
+PG_PASS = os.environ.get('PG_PASS', '')
 PG_DB = os.environ.get('PG_DB', 'chatbi_test')
 
 
@@ -982,7 +982,10 @@ async def main():
         await init_mysql(base_time)
 
     if not args.mysql_only:
-        await init_pg(base_time)
+        if not PG_PASS or not PG_USER:
+            print('\nSkipping PostgreSQL: set PG_USER and PG_PASS environment variables.')
+        else:
+            await init_pg(base_time)
 
     print('\nDone! Test databases initialized.')
 

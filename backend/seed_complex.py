@@ -7,11 +7,14 @@ import sys
 import aiomysql
 from datetime import date, timedelta
 
-DB_HOST = os.environ.get('SEED_DB_HOST', '192.168.99.22')
+DB_HOST = os.environ.get('SEED_DB_HOST', '')
 DB_PORT = int(os.environ.get('SEED_DB_PORT', '3306'))
 DB_USER = os.environ.get('SEED_DB_USER', 'root')
-DB_PASS = os.environ.get('SEED_DB_PASS', '52033384')
+DB_PASS = os.environ.get('SEED_DB_PASS', '')
 DB_NAME = os.environ.get('SEED_DB_NAME', 'chat-bi-test')
+if not DB_HOST or not DB_PASS:
+    print("Error: SEED_DB_HOST and SEED_DB_PASS environment variables are required.")
+    sys.exit(1)
 
 
 async def seed():

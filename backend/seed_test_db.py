@@ -13,8 +13,12 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-DB_HOST = os.environ.get('SEED_DB_HOST', '192.168.3.110')
-DB_PASS = os.environ.get('SEED_DB_PASS', 'yjt_mysql')
+DB_HOST = os.environ.get('SEED_DB_HOST', '')
+DB_PASS = os.environ.get('SEED_DB_PASS', '')
+if not DB_HOST or not DB_PASS:
+    print("Error: SEED_DB_HOST and SEED_DB_PASS environment variables are required.")
+    print("Example: SEED_DB_HOST=192.168.3.110 SEED_DB_PASS=yjt_mysql .venv/bin/python seed_test_db.py")
+    sys.exit(1)
 DB_URL = f'mysql+aiomysql://root:{DB_PASS}@{DB_HOST}:3306/chatbi_test'
 DB_URL_ROOT = f'mysql+aiomysql://root:{DB_PASS}@{DB_HOST}:3306'
 
