@@ -569,6 +569,12 @@ TABLE_DDL_PG = [
 
 async def seed_database(conn, is_mysql: bool, base_time):
     """Seed data into an existing database. conn is an async connection."""
+    # PG counter for lastrowid emulation (PG SERIAL auto-increments from 1)
+    _pg_id = [0]
+    def next_id(r):
+        _pg_id[0] += 1
+        return r.lastrowid if is_mysql else _pg_id[0]
+
     first_names = ['张', '李', '王', '赵', '刘', '陈', '杨', '黄', '周', '吴',
                    '徐', '孙', '马', '朱', '胡', '郭', '林', '何', '高', '梁']
     last_names = ['伟', '芳', '娜', '敏', '静', '丽', '强', '磊', '军', '洋',
@@ -596,7 +602,7 @@ async def seed_database(conn, is_mysql: bool, base_time):
                  "VALUES (:u, :e, :p, :c, :pr, :v, :pts, :no, :ts, :ll, :ca)"),
             {'u': name, 'e': email, 'p': phone, 'c': city, 'pr': province, 'v': vip,
              'pts': points, 'no': n_orders, 'ts': total_spent, 'll': last_login, 'ca': created})
-        user_ids.append(r.lastrowid if is_mysql else conn.lastrowid)
+        user_ids.append(next_id(r))
         # For PG, lastrowid doesn't work; we'll use a counter
     # For PG, re-fetch IDs
     if not is_mysql:
@@ -620,7 +626,7 @@ async def seed_database(conn, is_mysql: bool, base_time):
     brand_ids = []
     for b in BRANDS:
         r = await conn.execute(text("INSERT INTO t_brands (name, is_active) VALUES (:n, 1)"), {'n': b})
-        brand_ids.append(r.lastrowid if is_mysql else conn.lastrowid)
+        brand_ids.append(next_id(r))
     if not is_mysql:
         r = await conn.execute(text("SELECT id FROM t_brands ORDER BY id"))
         brand_ids = [row[0] for row in r.fetchall()]
@@ -631,13 +637,13 @@ async def seed_database(conn, is_mysql: bool, base_time):
         r = await conn.execute(
             text("INSERT INTO t_categories (name, parent_id, sort_order, is_active) VALUES (:n, NULL, 0, 1)"),
             {'n': parent_name})
-        pid = r.lastrowid if is_mysql else conn.lastrowid
+        pid = next_id(r)
         cat_ids[parent_name] = pid
         for j, child in enumerate(children):
             r = await conn.execute(
                 text("INSERT INTO t_categories (name, parent_id, sort_order, is_active) VALUES (:n, :p, :so, 1)"),
                 {'n': child, 'p': pid, 'so': j + 1})
-            cat_ids[child] = r.lastrowid if is_mysql else conn.lastrowid
+            cat_ids[child] = next_id(r)
 
     # --- Products ---
     product_cat_ids = {k: v for k, v in cat_ids.items() if k not in [c[0] for c in CATEGORIES]}
@@ -669,7 +675,7 @@ async def seed_database(conn, is_mysql: bool, base_time):
                 {'n': name, 'c': cid, 'b': bid, 'p': price, 'cp': cost, 'mp': market,
                  's': stock, 'w': weight, 'sk': f'SKU{sku:06d}',
                  't': ','.join(tags) if tags else ''})
-            product_ids.append(r.lastrowid if is_mysql else conn.lastrowid)
+            product_ids.append(next_id(r))
             sku += 1
 
     for name, price, cost in DEFAULT_PRODUCTS:
@@ -679,7 +685,7 @@ async def seed_database(conn, is_mysql: bool, base_time):
                  "VALUES (:n, :c, :p, :cp, :mp, :s, :sk, 'active')"),
             {'n': name, 'c': cid, 'p': price, 'cp': cost,
              'mp': round(price * 1.5, 2), 's': random.randint(100, 500), 'sk': f'SKU{sku:06d}'})
-        product_ids.append(r.lastrowid if is_mysql else conn.lastrowid)
+        product_ids.append(next_id(r))
         sku += 1
 
     if not is_mysql:
@@ -716,7 +722,7 @@ async def seed_database(conn, is_mysql: bool, base_time):
             {'uid': uid, 'ono': order_no, 'ta': total, 'da': discount, 'sf': shipping,
              'cc': coupon, 'st': status, 'c': city, 'pr': province, 'n': note, 'cr': cancel_r,
              'ca': created, 'pa': paid, 'sa': shipped, 'dla': delivered, 'co': completed})
-        order_ids.append(r.lastrowid if is_mysql else conn.lastrowid)
+        order_ids.append(next_id(r))
         order_user_ids.append(uid)
 
     if not is_mysql:
@@ -853,7 +859,7 @@ async def seed_database(conn, is_mysql: bool, base_time):
                  "VALUES (:n, :c, :pr, :cap, :addr, :mgr, :mp, 1)"),
             {'n': name, 'c': city, 'pr': province, 'cap': cap, 'addr': addr, 'mgr': mgr,
              'mp': f'1{random.randint(3,9)}{random.randint(100000000,999999999)}'})
-        wh_ids.append(r.lastrowid if is_mysql else conn.lastrowid)
+        wh_ids.append(next_id(r))
     if not is_mysql:
         r = await conn.execute(text("SELECT id FROM t_warehouses ORDER BY id"))
         wh_ids = [row[0] for row in r.fetchall()]
@@ -906,21 +912,25 @@ async def init_pg(base_time):
     """Initialize PostgreSQL test database."""
     print(f'\n===== PostgreSQL: {PG_HOST}:{PG_PORT}/{PG_DB} =====')
     root_url = f'postgresql+asyncpg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/postgres'
+
+    # DROP/CREATE DATABASE must run outside a transaction (AUTOCOMMIT)
+    eng = create_async_engine(root_url)
     try:
-        eng = create_async_engine(root_url)
-        async with eng.begin() as conn:
+        async with eng.connect() as conn:
+            await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(text(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='{PG_DB}' AND pid != pg_backend_pid()"))
             await conn.execute(text(f'DROP DATABASE IF EXISTS {PG_DB}'))
             await conn.execute(text(f'CREATE DATABASE {PG_DB}'))
-        await eng.dispose()
+        print(f'  Database {PG_DB} created successfully')
     except Exception as e:
-        print(f'Warning: Could not create database (may already exist): {e}')
-        try:
-            await eng.dispose()
-        except Exception:
-            pass
+        print(f'Warning: Could not create database: {e}')
+    finally:
+        await eng.dispose()
 
     db_url = f'postgresql+asyncpg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}'
     db = create_async_engine(db_url)
+
+    # DDL - create all tables
     async with db.begin() as conn:
         for _name, ddl in TABLE_DDL_PG:
             await conn.execute(text(ddl))
@@ -949,6 +959,7 @@ async def init_pg(base_time):
         await conn.execute(text('CREATE INDEX idx_returns_status ON t_returns(status)'))
         await conn.execute(text('CREATE INDEX idx_user_coupons_user ON t_user_coupons(user_id)'))
 
+    # Seed data
     async with db.begin() as conn:
         stats = await seed_database(conn, is_mysql=False, base_time=base_time)
     await db.dispose()
