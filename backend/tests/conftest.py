@@ -10,6 +10,8 @@ _db_file = os.path.join(tempfile.gettempdir(), f"chatbi_test_{os.getpid()}.db")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_db_file}"
 os.environ["API_PREFIX"] = "/api/v1"  # keep tests on old prefix
 os.environ["REDIS_URL"] = ""  # disable Redis in tests — use in-memory fallback
+os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only"
+os.environ["DATA_SOURCE_ENCRYPTION_KEY"] = "test-encrypt-key-32bytes!!"
 
 import pytest
 import pytest_asyncio
