@@ -531,131 +531,25 @@ async def stream_query(
                 yield f"event: complete\ndata: {json.dumps({'success': final_success, 'is_slow': is_slow, 'cached': True, 'cache_type': 'semantic'}, ensure_ascii=False)}\n\n"
                 return
 
-        # Cache miss
-        cache_duration = int((time.monotonic() - step_start) * 1000)
-        yield f"event: cache\ndata: {json.dumps({'hit': False, 'duration_ms': cache_duration}, ensure_ascii=False)}\n\n"
-
-        try:
-            # Step 1: Intent
-            step_start = time.monotonic()
-            from app.ai.nodes.intent import classify_intent
-            intent = await classify_intent(data.question)
-            intent_duration = int((time.monotonic() - step_start) * 1000)
-            intent_label = "数据查询" if intent == "DataQuery" else "非数据查询"
-            yield f"event: intent\ndata: {json.dumps({'intent': intent, 'detail': f'识别为{intent_label}意图', 'duration_ms': intent_duration}, ensure_ascii=False)}\n\n"
-
-            if intent != "DataQuery":
-                friendly_msg = "我是数据查询助手，可以帮你查询和分析数据。请试试这样的问题：\n• 各城市的订单数量\n• 上个月的销售额是多少\n• VIP 等级的用户分布"
-                final_error = friendly_msg
-                yield f"event: complete\ndata: {json.dumps({'success': False, 'error': friendly_msg}, ensure_ascii=False)}\n\n"
-                return
-
-            # Step 2: Schema selection (LLM two-step: table selection + column selection)
-            step_start = time.monotonic()
-            from app.ai.nodes.schema_selection import schema_selection_node
-            state = {
-                "question": data.question,
-                "datasource_id": data.datasource_id,
-                "tenant_id": tenant_id,
-            }
-            schema_result = await schema_selection_node(state)
-            schema_context = schema_result.get("schema_context", "")
-            raw_metadata = schema_result.get("raw_metadata", "")
-            selected_tables = schema_result.get("selected_tables", [])
-            selected_columns = schema_result.get("selected_columns", {})
-            schema_duration = int((time.monotonic() - step_start) * 1000)
-
-            schema_detail = f"选择了 {len(selected_tables)} 个表: {', '.join(selected_tables)}" if selected_tables else "未找到相关表"
-            yield f"event: semantics\ndata: {json.dumps({'intent': 'schema_selected', 'detail': schema_detail, 'duration_ms': schema_duration, 'tables': selected_tables, 'columns': selected_columns}, ensure_ascii=False)}\n\n"
-
-            # Step 3: SQL generation
-            step_start = time.monotonic()
-            from app.ai.nodes.generation import generate_sql
-            gen_result = await generate_sql(data.question, schema_context, raw_metadata=raw_metadata, history=data.history)
-            gen_duration = int((time.monotonic() - step_start) * 1000)
-
-            # Handle dict return from generate_sql
-            if isinstance(gen_result, dict):
-                sql = gen_result.get("sql", "")
-                gen_attempt = gen_result.get("attempt", 1)
-                table_fixes = gen_result.get("table_fixes", [])
-                column_fixes = gen_result.get("column_fixes", [])
-            else:
-                sql = gen_result or ""
-                gen_attempt = 1
-                table_fixes = []
-                column_fixes = []
-
-            final_sql = sql
-            sql_detail = f"生成 SQL: {sql[:80]}..." if sql and len(sql) > 80 else f"生成 SQL: {sql or '空'}"
-            validation = {}
-            if table_fixes:
-                validation["table_fixes"] = table_fixes
-            if column_fixes:
-                validation["column_fixes"] = column_fixes
-            yield f"event: sql\ndata: {json.dumps({'sql': sql, 'detail': sql_detail, 'duration_ms': gen_duration, 'attempt': gen_attempt, 'validation': validation if validation else None}, ensure_ascii=False)}\n\n"
-
-            if not sql:
-                final_error = "无法生成 SQL"
-                yield f"event: complete\ndata: {json.dumps({'success': False, 'error': final_error}, ensure_ascii=False)}\n\n"
-                return
-
-            # Step 4: Execute
-            step_start = time.monotonic()
-            from app.ai.nodes.execution import execute_sql
-            exec_result = await execute_sql(sql, data.datasource_id, tenant_id=tenant_id)
-            exec_duration = int((time.monotonic() - step_start) * 1000)
-            sql_execution_ms = exec_duration
-            final_success = exec_result.get("success", False)
-            final_row_count = exec_result.get("row_count", 0)
-            final_rows = exec_result.get("rows", [])
-            final_columns = exec_result.get("columns", [])
-            final_error = exec_result.get("error")
-            exec_detail = f"查询成功，返回 {final_row_count} 行" if final_success else f"执行失败: {final_error}"
-            yield f"event: data\ndata: {json.dumps({**exec_result, 'detail': exec_detail, 'duration_ms': exec_duration}, ensure_ascii=False, default=str)}\n\n"
-
-            # Step 5: Self-heal on failure
-            if not final_success and schema_context:
-                from app.ai.nodes.self_heal import self_heal_sql
-                from app.ai.nodes.self_heal import extract_error_code
-                error_code = extract_error_code(final_error or "")
-                heal_result = await self_heal_sql(
-                    question=data.question,
-                    sql=sql,
-                    error=final_error or "",
-                    datasource_id=data.datasource_id,
-                    schema_context=schema_context,
-                    dialect="mysql",
-                )
-                if heal_result.get("success"):
-                    final_sql = heal_result.get("sql", final_sql)
-                    exec_start_heal = time.monotonic()
-                    exec_result = await execute_sql(final_sql, data.datasource_id, tenant_id=tenant_id)
-                    sql_execution_ms = int((time.monotonic() - exec_start_heal) * 1000)
-                    final_success = exec_result.get("success", False)
-                    final_row_count = exec_result.get("row_count", 0)
-                    final_error = exec_result.get("error")
-                    heal_detail = f"自愈成功，修正后 SQL: {final_sql[:60]}..." if len(final_sql) > 60 else f"自愈成功，修正后 SQL: {final_sql}"
-                    yield f"event: sql\ndata: {json.dumps({'sql': final_sql, 'detail': heal_detail, 'error_code': error_code, 'retry': 1}, ensure_ascii=False)}\n\n"
-                    exec_detail = f"查询成功，返回 {final_row_count} 行" if final_success else f"执行失败: {final_error}"
-                    yield f"event: data\ndata: {json.dumps({**exec_result, 'detail': exec_detail}, ensure_ascii=False, default=str)}\n\n"
-
-            # Step 6: Chart type
-            if exec_result.get("rows") and exec_result.get("columns"):
-                chart_type = infer_chart_type(exec_result["columns"], exec_result["rows"])
-                chart_labels = {"table": "表格", "line": "折线图", "bar": "柱状图", "pie": "饼图", "metric": "指标卡"}
-                chart_detail = f"推荐图表: {chart_labels.get(chart_type, chart_type)}"
-                yield f"event: chart\ndata: {json.dumps({'chart_type': chart_type, 'detail': chart_detail}, ensure_ascii=False)}\n\n"
-
-            # Slow query check
-            total_ms = int((time.monotonic() - start_time) * 1000)
-            is_slow = total_ms > settings.slow_query_threshold_ms
-            yield f"event: complete\ndata: {json.dumps({'success': final_success, 'is_slow': is_slow, 'cached': False}, ensure_ascii=False)}\n\n"
-
-        except Exception as e:
-            logger.exception("Stream query error")
-            final_error = str(e)
-            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+        # Cache miss — use shared pipeline executor
+        from app.services.pipeline_executor import execute_query_pipeline
+        async for event in execute_query_pipeline(data.question, data.datasource_id, tenant_id, data.history):
+            yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False, default=str)}\n\n"
+            # Track final values for audit/history
+            if event["event"] == "sql" and event["data"].get("sql"):
+                final_sql = event["data"]["sql"]
+            elif event["event"] == "data":
+                final_success = event["data"].get("success", False)
+                final_row_count = event["data"].get("row_count", 0)
+                final_rows = event["data"].get("rows", [])
+                final_columns = event["data"].get("columns", [])
+                final_error = event["data"].get("error")
+                if event["data"].get("duration_ms"):
+                    sql_execution_ms = event["data"]["duration_ms"]
+            elif event["event"] == "complete":
+                final_success = event["data"].get("success", final_success)
+            elif event["event"] == "error":
+                final_error = event["data"].get("error")
 
         # Audit + auto-save after stream completes
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
@@ -952,6 +846,15 @@ async def get_async_query_status(
         status_resp.rows = json.loads(aq.rows)
         status_resp.row_count = aq.row_count or 0
 
+    # Return pipeline trace and intent
+    if aq.intent:
+        status_resp.intent = aq.intent
+    if aq.pipeline_trace:
+        try:
+            status_resp.pipeline_trace = json.loads(aq.pipeline_trace)
+        except Exception:
+            status_resp.pipeline_trace = []
+
     return status_resp
 
 
@@ -995,9 +898,6 @@ async def _run_async_query(
 
     # Re-import here to avoid circular imports at module level
     from app.db.session import async_session_factory
-    from app.ai.graph import build_graph
-    from app.ai.chart_type import infer_chart_type
-    from app.services.data_masking import mask_sensitive_data
     from app.services.audit_service import log_action
     from app.services.analytics_service import track_event, EVENT_QUERY_EXECUTE, EVENT_QUERY_SUCCESS, EVENT_QUERY_ERROR
     from app.core.logging import get_logger
@@ -1015,35 +915,33 @@ async def _run_async_query(
             aq.status = "running"
             await db.commit()
 
-            # Run full pipeline
-            graph = build_graph()
-            initial_state = {
-                "question": question,
-                "datasource_id": datasource_id,
-                "tenant_id": tenant_id,
-                "conversation_history": history or [],
-            }
+            # Run full pipeline via shared executor, collecting step events
+            from app.services.pipeline_executor import execute_query_pipeline
+            pipeline_trace = []
+            pipeline_intent = None
 
-            final_state = await asyncio.wait_for(
-                graph.ainvoke(initial_state),
-                timeout=settings.query_pipeline_timeout,
-            )
+            async for event in execute_query_pipeline(question, datasource_id, tenant_id, history):
+                pipeline_trace.append(event)
+                if event["event"] == "intent" and not pipeline_intent:
+                    pipeline_intent = event["data"].get("intent")
+                if event["event"] == "sql" and event["data"].get("sql"):
+                    sql = event["data"]["sql"]
+                if event["event"] == "data":
+                    success = event["data"].get("success", False)
+                    columns = event["data"].get("columns", [])
+                    rows = event["data"].get("rows", [])
+                    row_count = event["data"].get("row_count", 0)
+                    error = event["data"].get("error")
+                    final_success = success
+                if event["event"] == "chart":
+                    chart_type = event["data"].get("chart_type", "none")
+                if event["event"] == "complete":
+                    final_success = event["data"].get("success", final_success)
+                if event["event"] == "error":
+                    error = event["data"].get("error")
+                    final_success = False
 
             elapsed_ms = int((time.monotonic() - start) * 1000)
-
-            # Get results
-            success = final_state.get("success", False)
-            sql = final_state.get("sql")
-            columns = final_state.get("columns", [])
-            rows = final_state.get("rows", [])
-            row_count = final_state.get("row_count", 0)
-            error = final_state.get("error")
-            chart_type = "none"
-
-            if rows and columns:
-                chart_type = infer_chart_type(columns, rows)
-
-            columns, rows = mask_sensitive_data(columns, rows)
 
             # Update async query record
             result2 = await db.execute(select(AsyncQuery).where(AsyncQuery.id == task_id))
@@ -1051,14 +949,16 @@ async def _run_async_query(
             if not aq2:
                 return
 
-            aq2.status = "done" if success else "failed"
+            aq2.status = "done" if final_success else "failed"
             aq2.generated_sql = sql
             aq2.columns = json.dumps(columns, ensure_ascii=False, default=str) if columns else None
             aq2.rows = json.dumps(rows, ensure_ascii=False, default=str) if rows else None
             aq2.row_count = row_count
-            aq2.error = error if not success else None
+            aq2.error = error if not final_success else None
             aq2.chart_type = chart_type
             aq2.execution_time_ms = elapsed_ms
+            aq2.intent = pipeline_intent
+            aq2.pipeline_trace = json.dumps(pipeline_trace, ensure_ascii=False, default=str) if pipeline_trace else None
 
             # Audit log
             await log_action(
@@ -1068,10 +968,10 @@ async def _run_async_query(
                 sql_text=sql,
                 result_count=row_count,
                 execution_time_ms=elapsed_ms,
-                error_message=error if not success else None,
+                error_message=error if not final_success else None,
             )
 
-            event_name = EVENT_QUERY_SUCCESS if success else EVENT_QUERY_ERROR
+            event_name = EVENT_QUERY_SUCCESS if final_success else EVENT_QUERY_ERROR
             await track_event(db, tenant_id, user_id, event_name, {
                 "question": question,
                 "async": True,
@@ -1082,7 +982,7 @@ async def _run_async_query(
             await _auto_save_history(
                 db, tenant_id, user_id, datasource_id,
                 question, sql,
-                success=success,
+                success=final_success,
                 row_count=row_count,
                 execution_time_ms=elapsed_ms,
                 error=error,
@@ -1090,10 +990,10 @@ async def _run_async_query(
             )
 
             # Cache successful result
-            if success and rows:
+            if final_success and rows:
                 await cache_set(question, datasource_id, {
                     "success": True,
-                    "intent": final_state.get("intent"),
+                    "intent": pipeline_intent,
                     "sql": sql,
                     "columns": columns,
                     "rows": rows,

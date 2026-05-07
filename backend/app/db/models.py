@@ -157,6 +157,8 @@ class AsyncQuery(Base):
     error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     chart_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     execution_time_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
+    intent: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # DataQuery, etc.
+    pipeline_trace: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array of step events
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 

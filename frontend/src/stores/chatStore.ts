@@ -563,10 +563,35 @@ export const useChatStore = defineStore('chat', () => {
           msg.chart_type = data.chart_type || 'table'
           msg.execution_time_ms = data.execution_time_ms
           msg.content = '查询成功'
-          msg.pipelineSteps = [
-            { type: 'intent', label: '后台查询', status: 'done', detail: `查询完成，${data.row_count} 行结果` },
-            { type: 'data', label: '执行查询', status: 'done', detail: `返回 ${data.row_count} 行`, duration_ms: data.execution_time_ms },
-          ]
+
+          // Replay pipeline trace if available
+          if (data.pipeline_trace && data.pipeline_trace.length > 0) {
+            const replayMsg: Message = {
+              id: msg.id,
+              role: 'assistant',
+              content: '',
+              pipelineSteps: [],
+              timestamp: msg.timestamp,
+            }
+            for (const trace of data.pipeline_trace) {
+              handleSSEEvent(trace.event, trace.data, replayMsg)
+            }
+            msg.pipelineSteps = replayMsg.pipelineSteps
+            msg.content = replayMsg.content || '查询成功'
+            if (replayMsg.error) {
+              msg.error = replayMsg.error
+              msg.content = replayMsg.error
+            }
+            // Ensure sql/chart_type from final result are preserved
+            if (!msg.sql && data.sql) msg.sql = data.sql
+            if (!msg.chart_type || msg.chart_type === 'none') msg.chart_type = data.chart_type || 'table'
+          } else {
+            // Fallback for old records without pipeline_trace
+            msg.pipelineSteps = [
+              { type: 'intent', label: '后台查询', status: 'done', detail: `查询完成，${data.row_count} 行结果` },
+              { type: 'data', label: '执行查询', status: 'done', detail: `返回 ${data.row_count} 行`, duration_ms: data.execution_time_ms },
+            ]
+          }
           activeAsyncTasks.value.delete(taskId)
           replaceMsgInArray(msg)
           onMessageUpdate.value?.()

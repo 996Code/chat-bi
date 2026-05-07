@@ -60,3 +60,5 @@ class AsyncQueryStatus(BaseModel):
     execution_time_ms: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    intent: str | None = None
+    pipeline_trace: list[dict] = []
