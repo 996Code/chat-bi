@@ -83,11 +83,13 @@ if [ "$SKIP_PULL" = false ]; then
     if [ ! -f "$ENV_FILE" ]; then
       if [ -f "$PROJECT_DIR/.env.home" ]; then
         cp "$PROJECT_DIR/.env.home" "$ENV_FILE"
-        log_info ".env 缺失，已使用 .env.home 模板创建"
       elif [ -f "$PROJECT_DIR/.env.example" ]; then
         cp "$PROJECT_DIR/.env.example" "$ENV_FILE"
-        log_info ".env 缺失，已使用 .env.example 模板创建"
+      else
+        log_error "未找到 .env 模板文件"
+        exit 1
       fi
+      log_info ".env 已重新创建"
     fi
   else
     log_warn "不是 git 仓库，跳过代码更新"
@@ -100,6 +102,19 @@ fi
 log_info "停止旧容器..."
 cd "$PROJECT_DIR"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down --remove-orphans 2>/dev/null || true
+
+# Final check: ensure .env exists (Dockerfile COPY needs it)
+if [ ! -f "$ENV_FILE" ]; then
+  if [ -f "$PROJECT_DIR/.env.home" ]; then
+    cp "$PROJECT_DIR/.env.home" "$ENV_FILE"
+  elif [ -f "$PROJECT_DIR/.env.example" ]; then
+    cp "$PROJECT_DIR/.env.example" "$ENV_FILE"
+  else
+    log_error "未找到 .env 模板文件"
+    exit 1
+  fi
+  log_info ".env 已创建"
+fi
 
 # ---- Step 4: 构建并启动 ----
 # 检查是否需要启动内置 MySQL/Redis
