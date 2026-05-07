@@ -114,15 +114,16 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // Add user message
+    const userId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     messages.value.push({
-      id: `msg-${Date.now()}`,
+      id: userId,
       role: 'user',
       content: question,
       timestamp: new Date(),
     })
 
     // Create assistant message placeholder with pipeline steps
-    const assistantId = `msg-${Date.now()}`
+    const assistantId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const assistantMsg: Message = {
       id: assistantId,
       role: 'assistant',
@@ -243,10 +244,11 @@ export const useChatStore = defineStore('chat', () => {
             { type: 'semantics', label: 'Schema 选择', status: 'running' },
           ]
         } else {
-          // After cache hit, add remaining steps
+          // After cache hit, add intent step + running semantics step
           msg.pipelineSteps.push({
             type: 'intent', label: `意图识别: ${data.intent === 'DataQuery' ? '数据查询' : '其他'}`, status: 'done', detail: data.detail, duration_ms: data.duration_ms
           })
+          msg.pipelineSteps.push({ type: 'semantics', label: 'Schema 选择', status: 'running' })
         }
         if (data.intent !== 'DataQuery') {
           msg.content = data.error || '请提出数据查询相关的问题'
@@ -255,7 +257,7 @@ export const useChatStore = defineStore('chat', () => {
         break
 
       case 'semantics':
-        const schemaStep = msg.pipelineSteps?.find(s => s.type === 'semantics' && s.status === 'running')
+        let schemaStep = msg.pipelineSteps?.find(s => s.type === 'semantics' && s.status === 'running')
         if (schemaStep) {
           schemaStep.label = 'Schema 选择'
           schemaStep.status = 'done'
@@ -263,13 +265,23 @@ export const useChatStore = defineStore('chat', () => {
           schemaStep.duration_ms = data.duration_ms
           schemaStep.tables = data.tables
           schemaStep.columns = data.columns
+        } else {
+          // Cache hit path: no running semantics step, create and mark done
+          msg.pipelineSteps?.push({
+            type: 'semantics', label: 'Schema 选择', status: 'done',
+            detail: data.detail, duration_ms: data.duration_ms,
+            tables: data.tables, columns: data.columns,
+          })
         }
-        msg.pipelineSteps?.push({ type: 'sql', label: 'SQL 生成', status: 'running' })
+        // Only add SQL step if not already present
+        if (!msg.pipelineSteps?.some(s => s.type === 'sql')) {
+          msg.pipelineSteps?.push({ type: 'sql', label: 'SQL 生成', status: 'running' })
+        }
         break
 
       case 'sql':
         msg.sql = data.sql
-        const sqlGenStep = msg.pipelineSteps?.find(s => s.type === 'sql' && s.status === 'running')
+        let sqlGenStep = msg.pipelineSteps?.find(s => s.type === 'sql' && s.status === 'running')
         if (sqlGenStep) {
           sqlGenStep.detail = data.detail || data.sql?.slice(0, 100)
           sqlGenStep.status = 'done'
@@ -279,6 +291,15 @@ export const useChatStore = defineStore('chat', () => {
           sqlGenStep.validation = data.validation
           sqlGenStep.error_code = data.error_code
           sqlGenStep.retry = data.retry
+        } else {
+          // No running SQL step (cache hit or self-heal): create one
+          msg.pipelineSteps?.push({
+            type: 'sql', label: 'SQL 生成', status: 'done',
+            detail: data.detail || data.sql?.slice(0, 100),
+            sql: data.sql, duration_ms: data.duration_ms,
+            attempt: data.attempt, validation: data.validation,
+            error_code: data.error_code, retry: data.retry,
+          })
         }
         // Only push execution step if there isn't one already (avoid duplicate on self-heal)
         if (!msg.pipelineSteps?.some(s => s.type === 'data')) {
@@ -339,6 +360,10 @@ export const useChatStore = defineStore('chat', () => {
         })
         break
     }
+
+    // Replace message in array to trigger Vue 3 reactivity
+    const idx = messages.value.findIndex(m => m.id === msg.id)
+    if (idx !== -1) messages.value[idx] = { ...msg }
 
     onMessageUpdate.value?.()
   }
@@ -428,15 +453,16 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // Add user message
+    const userId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     messages.value.push({
-      id: `msg-${Date.now()}`,
+      id: userId,
       role: 'user',
       content: question,
       timestamp: new Date(),
     })
 
     // Create assistant placeholder
-    const assistantId = `msg-async-${Date.now()}`
+    const assistantId = `async-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const assistantMsg: Message = {
       id: assistantId,
       role: 'assistant',

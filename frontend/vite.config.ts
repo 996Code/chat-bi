@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
-        [apiBase]: {
+        '/chat-bi/api': {
           target: 'http://127.0.0.1:8999',
           changeOrigin: true,
         },
