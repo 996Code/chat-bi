@@ -37,10 +37,6 @@ deploy/.env.*
 deploy.sh
 docker-compose.yml
 
-# Env files (written at runtime by entrypoint)
-.env
-.env.*
-
 # Docker
 Dockerfile.*
 .dockerignore
