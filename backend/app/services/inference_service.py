@@ -53,13 +53,7 @@ async def infer_relationships(models: list[dict]) -> list[dict]:
 orders.user_id -> users.id
 order_items.order_id -> orders.id"""
 
-    llm = ChatOpenAI(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-        temperature=0.0,
-        max_tokens=1000,
-    )
+    llm = get_llm(max_tokens=1000, temperature=0.0)
     response = await llm.ainvoke(prompt)
     text = response.content.strip()
 
@@ -147,13 +141,7 @@ async def infer_metrics(models: list[dict], relationships: list[dict] | None = N
 订单总数|COUNT(t_orders.id)|统计订单总数
 订单金额合计|SUM(t_orders.total_amount)|计算订单总金额"""
 
-    llm = ChatOpenAI(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-        temperature=0.0,
-        max_tokens=800,
-    )
+    llm = get_llm(max_tokens=800, temperature=0.0)
     response = await llm.ainvoke(prompt)
     text = response.content.strip()
 

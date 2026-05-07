@@ -1,6 +1,6 @@
 """SQL 解释节点：用自然语言描述生成的 SQL 做了什么。"""
+from app.ai.nodes.shared_utils import get_llm
 from app.core.logging import get_logger
-from app.ai.nodes.generation import get_llm
 
 logger = get_logger(__name__)
 

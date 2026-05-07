@@ -36,6 +36,9 @@
             <div class="header-menu-item" @click="goTo('/query-history')">
               <el-icon><Clock /></el-icon> 查询历史
             </div>
+            <div class="header-menu-item" @click="goTo('/dashboards')">
+              <el-icon><DataBoard /></el-icon> 看板
+            </div>
             <div class="header-menu-item" @click="showPipelineDialog = true">
               <el-icon><Help /></el-icon> 查询流程
             </div>
@@ -156,9 +159,14 @@
                 />
                 <div class="table-footer">
                   <span>共 {{ msg.row_count }} 条结果<span v-if="msg.execution_time_ms">（耗时 {{ msg.execution_time_ms }}ms）</span></span>
-                  <el-button size="small" text class="export-btn" @click="exportExcel(msg)">
-                    <el-icon><Download /></el-icon> 导出 Excel
-                  </el-button>
+                  <div class="table-footer-actions">
+                    <el-button size="small" text class="save-dashboard-btn" @click="openSaveToDashboard(msg)">
+                      <el-icon><DataBoard /></el-icon> 保存到看板
+                    </el-button>
+                    <el-button size="small" text class="export-btn" @click="exportExcel(msg)">
+                      <el-icon><Download /></el-icon> 导出 Excel
+                    </el-button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -201,6 +209,30 @@
 
     <!-- Pipeline Dialog -->
     <PipelineTraceDialog v-model="showPipelineDialog" :steps="pipelineTraceSteps" />
+
+    <!-- Save to Dashboard Dialog -->
+    <el-dialog v-model="showSaveDialog" title="保存到看板" width="400px">
+      <div v-if="dashboardsForSave.length === 0" class="save-empty">
+        <p>还没有看板，请先创建一个</p>
+        <el-button type="primary" size="small" @click="showCreateDashDialog = true">新建看板</el-button>
+      </div>
+      <el-select v-else v-model="selectedDashboardId" placeholder="选择看板" style="width: 100%">
+        <el-option v-for="d in dashboardsForSave" :key="d.id" :label="d.name" :value="d.id" />
+      </el-select>
+      <template #footer>
+        <el-button @click="showSaveDialog = false">取消</el-button>
+        <el-button type="primary" :disabled="!selectedDashboardId" @click="saveToDashboard">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Create Dashboard Dialog (from save flow) -->
+    <el-dialog v-model="showCreateDashDialog" title="新建看板" width="400px">
+      <el-input v-model="newDashName" placeholder="输入看板名称" @keyup.enter="createDashFromSave" />
+      <template #footer>
+        <el-button @click="showCreateDashDialog = false">取消</el-button>
+        <el-button type="primary" @click="createDashFromSave">创建</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -210,7 +242,7 @@ import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chatStore'
 import { useDatasourceStore } from '@/stores/datasourceStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ChatDotRound, ChatLineSquare, Loading, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Download, UserFilled, ArrowDown, Connection, Grid, Monitor, Histogram, Clock, Help, SwitchButton, Close, View } from '@element-plus/icons-vue'
+import { ChatDotRound, ChatLineSquare, Loading, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Download, UserFilled, ArrowDown, Connection, Grid, Monitor, Histogram, Clock, Help, SwitchButton, Close, View, DataBoard } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import ChartRenderer from '@/components/ChartRenderer.vue'
@@ -229,6 +261,14 @@ const showPipelineDialog = ref(false)
 const pipelineTraceSteps = ref<any[]>([])
 const suggestedQuestions = ref<string[]>([])
 const chartRendererMap = ref<Record<string, any>>({})
+
+// Save to dashboard
+const showSaveDialog = ref(false)
+const showCreateDashDialog = ref(false)
+const dashboardsForSave = ref<any[]>([])
+const selectedDashboardId = ref<string>('')
+const newDashName = ref('')
+const pendingSaveMsg = ref<any>(null)
 
 // Async query mode
 const useAsyncMode = ref(false)
@@ -422,6 +462,64 @@ function formatDate(dateStr: string): string {
   const diffDay = Math.floor(diffHour / 24)
   if (diffDay < 7) return `${diffDay} 天前`
   return d.toLocaleDateString('zh-CN')
+}
+
+async function openSaveToDashboard(msg: any) {
+  pendingSaveMsg.value = msg
+  try {
+    const res = await api.get('/dashboards')
+    dashboardsForSave.value = res.data.data || []
+    if (dashboardsForSave.value.length === 0) {
+      selectedDashboardId.value = ''
+    } else {
+      selectedDashboardId.value = dashboardsForSave.value[0].id
+    }
+    showSaveDialog.value = true
+  } catch {
+    ElMessage.error('获取看板列表失败')
+  }
+}
+
+async function createDashFromSave() {
+  if (!newDashName.value.trim()) {
+    ElMessage.warning('请输入看板名称')
+    return
+  }
+  try {
+    const res = await api.post('/dashboards', { name: newDashName.value.trim() })
+    dashboardsForSave.value.push(res.data)
+    selectedDashboardId.value = res.data.id
+    newDashName.value = ''
+    showCreateDashDialog.value = false
+    ElMessage.success('看板创建成功')
+  } catch {
+    ElMessage.error('创建看板失败')
+  }
+}
+
+async function saveToDashboard() {
+  if (!selectedDashboardId.value || !pendingSaveMsg.value) return
+  const msg = pendingSaveMsg.value
+  try {
+    await api.post(`/dashboards/${selectedDashboardId.value}/widgets`, {
+      question: msg.content,
+      datasource_id: chatStore.currentDatasourceId,
+      query_sql: msg.sql || '',
+      chart_type: msg.chart_type || 'table',
+      columns: msg.columns || [],
+      rows: msg.rows || [],
+      row_count: msg.row_count || 0,
+      position_x: 0,
+      position_y: 0,
+      width: 1,
+      height: 1,
+    })
+    showSaveDialog.value = false
+    pendingSaveMsg.value = null
+    ElMessage.success('已保存到看板')
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e?.response?.data?.detail?.message || e?.message || '未知错误'))
+  }
 }
 
 onMounted(async () => {
@@ -845,6 +943,17 @@ onUnmounted(() => {
   align-items: center;
 }
 
+.table-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.save-dashboard-btn {
+  color: #67c23a;
+  font-size: 12px;
+}
+
 .export-btn {
   color: #409eff;
   font-size: 12px;
@@ -895,6 +1004,16 @@ onUnmounted(() => {
   color: #909399;
   font-size: 12px;
   text-align: center;
+}
+
+.save-empty {
+  text-align: center;
+  padding: 20px 0;
+  color: #909399;
+}
+
+.save-empty p {
+  margin-bottom: 12px;
 }
 
 </style>

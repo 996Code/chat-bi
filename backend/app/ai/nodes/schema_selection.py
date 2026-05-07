@@ -5,8 +5,7 @@ Step 2: 给 LLM 选中表的字段列表，让其返回需要的字段
 """
 import json
 
-from langchain_openai import ChatOpenAI
-
+from app.ai.nodes.shared_utils import get_llm
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.db.models import MetadataConfig
@@ -73,14 +72,7 @@ async def _select_tables(question: str, metadata: dict) -> list[str]:
 
 请选出相关的表。"""
 
-    llm = ChatOpenAI(
-        model=settings.llm_model,
-        openai_api_base=settings.llm_base_url,
-        openai_api_key=settings.llm_api_key,
-        temperature=0.0,
-        max_tokens=300,
-        extra_body={"enable_thinking": False},
-    )
+    llm = get_llm(max_tokens=300, temperature=0.0)
 
     try:
         response = await llm.ainvoke([
@@ -137,14 +129,7 @@ async def _select_columns(question: str, selected_tables: list[str], metadata: d
 
 请选出需要的字段。"""
 
-    llm = ChatOpenAI(
-        model=settings.llm_model,
-        openai_api_base=settings.llm_base_url,
-        openai_api_key=settings.llm_api_key,
-        temperature=0.0,
-        max_tokens=500,
-        extra_body={"enable_thinking": False},
-    )
+    llm = get_llm(max_tokens=500, temperature=0.0)
 
     try:
         response = await llm.ainvoke([

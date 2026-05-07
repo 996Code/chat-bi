@@ -18,7 +18,7 @@ async def generate_suggested_questions(models: list[dict], relationships: list[d
         推荐问题列表（最多 8 个）
     """
     try:
-        from langchain_openai import ChatOpenAI
+        from app.ai.nodes.shared_utils import get_llm, LLM_NO_THINKING
     except ImportError:
         logger.warning("langchain_openai not available, using fallback questions")
         return _fallback_questions(models)
@@ -61,13 +61,7 @@ async def generate_suggested_questions(models: list[dict], relationships: list[d
 6. 避免生成需要多表 JOIN 的复杂问题，优先单表查询"""
 
     try:
-        llm = ChatOpenAI(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            model=settings.llm_model,
-            temperature=0.7,
-            max_tokens=500,
-        )
+        llm = get_llm(max_tokens=500, temperature=0.7)
         response = await llm.ainvoke(prompt)
         text = response.content.strip()
         questions = [q.strip().lstrip("0123456789.-) ") for q in text.split("\n") if q.strip()]

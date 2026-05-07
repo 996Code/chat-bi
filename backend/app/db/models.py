@@ -174,3 +174,35 @@ class Conversation(Base):
     messages: Mapped[str] = mapped_column(Text, default="[]")  # JSON array
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
+
+
+class Dashboard(Base):
+    __tablename__ = "dashboards"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
+
+
+class DashboardWidget(Base):
+    __tablename__ = "dashboard_widgets"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    dashboard_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    query_sql: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False)
+    chart_type: Mapped[str] = mapped_column(String(50), default="table")
+    columns: Mapped[str] = mapped_column(Text, nullable=True)  # JSON list
+    rows: Mapped[str] = mapped_column(Text, nullable=True)  # JSON list
+    row_count: Mapped[Optional[int]] = mapped_column(nullable=True)
+    position_x: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    position_y: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    width: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
+    height: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())

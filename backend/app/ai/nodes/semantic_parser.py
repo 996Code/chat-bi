@@ -58,15 +58,7 @@ async def parse_semantics(question: str, schema_context: str) -> dict:
         ("human", prompt),
     ]
 
-    llm = ChatOpenAI(
-        model=settings.llm_model,
-        openai_api_base=settings.llm_base_url,
-        openai_api_key=settings.llm_api_key,
-        temperature=0.0,
-        max_tokens=1000,
-        response_format={"type": "json_object"},
-        extra_body={"enable_thinking": False},
-    )
+    llm = get_llm(max_tokens=1000, temperature=0.0, response_format={"type": "json_object"})
 
     try:
         async with asyncio.timeout(15):

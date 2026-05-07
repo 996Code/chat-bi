@@ -252,7 +252,7 @@ async def _llm_retrieve_tables(
 ) -> list[str]:
     """Use LLM to identify relevant tables when keyword matching fails."""
     try:
-        from langchain_openai import ChatOpenAI
+        from app.ai.nodes.shared_utils import get_llm, LLM_NO_THINKING
     except ImportError:
         return []
 
@@ -276,13 +276,7 @@ async def _llm_retrieve_tables(
 3. 只输出确定相关的表"""
 
     try:
-        llm = ChatOpenAI(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            model=settings.llm_model,
-            temperature=0.0,
-            max_tokens=200,
-        )
+        llm = get_llm(max_tokens=200, temperature=0.0)
         response = await llm.ainvoke(prompt)
         text = response.content.strip()
         table_names = {m["name"] for m in models}

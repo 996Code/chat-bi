@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 
 from langchain_openai import ChatOpenAI
 
+from app.ai.nodes.shared_utils import get_llm, LLM_NO_THINKING
 from app.ai.prompts.query_prompt import SYSTEM_PROMPT, build_user_prompt, build_semantic_prompt
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -204,27 +205,9 @@ def _build_full_schema_context(raw_metadata: str) -> str:
     return append_all_table_names(result, raw_metadata)
 
 
-def get_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=settings.llm_model,
-        openai_api_base=settings.llm_base_url,
-        openai_api_key=settings.llm_api_key,
-        temperature=settings.llm_generation_temperature,
-        max_tokens=settings.llm_generation_max_tokens,
-        extra_body={"enable_thinking": False},
-    )
-
-
 def get_fallback_llm() -> ChatOpenAI:
     """Higher temperature + max_tokens for retry when default LLM fails."""
-    return ChatOpenAI(
-        model=settings.llm_model,
-        openai_api_base=settings.llm_base_url,
-        openai_api_key=settings.llm_api_key,
-        temperature=0.7,
-        max_tokens=4000,
-        extra_body={"enable_thinking": False},
-    )
+    return get_llm(max_tokens=4000, temperature=0.7)
 
 
 async def _llm_generate(messages: list, llm: ChatOpenAI | None = None, attempt: str = "") -> str | None:

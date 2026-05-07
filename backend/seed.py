@@ -14,13 +14,26 @@ from app.db.models import (
     AuditLog, SavedQuery, Feedback, AnalyticsEvent, Conversation,
 )
 
-# Database connection info from environment variables
-SEED_DB_HOST = os.environ.get('SEED_DB_HOST', '192.168.3.110')
+# Database connection info from environment variables (read from .env via settings)
+from app.core.config import settings as _settings
+
+SEED_DB_HOST = os.environ.get('SEED_DB_HOST', '')
 SEED_DB_PORT = int(os.environ.get('SEED_DB_PORT', '3306'))
 SEED_DB_USER = os.environ.get('SEED_DB_USER', 'root')
-SEED_DB_PASS = os.environ.get('SEED_DB_PASS', 'yjt_mysql')
+SEED_DB_PASS = os.environ.get('SEED_DB_PASS', '')
 # Single test database: chatbi_test
 TEST_DB_NAME = os.environ.get('TEST_DB_NAME', 'chatbi_test')
+
+# Derive host/pass from DATABASE_URL if not explicitly set
+if not SEED_DB_HOST:
+    # Parse from DATABASE_URL: mysql+aiomysql://root:pass@host:port/db
+    import re as _re
+    _m = _re.search(r'://([^:]+):([^@]+)@([^:]+):(\d+)/', _settings.database_url)
+    if _m:
+        SEED_DB_USER = SEED_DB_USER or _m.group(1)
+        SEED_DB_PASS = SEED_DB_PASS or _m.group(2)
+        SEED_DB_HOST = _m.group(3)
+        SEED_DB_PORT = int(_m.group(4)) if SEED_DB_PORT == 3306 else SEED_DB_PORT
 
 # PostgreSQL test DB (optional — skip if PG_TEST_PASS not set)
 PG_TEST_HOST = os.environ.get('PG_TEST_HOST', '')
@@ -50,12 +63,15 @@ NOW = datetime.now(timezone.utc)
 async def seed():
     async with async_session_factory() as session:
         # Truncate all tables in dependency order (children first, then parents)
+        await session.execute(text('SET FOREIGN_KEY_CHECKS = 0'))
         for table_name in [
             'analytics_events', 'feedback', 'saved_queries', 'conversations',
+            'dashboard_widgets', 'dashboards', 'async_queries',
             'audit_logs', 'metadata_config_versions', 'metadata_configs',
             'data_sources', 'users', 'tenants',
         ]:
             await session.execute(text(f'TRUNCATE TABLE {table_name}'))
+        await session.execute(text('SET FOREIGN_KEY_CHECKS = 1'))
         await session.commit()
 
         tenants = [

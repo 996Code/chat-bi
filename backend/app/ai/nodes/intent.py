@@ -5,6 +5,7 @@ import json
 
 from langchain_openai import ChatOpenAI
 
+from app.ai.nodes.shared_utils import get_llm, LLM_NO_THINKING
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.redis_client import get_redis
@@ -95,14 +96,10 @@ async def classify_intent(question: str) -> str:
         return local_result
 
     # LLM path for ambiguous cases
-    llm = ChatOpenAI(
-        model=settings.llm_model,
-        openai_api_base=settings.llm_base_url,
-        openai_api_key=settings.llm_api_key,
-        temperature=settings.llm_intent_temperature,
+    llm = get_llm(
         max_tokens=settings.llm_intent_max_tokens,
+        temperature=settings.llm_intent_temperature,
         response_format={"type": "json_object"},
-        extra_body={"enable_thinking": False},
     )
     messages = [
         ("system", INTENT_SYSTEM),
