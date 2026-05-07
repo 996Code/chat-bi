@@ -28,6 +28,7 @@ from app.db.models import (  # noqa: F401
     SavedQuery,
     Feedback,
     AnalyticsEvent,
+    AsyncQuery,
     Conversation,
 )
 

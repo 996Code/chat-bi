@@ -110,9 +110,15 @@
               <div v-if="msg.pipelineSteps && msg.pipelineSteps.length > 0" class="pipeline">
                 <div class="pipeline-header-row">
                   <span class="pipeline-title">查询流程</span>
-                  <el-button size="small" text @click="pipelineTraceSteps = msg.pipelineSteps || []; showPipelineDialog = true">
-                    <el-icon><QuestionFilled /></el-icon> 完整流程
-                  </el-button>
+                  <div class="pipeline-header-actions">
+                    <!-- Async cancel button -->
+                    <el-button v-if="isAsyncRunning(msg.id)" size="small" type="danger" text @click="cancelTask(msg.id)">
+                      <el-icon><Close /></el-icon> 取消查询
+                    </el-button>
+                    <el-button size="small" text @click="pipelineTraceSteps = msg.pipelineSteps || []; showPipelineDialog = true">
+                      <el-icon><QuestionFilled /></el-icon> 完整流程
+                    </el-button>
+                  </div>
                 </div>
                 <div
                   v-for="(step, idx) in msg.pipelineSteps"
@@ -161,6 +167,14 @@
 
         <!-- Input -->
         <div class="input-area">
+          <div class="input-controls">
+            <el-checkbox v-model="useAsyncMode" size="small" border>
+              <el-icon><Clock /></el-icon> 后台运行（适合大查询）
+            </el-checkbox>
+            <span v-if="activeAsyncCount > 0" class="async-badge">
+              <el-icon class="is-loading"><Loading /></el-icon> {{ activeAsyncCount }} 个查询正在运行
+            </span>
+          </div>
           <el-input
             v-model="inputText"
             placeholder="用自然语言提问，例如：各VIP等级的用户数量"
@@ -191,12 +205,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chatStore'
 import { useDatasourceStore } from '@/stores/datasourceStore'
 import { useAuthStore } from '@/stores/authStore'
-import { ChatDotRound, ChatLineSquare, Loading, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Download, UserFilled, ArrowDown, Connection, Grid, Monitor, Histogram, Clock, Help, SwitchButton } from '@element-plus/icons-vue'
+import { ChatDotRound, ChatLineSquare, Loading, CircleCheck, CircleClose, Plus, Delete, QuestionFilled, Download, UserFilled, ArrowDown, Connection, Grid, Monitor, Histogram, Clock, Help, SwitchButton, Close, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import ChartRenderer from '@/components/ChartRenderer.vue'
@@ -216,11 +230,45 @@ const pipelineTraceSteps = ref<any[]>([])
 const suggestedQuestions = ref<string[]>([])
 const chartRendererMap = ref<Record<string, any>>({})
 
+// Async query mode
+const useAsyncMode = ref(false)
+
+const activeAsyncCount = computed(() => {
+  return chatStore.activeAsyncTasks.size
+})
+
+function findTaskIdByMessageId(messageId: string): string | null {
+  for (const [taskId, task] of chatStore.activeAsyncTasks) {
+    if (task.messageId === messageId) return taskId
+  }
+  return null
+}
+
+function isAsyncRunning(messageId: string): boolean {
+  return !!findTaskIdByMessageId(messageId)
+}
+
+function cancelTask(messageId: string) {
+  const taskId = findTaskIdByMessageId(messageId)
+  if (taskId) {
+    chatStore.cancelAsyncQuery(taskId)
+  }
+}
+
 async function handleSend() {
   const text = inputText.value.trim()
   if (!text || chatStore.loading) return
   inputText.value = ''
-  await chatStore.sendQuestion(text)
+
+  if (useAsyncMode.value) {
+    try {
+      await chatStore.sendAsyncQuestion(text)
+    } catch (e: any) {
+      ElMessage.error(e.message || '提交失败')
+    }
+  } else {
+    await chatStore.sendQuestion(text)
+  }
   await nextTick()
   scrollToBottom()
 }
@@ -398,6 +446,13 @@ onMounted(async () => {
   // Auto-scroll on SSE updates
   chatStore.onMessageUpdate = () => {
     nextTick(() => scrollToBottom())
+  }
+})
+
+// Cleanup: abort all async queries when leaving the page
+onUnmounted(() => {
+  for (const taskId of chatStore.activeAsyncTasks.keys()) {
+    chatStore.cancelAsyncQuery(taskId)
   }
 })
 </script>
@@ -809,9 +864,30 @@ onMounted(async () => {
 }
 
 .input-area {
-  padding: 16px 20px;
+  padding: 12px 20px 16px;
   border-top: 1px solid #e4e7ed;
   background: white;
+}
+
+.input-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.async-badge {
+  font-size: 12px;
+  color: #e6a23c;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pipeline-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .input-hint {

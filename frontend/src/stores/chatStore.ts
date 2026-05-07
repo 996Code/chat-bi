@@ -55,6 +55,9 @@ export const useChatStore = defineStore('chat', () => {
   const conversations = ref<any[]>([])
   const onMessageUpdate = ref<(() => void) | null>(null)
 
+  // Async query task tracking
+  const activeAsyncTasks = ref<Map<string, { taskId: string; messageId: string; abort: () => void }>>(new Map())
+
   function _serializeMessages(): any[] {
     // Save messages with query results (cap rows at 100 to avoid bloat)
     return messages.value.map(m => ({
@@ -417,14 +420,205 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // ==================== Async Query (PERF-03) ====================
+
+  async function sendAsyncQuestion(question: string): Promise<string> {
+    if (!currentDatasourceId.value) {
+      throw new Error('请先选择一个数据源')
+    }
+
+    // Add user message
+    messages.value.push({
+      id: `msg-${Date.now()}`,
+      role: 'user',
+      content: question,
+      timestamp: new Date(),
+    })
+
+    // Create assistant placeholder
+    const assistantId = `msg-async-${Date.now()}`
+    const assistantMsg: Message = {
+      id: assistantId,
+      role: 'assistant',
+      content: '后台查询已提交，正在处理中...',
+      pipelineSteps: [
+        { type: 'intent', label: '后台查询', status: 'running', detail: '正在执行，请耐心等待' },
+      ],
+      timestamp: new Date(),
+    }
+    messages.value.push(assistantMsg)
+
+    try {
+      const baseURL = (api.defaults.baseURL || '').replace(/\/$/, '')
+      const token = localStorage.getItem('access_token')
+
+      const res = await fetch(`${baseURL}/query/async`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          question,
+          datasource_id: currentDatasourceId.value,
+          history: messages.value
+            .filter(m => m.role === 'user' || (m.role === 'assistant' && m.sql))
+            .slice(-6)
+            .map(m => ({
+              role: m.role,
+              content: m.content,
+              sql: m.sql || undefined,
+            })),
+        }),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail?.message || '提交失败')
+      }
+
+      const data = await res.json()
+      const taskId: string = data.task_id
+
+      // Start polling in background
+      const abortController = new AbortController()
+      activeAsyncTasks.value.set(taskId, { taskId, messageId: assistantId, abort: () => abortController.abort() })
+
+      pollAsyncTask(taskId, assistantMsg, abortController.signal)
+
+      return taskId
+    } catch (error: any) {
+      assistantMsg.content = ''
+      assistantMsg.error = error.message || '提交失败'
+      assistantMsg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: error.message }]
+      return ''
+    }
+  }
+
+  async function pollAsyncTask(taskId: string, msg: Message, signal: AbortSignal): Promise<void> {
+    const baseURL = (api.defaults.baseURL || '').replace(/\/$/, '')
+    const token = localStorage.getItem('access_token')
+    const maxPolls = 120 // 10 minutes at 5s interval
+    let polls = 0
+
+    while (!signal.aborted && polls < maxPolls) {
+      try {
+        const res = await fetch(`${baseURL}/query/async/${taskId}`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+        })
+
+        if (!res.ok) {
+          if (res.status === 404) {
+            msg.error = '查询任务已过期'
+            msg.content = msg.error
+            msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: '任务已过期' }]
+            activeAsyncTasks.value.delete(taskId)
+            return
+          }
+          polls++
+          await sleep(5000)
+          continue
+        }
+
+        const data = await res.json()
+
+        if (data.status === 'done') {
+          // Success
+          msg.columns = data.columns || []
+          msg.rows = data.rows || []
+          msg.row_count = data.row_count || 0
+          msg.sql = data.sql
+          msg.chart_type = data.chart_type || 'table'
+          msg.execution_time_ms = data.execution_time_ms
+          msg.content = '查询成功'
+          msg.pipelineSteps = [
+            { type: 'intent', label: '后台查询', status: 'done', detail: `查询完成，${data.row_count} 行结果` },
+            { type: 'data', label: '执行查询', status: 'done', detail: `返回 ${data.row_count} 行`, duration_ms: data.execution_time_ms },
+          ]
+          activeAsyncTasks.value.delete(taskId)
+          await _saveCurrentConversation()
+          await loadConversations()
+          return
+        } else if (data.status === 'failed') {
+          const errMsg = data.error || '查询失败'
+          msg.error = errMsg
+          msg.content = errMsg
+          msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: errMsg }]
+          activeAsyncTasks.value.delete(taskId)
+          return
+        } else if (data.status === 'cancelled') {
+          msg.content = '查询已取消'
+          msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: '用户已取消' }]
+          activeAsyncTasks.value.delete(taskId)
+          return
+        }
+        // status === 'running' or 'pending' — keep polling
+        const statusLabel = data.status === 'running' ? '正在执行' : '等待中'
+        msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'running', detail: statusLabel }]
+      } catch {
+        // Network error — retry
+      }
+
+      polls++
+      await sleep(5000)
+    }
+
+    // Timeout
+    if (!signal.aborted) {
+      msg.error = '查询超时'
+      msg.content = msg.error
+      msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: '查询超时（10分钟限制）' }]
+      activeAsyncTasks.value.delete(taskId)
+    }
+  }
+
+  async function cancelAsyncQuery(taskId: string): Promise<void> {
+    const task = activeAsyncTasks.value.get(taskId)
+    if (!task) return
+
+    // Abort local polling first
+    task.abort()
+    activeAsyncTasks.value.delete(taskId)
+
+    // Notify backend
+    try {
+      const baseURL = (api.defaults.baseURL || '').replace(/\/$/, '')
+      const token = localStorage.getItem('access_token')
+      await fetch(`${baseURL}/query/async/${taskId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+    } catch {
+      // Non-critical
+    }
+
+    // Update message status
+    const msg = messages.value.find(m => m.id === task.messageId)
+    if (msg) {
+      msg.content = '查询已取消'
+      msg.pipelineSteps = msg.pipelineSteps?.map(s => ({
+        ...s,
+        status: 'failed' as const,
+        detail: s.status === 'running' ? '用户已取消' : s.detail,
+      }))
+    }
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms))
+  }
+
   return {
     messages,
     loading,
     currentDatasourceId,
     currentConversationId,
     conversations,
+    activeAsyncTasks,
     onMessageUpdate,
     sendQuestion,
+    sendAsyncQuestion,
+    cancelAsyncQuery,
     clearMessages,
     newConversation,
     loadConversation,

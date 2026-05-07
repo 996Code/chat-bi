@@ -34,3 +34,29 @@ class QueryResponse(BaseModel):
 
 class ExplainRequest(BaseModel):
     sql: str
+
+
+class AsyncQueryResponse(BaseModel):
+    """Response when submitting an async query — returns task_id for polling."""
+    task_id: str
+    status: str  # pending | running | done | failed | cancelled
+    question: str
+    datasource_id: str
+    created_at: str | None = None
+
+
+class AsyncQueryStatus(BaseModel):
+    """Response when polling for an async query status/result."""
+    task_id: str
+    status: str
+    question: str
+    datasource_id: str
+    sql: str | None = None
+    columns: list[str] = []
+    rows: list[dict] = []
+    row_count: int = 0
+    error: str | None = None
+    chart_type: str = "none"
+    execution_time_ms: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None

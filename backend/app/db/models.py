@@ -140,6 +140,27 @@ class AnalyticsEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
 
 
+class AsyncQuery(Base):
+    """Background query task — submitted asynchronously, polled for results."""
+    __tablename__ = "async_queries"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending | running | done | failed | cancelled
+    generated_sql: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    columns: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list
+    rows: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list
+    row_count: Mapped[Optional[int]] = mapped_column(nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    chart_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    execution_time_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 

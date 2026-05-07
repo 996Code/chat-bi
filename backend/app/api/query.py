@@ -4,17 +4,17 @@ import json
 import re
 import time
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models import DataSource, MetadataConfig, SavedQuery
+from app.db.models import DataSource, MetadataConfig, SavedQuery, AsyncQuery
 from app.core.config import settings
 from app.core.security import get_current_user, require_role
 from app.core.logging import get_logger
-from app.schemas.query import QueryRequest, QueryResponse, ExplainRequest
+from app.schemas.query import QueryRequest, QueryResponse, ExplainRequest, AsyncQueryResponse, AsyncQueryStatus
 from app.ai.graph import build_graph
 from app.ai.chart_type import infer_chart_type
 from app.services.cache_service import cache_get, cache_set
@@ -663,3 +663,265 @@ async def export_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=export.csv"},
     )
+
+
+# ==================== Async Query Execution (PERF-03) ====================
+
+
+@router.post("/async", response_model=AsyncQueryResponse)
+async def submit_async_query(
+    data: QueryRequest,
+    background_tasks: BackgroundTasks,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """提交异步查询任务 — 立即返回 task_id，前端轮询 GET /query/async/{task_id} 获取结果。"""
+    tenant_id = user["tenant_id"]
+    ds = await _check_datasource(data.datasource_id, tenant_id, db)
+
+    # Create pending async query record
+    task_id = uuid.uuid4()
+    aq = AsyncQuery(
+        id=task_id,
+        tenant_id=tenant_id,
+        user_id=user["user_id"],
+        datasource_id=data.datasource_id,
+        question=data.question,
+        status="pending",
+    )
+    db.add(aq)
+    await db.commit()
+
+    # Schedule background task (UUIDs → strings for safe serialization)
+    background_tasks.add_task(
+        _run_async_query,
+        task_id=str(task_id),
+        question=data.question,
+        datasource_id=str(data.datasource_id),
+        tenant_id=str(tenant_id),
+        user_id=str(user["user_id"]),
+        history=data.history,
+    )
+
+    return AsyncQueryResponse(
+        task_id=str(task_id),
+        status="pending",
+        question=data.question,
+        datasource_id=data.datasource_id,
+    )
+
+
+@router.get("/async/{task_id}", response_model=AsyncQueryStatus)
+async def get_async_query_status(
+    task_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """轮询异步查询任务状态和结果。"""
+    result = await db.execute(
+        select(AsyncQuery).where(
+            AsyncQuery.id == task_id,
+            AsyncQuery.tenant_id == user["tenant_id"],
+        )
+    )
+    aq = result.scalar_one_or_none()
+    if not aq:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("TASK_NOT_FOUND", "异步查询任务不存在"),
+        )
+
+    status_resp = AsyncQueryStatus(
+        task_id=str(aq.id),
+        status=aq.status,
+        question=aq.question,
+        datasource_id=str(aq.datasource_id),
+        sql=aq.generated_sql,
+        error=aq.error,
+        chart_type=aq.chart_type or "none",
+        execution_time_ms=aq.execution_time_ms,
+        created_at=str(aq.created_at) if aq.created_at else None,
+        updated_at=str(aq.updated_at) if aq.updated_at else None,
+    )
+
+    # Parse rows/columns from JSON if done
+    if aq.status == "done" and aq.columns and aq.rows:
+        status_resp.columns = json.loads(aq.columns)
+        status_resp.rows = json.loads(aq.rows)
+        status_resp.row_count = aq.row_count or 0
+
+    return status_resp
+
+
+@router.delete("/async/{task_id}")
+async def cancel_async_query(
+    task_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """取消一个 pending/running 的异步查询任务。"""
+    result = await db.execute(
+        select(AsyncQuery).where(
+            AsyncQuery.id == task_id,
+            AsyncQuery.tenant_id == user["tenant_id"],
+        )
+    )
+    aq = result.scalar_one_or_none()
+    if not aq:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("TASK_NOT_FOUND", "异步查询任务不存在"),
+        )
+    if aq.status in ("done", "failed", "cancelled"):
+        return {"message": f"任务已处于终止状态: {aq.status}"}
+
+    aq.status = "cancelled"
+    await db.commit()
+    return {"message": "任务已取消"}
+
+
+async def _run_async_query(
+    task_id: str,
+    question: str,
+    datasource_id: str,
+    tenant_id: str,
+    user_id: str,
+    history: list[dict] | None = None,
+):
+    """Background task: run the full query pipeline and save results."""
+    import time
+
+    # Re-import here to avoid circular imports at module level
+    from app.db.session import async_session_factory
+    from app.ai.graph import build_graph
+    from app.ai.chart_type import infer_chart_type
+    from app.services.data_masking import mask_sensitive_data
+    from app.services.audit_service import log_action
+    from app.services.analytics_service import track_event, EVENT_QUERY_EXECUTE, EVENT_QUERY_SUCCESS, EVENT_QUERY_ERROR
+    from app.core.logging import get_logger
+
+    logger = get_logger(__name__)
+    start = time.monotonic()
+
+    async with async_session_factory() as db:
+        try:
+            # Update status to running
+            result = await db.execute(select(AsyncQuery).where(AsyncQuery.id == task_id))
+            aq = result.scalar_one_or_none()
+            if not aq or aq.status == "cancelled":
+                return
+            aq.status = "running"
+            await db.commit()
+
+            # Run full pipeline
+            graph = build_graph()
+            initial_state = {
+                "question": question,
+                "datasource_id": datasource_id,
+                "tenant_id": tenant_id,
+                "conversation_history": history or [],
+            }
+
+            final_state = await asyncio.wait_for(
+                graph.ainvoke(initial_state),
+                timeout=settings.query_pipeline_timeout,
+            )
+
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            # Get results
+            success = final_state.get("success", False)
+            sql = final_state.get("sql")
+            columns = final_state.get("columns", [])
+            rows = final_state.get("rows", [])
+            row_count = final_state.get("row_count", 0)
+            error = final_state.get("error")
+            chart_type = "none"
+
+            if rows and columns:
+                chart_type = infer_chart_type(columns, rows)
+
+            columns, rows = mask_sensitive_data(columns, rows)
+
+            # Update async query record
+            result2 = await db.execute(select(AsyncQuery).where(AsyncQuery.id == task_id))
+            aq2 = result2.scalar_one_or_none()
+            if not aq2:
+                return
+
+            aq2.status = "done" if success else "failed"
+            aq2.generated_sql = sql
+            aq2.columns = json.dumps(columns, ensure_ascii=False) if columns else None
+            aq2.rows = json.dumps(rows, ensure_ascii=False) if rows else None
+            aq2.row_count = row_count
+            aq2.error = error if not success else None
+            aq2.chart_type = chart_type
+            aq2.execution_time_ms = elapsed_ms
+
+            # Audit log
+            await log_action(
+                db, tenant_id, user_id,
+                "ASYNC_QUERY_EXECUTE", "query", datasource_id,
+                details=f"question={question[:200]} task_id={task_id}",
+                sql_text=sql,
+                result_count=row_count,
+                execution_time_ms=elapsed_ms,
+                error_message=error if not success else None,
+            )
+
+            event_name = EVENT_QUERY_SUCCESS if success else EVENT_QUERY_ERROR
+            await track_event(db, tenant_id, user_id, event_name, {
+                "question": question,
+                "async": True,
+                "task_id": task_id,
+            })
+
+            # Auto-save history
+            await _auto_save_history(
+                db, tenant_id, user_id, datasource_id,
+                question, sql,
+                success=success,
+                row_count=row_count,
+                execution_time_ms=elapsed_ms,
+                error=error,
+                chart_type=chart_type,
+            )
+
+            # Cache successful result
+            if success and rows:
+                await cache_set(question, datasource_id, {
+                    "success": True,
+                    "intent": final_state.get("intent"),
+                    "sql": sql,
+                    "columns": columns,
+                    "rows": rows,
+                    "row_count": row_count,
+                    "chart_type": chart_type,
+                }, tenant_id=tenant_id)
+
+            await db.commit()
+
+        except asyncio.TimeoutError:
+            logger.warning("Async query %s timed out after %ds", task_id, settings.query_pipeline_timeout)
+            try:
+                result3 = await db.execute(select(AsyncQuery).where(AsyncQuery.id == task_id))
+                aq3 = result3.scalar_one_or_none()
+                if aq3:
+                    aq3.status = "failed"
+                    aq3.error = f"查询超时（{settings.query_pipeline_timeout}秒限制）"
+                    aq3.execution_time_ms = int((time.monotonic() - start) * 1000)
+                    await db.commit()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.exception("Async query %s failed: %s", task_id, e)
+            try:
+                result4 = await db.execute(select(AsyncQuery).where(AsyncQuery.id == task_id))
+                aq4 = result4.scalar_one_or_none()
+                if aq4:
+                    aq4.status = "failed"
+                    aq4.error = str(e)[:500]
+                    aq4.execution_time_ms = int((time.monotonic() - start) * 1000)
+                    await db.commit()
+            except Exception:
+                pass
