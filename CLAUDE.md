@@ -49,7 +49,7 @@ chat-bi/
 │   │   ├── core/                # 配置、安全、日志、限流
 │   │   ├── db/                  # SQLAlchemy 模型、会话
 │   │   └── services/            # 业务服务层
-│   ├── tests/                   # 190 个测试用例
+│   ├── tests/                   # 191 个测试用例
 │   ├── seed.py                  # 业务数据初始化（可重复运行）
 │   └── .env.example             # 环境变量模板
 ├── frontend/
@@ -81,10 +81,10 @@ chat-bi/
 
 ## 开发规范
 
-- **测试**：每次变更后运行 `.venv/bin/python -m pytest tests/ -x -q`，190 passed 为底线
+- **测试**：每次变更后运行 `.venv/bin/python -m pytest tests/ -x -q`，191 passed 为底线
 - **配置**：所有魔法数字集中在 `app/core/config.py`，通过环境变量控制
 - **API 前缀**：统一使用 `settings.api_prefix`（默认 `/chat-bi/api/v1`）
-- **端口**：后端默认 8999，前端 dev 5173
+- **端口**：后端默认 8999（Docker 28080），前端 dev 5173
 - **测试隔离**：conftest.py 强制使用 SQLite in-memory，不碰真实数据库
 - **seed 脚本**：必须支持重复运行（truncate + insert），UUID 固定
 
@@ -103,9 +103,20 @@ cp deploy/.env.example deploy/.env   # 首次：编辑配置
 用户提问 → 意图识别 → 上下文补全 → Schema 选择(LLM两步) → SQL 生成 → 执行查询 → SQL 自愈(最多2轮) → 图表推断 → 返回结果
 ```
 
+## 环境切换
+
+项目根目录有 `.env.home` 和 `.env.office` 两套环境配置模板，根目录 `.env` 是实际生效的配置文件。切换时：
+
+```bash
+cp .env.home .env     # 切换到 home（192.168.3.110）
+cp .env.office .env   # 切换到 office
+```
+
+后端和前端通过符号链接读取根目录 `.env`，无需分别修改。
+
 ## 注意事项
 
-1. **不要跳过测试** — 190 个测试覆盖认证、数据源、查询、审计等核心功能
+1. **不要跳过测试** — 191 个测试覆盖认证、数据源、查询、审计等核心功能
 2. **不要硬编码配置** — 所有超时、阈值、密钥走 `config.py`
 3. **不要直接操作数据库** — 通过 SQLAlchemy ORM，测试用 SQLite
 4. **API 路径统一** — 走 `/chat-bi/api/v1` 前缀
@@ -114,4 +125,4 @@ cp deploy/.env.example deploy/.env   # 首次：编辑配置
 
 ---
 
-*最后更新: 2026-05-05*
+*最后更新: 2026-05-07*
