@@ -15,6 +15,48 @@ SEMANTIC_CACHE_TTL = settings.query_cache_ttl_seconds
 SEMANTIC_CACHE_MAX_ENTRIES = 500  # per datasource
 
 
+# ── In-memory cache stats counter ──
+
+class CacheStats:
+    """Thread-safe in-memory counter for cache hits/misses."""
+
+    def __init__(self):
+        self.hits: int = 0
+        self.misses: int = 0
+        self.semantic_hits: int = 0
+        self.sets: int = 0
+        self.skipped: int = 0  # cache_set skipped (no rows or not success)
+
+    def record_hit(self, semantic: bool = False):
+        self.hits += 1
+        if semantic:
+            self.semantic_hits += 1
+
+    def record_miss(self):
+        self.misses += 1
+
+    def record_set(self):
+        self.sets += 1
+
+    def record_skipped(self):
+        self.skipped += 1
+
+    def snapshot(self) -> dict:
+        total = self.hits + self.misses
+        hit_rate = self.hits / total if total > 0 else 0.0
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "semantic_hits": self.semantic_hits,
+            "sets": self.sets,
+            "skipped": self.skipped,
+            "hit_rate": round(hit_rate, 4),
+        }
+
+
+cache_stats = CacheStats()
+
+
 def _cache_key(question: str, datasource_id: str, tenant_id: str = "") -> str:
     raw = f"{tenant_id}:{question.strip().lower()}:{datasource_id}"
     return f"query:{hashlib.sha256(raw.encode()).hexdigest()}"
@@ -32,31 +74,55 @@ async def cache_get(question: str, datasource_id: str, tenant_id: str = "") -> d
         redis = await get_redis()
         raw = await redis.get(key)
         if raw:
+            cache_stats.record_hit()
             logger.info("Cache HIT for key %s", key[:16])
             return json.loads(raw)
+        cache_stats.record_miss()
     except Exception as e:
         logger.warning("Redis cache get failed: %s", e)
+        cache_stats.record_miss()
     return None
 
 
-async def cache_set(question: str, datasource_id: str, result: dict, tenant_id: str = "") -> None:
+async def cache_set(question: str, datasource_id: str, result: dict, tenant_id: str = "", ttl: int | None = None) -> None:
+    """Cache successful query results with rows only."""
     if not result.get("success") or not result.get("rows"):
+        cache_stats.record_skipped()
         return
     key = _cache_key(question, datasource_id, tenant_id)
+
+    # Determine TTL: explicit > per-datasource metadata > default
+    effective_ttl = ttl or _resolve_ttl(datasource_id, result)
     try:
         redis = await get_redis()
-        await redis.setex(key, settings.query_cache_ttl_seconds, json.dumps(result, default=str))
-        logger.info("Cached query result (TTL=%ds)", settings.query_cache_ttl_seconds)
+        await redis.setex(key, effective_ttl, json.dumps(result, default=str))
+        cache_stats.record_set()
+        logger.info("Cached query result (TTL=%ds)", effective_ttl)
 
         # Index key in per-datasource set for targeted cache invalidation
         index_key = _datasource_index_key(datasource_id, tenant_id)
         await redis.sadd(index_key, key)
-        await redis.expire(index_key, settings.query_cache_ttl_seconds)
+        await redis.expire(index_key, effective_ttl)
 
         # Also index for semantic lookup
         _add_to_semantic_index(question, key, datasource_id, tenant_id)
     except Exception as e:
         logger.warning("Redis cache set failed: %s", e)
+
+
+def _resolve_ttl(datasource_id: str, result: dict) -> int:
+    """Resolve cache TTL: check result metadata, fall back to default."""
+    # Allow per-query TTL hint from the caller
+    meta_ttl = result.get("cache_ttl")
+    if meta_ttl and isinstance(meta_ttl, int) and meta_ttl > 0:
+        return meta_ttl
+
+    # Complexity-based TTL: use longer TTL for complex queries (more stable results)
+    row_count = len(result.get("rows", []))
+    if row_count > 100:
+        return getattr(settings, 'query_cache_ttl_complex', 7200)
+
+    return settings.query_cache_ttl_seconds
 
 
 async def cache_delete(question: str, datasource_id: str, tenant_id: str = "") -> None:
@@ -156,6 +222,7 @@ async def semantic_cache_get(question: str, datasource_id: str, tenant_id: str =
         if best_score >= threshold and best_key:
             cached = await redis.get(best_key)
             if cached:
+                cache_stats.record_hit(semantic=True)
                 logger.info("Semantic cache HIT (similarity=%.2f)", best_score)
                 result = json.loads(cached)
                 result["_semantic_match"] = True

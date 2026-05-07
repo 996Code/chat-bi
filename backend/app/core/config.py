@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     llm_generation_max_tokens: int = 2000
     llm_self_heal_max_retries: int = 2
 
+    # Model routing (optional — disabled by default)
+    llm_simple_model: str = ""  # Lightweight model for simple queries; empty = disabled
+    llm_complex_threshold: int = 6  # Score threshold for "complex" routing
+
     # Query
     query_max_rows: int = 1000
     sql_execution_timeout: int = 30
@@ -45,6 +49,11 @@ class Settings(BaseSettings):
     conversation_history_max_turns: int = 5
 
     # Connection pool
+    pool_min_size: int = 5
+    pool_max_size: int = 10
+    pool_timeout: int = 30
+    pool_recycle: int = 3600  # MySQL default wait_timeout is 8h; recycle at 1h to avoid stale connections
+    # Legacy aliases (kept for backward compatibility)
     db_pool_size: int = 5
     db_pool_max_overflow: int = 10
     db_pool_timeout: int = 30
@@ -97,7 +106,9 @@ class Settings(BaseSettings):
 
     # Redis (query cache, rate limits, login lock)
     redis_url: str = "redis://127.0.0.1:6379/0"  # Redis for query cache, rate limits, login lock
-    query_cache_ttl_seconds: int = 3600
+    query_cache_ttl_seconds: int = 3600  # Default cache TTL
+    query_cache_ttl_simple: int = 1800   # TTL for simple queries (single metric)
+    query_cache_ttl_complex: int = 7200  # TTL for complex queries (multi-step)
 
     # --- Test database ---
     # MySQL test DB (used by init_test_dbs.py, seed_test_db.py)

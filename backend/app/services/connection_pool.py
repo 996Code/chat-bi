@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy import URL, text
 
 from app.core.logging import get_logger
+from app.core.config import settings
 from app.core.encryption import decrypt_value
 from app.db.models import DataSource
 
@@ -49,16 +50,24 @@ class ConnectionPoolManager:
             return self._pools[ds_id]
 
         url = _build_url(ds)
+        pool_size = getattr(settings, 'pool_min_size', settings.db_pool_size)
+        max_overflow = getattr(settings, 'pool_max_size', settings.db_pool_max_overflow)
+        pool_timeout = getattr(settings, 'pool_timeout', settings.db_pool_timeout)
+        pool_recycle = getattr(settings, 'pool_recycle', settings.db_pool_recycle)
+
         engine = create_async_engine(
             url.render_as_string(hide_password=False),
-            pool_size=5,
-            max_overflow=10,
-            pool_timeout=30,
-            pool_recycle=3600,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_timeout=pool_timeout,
+            pool_recycle=pool_recycle,
             # pool_pre_ping disabled: causes MissingGreenint with aiosqlite
         )
         self._pools[ds_id] = engine
-        logger.info(f"Created connection pool for datasource {ds.name} ({ds_id}, type={ds.db_type})")
+        logger.info(
+            "Created connection pool for datasource %s (%s, type=%s, pool_size=%d, max_overflow=%d, recycle=%ds)",
+            ds.name, ds_id, ds.db_type, pool_size, max_overflow, pool_recycle,
+        )
         return engine
 
     async def refresh_pool(self, ds: DataSource) -> AsyncEngine:
@@ -84,6 +93,28 @@ class ConnectionPoolManager:
 
     async def get_pool_by_id(self, ds_id: str) -> AsyncEngine | None:
         return self._pools.get(ds_id)
+
+    async def get_pool_status(self) -> list[dict]:
+        """Return pool status for all active pools (active connections, idle connections)."""
+        status_list = []
+        for ds_id, engine in self._pools.items():
+            try:
+                pool = engine.pool
+                status_list.append({
+                    "datasource_id": ds_id,
+                    "size": pool.size(),
+                    "checked_in": pool.checkedin(),
+                    "checked_out": pool.checkedout(),
+                    "overflow": pool.overflow(),
+                    "invalid": getattr(pool, 'invalidated', 0),
+                })
+            except Exception as e:
+                status_list.append({
+                    "datasource_id": ds_id,
+                    "error": str(e),
+                })
+        logger.info("Pool status: %d active pools", len(status_list))
+        return status_list
 
     async def health_check(self, ds_id: str, ds: DataSource) -> dict:
         try:

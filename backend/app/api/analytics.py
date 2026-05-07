@@ -172,3 +172,21 @@ async def get_slow_query_stats(
     from app.services.audit_service import get_slow_query_stats
     tenant_id = admin["tenant_id"]
     return await get_slow_query_stats(db, tenant_id, hours=hours)
+
+
+@router.get("/cache-stats")
+async def get_cache_stats(
+    admin: dict = Depends(require_role("admin")),
+):
+    """获取缓存命中率统计（仅管理员）。"""
+    from app.services.cache_service import cache_stats
+    return cache_stats.snapshot()
+
+
+@router.get("/pool-status")
+async def get_pool_status(
+    admin: dict = Depends(require_role("admin")),
+):
+    """获取连接池状态（仅管理员）。"""
+    from app.services.connection_pool import pool_manager
+    return await pool_manager.get_pool_status()

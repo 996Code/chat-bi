@@ -138,7 +138,70 @@ async def create_query(
             chart_type=sem_cached.get("chart_type", "table"),
         )
 
-    # Build graph and execute
+    # Lightweight model routing (optional — only when llm_simple_model is configured)
+    if settings.llm_simple_model:
+        from app.services.query_complexity import estimate_query_complexity
+        complexity = estimate_query_complexity(data.question)
+        if complexity["score"] <= 2:
+            logger.info("Simple query path (score=%d): %s", complexity["score"], data.question[:80])
+            from app.services.simple_query_executor import execute_simple_query
+            simple_result = await execute_simple_query(data.question, data.datasource_id, tenant_id)
+
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            chart_type = "table"
+            if simple_result.get("rows") and simple_result.get("columns"):
+                chart_type = infer_chart_type(simple_result["columns"], simple_result["rows"])
+
+            # Audit + track
+            from app.services.analytics_service import track_event, EVENT_QUERY_EXECUTE, EVENT_QUERY_SUCCESS, EVENT_QUERY_ERROR
+            await track_event(db, tenant_id, user["user_id"], EVENT_QUERY_EXECUTE, {
+                "question": data.question,
+                "simple_model": True,
+                "complexity_score": complexity["score"],
+            })
+            event_name = EVENT_QUERY_SUCCESS if simple_result.get("success") else EVENT_QUERY_ERROR
+            await track_event(db, tenant_id, user["user_id"], event_name, {
+                "question": data.question,
+                "simple_model": True,
+            })
+            await _auto_save_history(
+                db, tenant_id, user["user_id"], data.datasource_id,
+                data.question, simple_result.get("sql"),
+                success=simple_result.get("success", False),
+                row_count=simple_result.get("row_count", 0),
+                execution_time_ms=elapsed_ms,
+                error=simple_result.get("error"),
+                chart_type=chart_type,
+            )
+            await db.commit()
+
+            response = QueryResponse(
+                success=simple_result.get("success", False),
+                intent="DataQuery",
+                sql=simple_result.get("sql"),
+                columns=simple_result.get("columns", []),
+                rows=simple_result.get("rows", []),
+                row_count=simple_result.get("row_count", 0),
+                error=simple_result.get("error"),
+                execution_time_ms=simple_result.get("execution_time_ms") or elapsed_ms,
+                chart_type=chart_type,
+            )
+
+            # Cache successful result
+            if simple_result.get("success") and simple_result.get("rows"):
+                await cache_set(data.question, data.datasource_id, {
+                    "success": True,
+                    "intent": "DataQuery",
+                    "sql": simple_result.get("sql"),
+                    "columns": simple_result.get("columns", []),
+                    "rows": simple_result.get("rows", []),
+                    "row_count": simple_result.get("row_count", 0),
+                    "chart_type": chart_type,
+                }, tenant_id=tenant_id)
+
+            return response
+
+    # Build graph and execute (full pipeline)
     try:
         graph = build_graph()
         initial_state = {

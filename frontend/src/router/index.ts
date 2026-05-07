@@ -63,6 +63,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/QueryHistory.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/dashboards',
+    name: 'Dashboards',
+    component: () => import('@/views/DashboardView.vue'),
+    meta: { requiresAuth: true },
+  },
 ]
 
 const router = createRouter({
