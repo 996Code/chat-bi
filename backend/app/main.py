@@ -32,6 +32,31 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables ensured")
 
+    # Auto-migrate: add missing columns to async_queries (intent, pipeline_trace)
+    try:
+        from sqlalchemy import text
+        async with engine.begin() as conn:
+            columns_result = await conn.execute(text(
+                "SHOW COLUMNS FROM async_queries LIKE 'intent'"
+            ))
+            if not columns_result.fetchone():
+                await conn.execute(text(
+                    "ALTER TABLE async_queries ADD COLUMN intent VARCHAR(50) NULL "
+                    "AFTER execution_time_ms"
+                ))
+                logger.info("Auto-migration: added intent column to async_queries")
+            columns_result = await conn.execute(text(
+                "SHOW COLUMNS FROM async_queries LIKE 'pipeline_trace'"
+            ))
+            if not columns_result.fetchone():
+                await conn.execute(text(
+                    "ALTER TABLE async_queries ADD COLUMN pipeline_trace TEXT NULL "
+                    "AFTER intent"
+                ))
+                logger.info("Auto-migration: added pipeline_trace column to async_queries")
+    except Exception as e:
+        logger.warning("Auto-migration failed (non-fatal): %s", e)
+
     # Clear query cache on startup — stale cache from previous deployment
     from app.services.cache_service import cache_clear_all
     cleared = await cache_clear_all()
