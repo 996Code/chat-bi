@@ -919,6 +919,13 @@ async def _run_async_query(
             from app.services.pipeline_executor import execute_query_pipeline
             pipeline_trace = []
             pipeline_intent = None
+            sql = None
+            columns = []
+            rows = []
+            row_count = 0
+            error = None
+            final_success = False
+            chart_type = "none"
 
             async for event in execute_query_pipeline(question, datasource_id, tenant_id, history):
                 pipeline_trace.append(event)
