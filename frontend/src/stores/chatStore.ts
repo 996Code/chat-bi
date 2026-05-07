@@ -631,14 +631,14 @@ export const useChatStore = defineStore('chat', () => {
           for (const trace of data.pipeline_trace) {
             handleSSEEvent(trace.event, trace.data, replayMsg)
           }
-          if (replayMsg.pipelineSteps.length > 0) {
+          if ((replayMsg.pipelineSteps?.length || 0) > 0) {
             msg.pipelineSteps = replayMsg.pipelineSteps
             // Ensure last step shows running indicator
-            const lastStep = msg.pipelineSteps[msg.pipelineSteps.length - 1]
+            const lastStep = msg.pipelineSteps![msg.pipelineSteps!.length - 1]
             if (lastStep.status === 'done') {
               // Add running data step if not already there
-              if (!msg.pipelineSteps.some(s => s.type === 'data' && s.status === 'running')) {
-                msg.pipelineSteps.push({ type: 'data', label: '执行查询', status: 'running' })
+              if (!msg.pipelineSteps!.some(s => s.type === 'data' && s.status === 'running')) {
+                msg.pipelineSteps!.push({ type: 'data', label: '执行查询', status: 'running' })
               }
             }
           }
