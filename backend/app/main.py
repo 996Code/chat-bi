@@ -32,6 +32,11 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables ensured")
 
+    # Clear query cache on startup — stale cache from previous deployment
+    from app.services.cache_service import cache_clear_all
+    cleared = await cache_clear_all()
+    logger.info("Startup: cleared %d cache entries", cleared)
+
     # Start scheduler for metadata auto-refresh
     from app.services.scheduler import start_scheduler
     await start_scheduler()

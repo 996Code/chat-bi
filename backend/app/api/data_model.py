@@ -160,6 +160,11 @@ async def _run_sync_background(task_id: str, ds_id: str, tenant_id: str, mode: s
             except Exception as e:
                 logger.warning("Suggested questions generation failed (non-fatal): %s", e)
 
+            # Clear query cache for this datasource — metadata has changed
+            from app.services.cache_service import cache_clear_datasource
+            cleared = await cache_clear_datasource(ds_id, tenant_id)
+            logger.info("Sync completed for datasource %s: cleared %d cache entries", ds_id, cleared)
+
             # Done
             await _update_sync_task(
                 task_id,
@@ -296,6 +301,11 @@ async def _run_sync_background(task_id: str, ds_id: str, tenant_id: str, mode: s
                     await session.commit()
             except Exception as e:
                 logger.warning("Suggested questions generation failed (non-fatal): %s", e)
+
+            # Clear query cache for this datasource — metadata has changed
+            from app.services.cache_service import cache_clear_datasource
+            cleared = await cache_clear_datasource(ds_id, tenant_id)
+            logger.info("Incremental sync completed for datasource %s: cleared %d cache entries", ds_id, cleared)
 
             await _update_sync_task(
                 task_id,

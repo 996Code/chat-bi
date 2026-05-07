@@ -48,6 +48,11 @@ async def cache_set(question: str, datasource_id: str, result: dict, tenant_id: 
         await redis.setex(key, settings.query_cache_ttl_seconds, json.dumps(result, default=str))
         logger.info("Cached query result (TTL=%ds)", settings.query_cache_ttl_seconds)
 
+        # Index key in per-datasource set for targeted cache invalidation
+        index_key = _datasource_index_key(datasource_id, tenant_id)
+        await redis.sadd(index_key, key)
+        await redis.expire(index_key, settings.query_cache_ttl_seconds)
+
         # Also index for semantic lookup
         _add_to_semantic_index(question, key, datasource_id, tenant_id)
     except Exception as e:
@@ -61,6 +66,61 @@ async def cache_delete(question: str, datasource_id: str, tenant_id: str = "") -
         await redis.delete(key)
     except Exception as e:
         logger.warning("Redis cache delete failed: %s", e)
+
+
+def _datasource_index_key(datasource_id: str, tenant_id: str = "") -> str:
+    """Redis set key that tracks all cache keys for a datasource."""
+    raw = f"{tenant_id}:{datasource_id}"
+    return f"cache_index:{hashlib.sha256(raw.encode()).hexdigest()}"
+
+
+async def cache_clear_all() -> int:
+    """清除所有查询缓存（精确缓存 + 语义缓存索引）。返回清除数量。"""
+    try:
+        redis = await get_redis()
+        deleted = 0
+        async for key in redis.scan_iter(match="query:*"):
+            await redis.delete(key)
+            deleted += 1
+        async for key in redis.scan_iter(match="semantic:*"):
+            await redis.delete(key)
+            deleted += 1
+        async for key in redis.scan_iter(match="cache_index:*"):
+            await redis.delete(key)
+            deleted += 1
+        logger.info("Cleared %d cache entries", deleted)
+        return deleted
+    except Exception as e:
+        logger.warning("Cache clear all failed: %s", e)
+        return 0
+
+
+async def cache_clear_datasource(datasource_id: str, tenant_id: str = "") -> int:
+    """清除指定数据源的所有查询缓存。返回清除数量。"""
+    try:
+        redis = await get_redis()
+        deleted = 0
+
+        # Delete via per-datasource index set if available
+        index_key = _datasource_index_key(datasource_id, tenant_id)
+        cache_keys = await redis.smembers(index_key)
+        if cache_keys:
+            for key in cache_keys:
+                await redis.delete(key)
+                deleted += 1
+            await redis.delete(index_key)
+
+        # Delete semantic cache index for this datasource
+        sem_key = _semantic_cache_key("", datasource_id, tenant_id)
+        if await redis.exists(sem_key):
+            await redis.delete(sem_key)
+            deleted += 1
+
+        logger.info("Cleared %d cache entries for datasource %s", deleted, datasource_id)
+        return deleted
+    except Exception as e:
+        logger.warning("Cache clear datasource failed: %s", e)
+        return 0
 
 
 # ── Semantic Cache ──
