@@ -70,6 +70,12 @@ if [ "$SKIP_PULL" = false ]; then
 
   # Check if this is a git repo
   if git rev-parse --git-dir &> /dev/null; then
+    # Save .env before git pull (it's in .gitignore and will be lost)
+    if [ -f "$ENV_FILE" ]; then
+      cp "$ENV_FILE" "${ENV_FILE}.bak"
+      log_info "已备份 .env"
+    fi
+
     # Stash local changes if any
     if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
       log_warn "检测到本地修改，正在 stash"
@@ -85,6 +91,13 @@ if [ "$SKIP_PULL" = false ]; then
     if git stash list &> /dev/null; then
       log_info "恢复本地修改"
       git stash pop || log_warn "stash 恢复冲突，请手动解决"
+    fi
+
+    # Restore .env after git pull
+    if [ -f "${ENV_FILE}.bak" ]; then
+      cp "${ENV_FILE}.bak" "$ENV_FILE"
+      rm -f "${ENV_FILE}.bak"
+      log_info "已恢复 .env"
     fi
   else
     log_warn "不是 git 仓库，跳过代码更新"
