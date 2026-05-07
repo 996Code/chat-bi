@@ -213,6 +213,12 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // Replace message in array to trigger Vue 3 reactivity
+  function replaceMsgInArray(msg: Message): void {
+    const idx = messages.value.findIndex(m => m.id === msg.id)
+    if (idx !== -1) messages.value[idx] = { ...msg }
+  }
+
   function handleSSEEvent(eventType: string, data: any, msg: Message): void {
     switch (eventType) {
       case 'cache':
@@ -362,9 +368,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // Replace message in array to trigger Vue 3 reactivity
-    const idx = messages.value.findIndex(m => m.id === msg.id)
-    if (idx !== -1) messages.value[idx] = { ...msg }
-
+    replaceMsgInArray(msg)
     onMessageUpdate.value?.()
   }
 
@@ -539,6 +543,8 @@ export const useChatStore = defineStore('chat', () => {
             msg.content = msg.error
             msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: '任务已过期' }]
             activeAsyncTasks.value.delete(taskId)
+            replaceMsgInArray(msg)
+            onMessageUpdate.value?.()
             return
           }
           polls++
@@ -562,6 +568,8 @@ export const useChatStore = defineStore('chat', () => {
             { type: 'data', label: '执行查询', status: 'done', detail: `返回 ${data.row_count} 行`, duration_ms: data.execution_time_ms },
           ]
           activeAsyncTasks.value.delete(taskId)
+          replaceMsgInArray(msg)
+          onMessageUpdate.value?.()
           await _saveCurrentConversation()
           await loadConversations()
           return
@@ -571,16 +579,22 @@ export const useChatStore = defineStore('chat', () => {
           msg.content = errMsg
           msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: errMsg }]
           activeAsyncTasks.value.delete(taskId)
+          replaceMsgInArray(msg)
+          onMessageUpdate.value?.()
           return
         } else if (data.status === 'cancelled') {
           msg.content = '查询已取消'
           msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: '用户已取消' }]
           activeAsyncTasks.value.delete(taskId)
+          replaceMsgInArray(msg)
+          onMessageUpdate.value?.()
           return
         }
         // status === 'running' or 'pending' — keep polling
         const statusLabel = data.status === 'running' ? '正在执行' : '等待中'
         msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'running', detail: statusLabel }]
+        replaceMsgInArray(msg)
+        onMessageUpdate.value?.()
       } catch {
         // Network error — retry
       }
@@ -595,6 +609,8 @@ export const useChatStore = defineStore('chat', () => {
       msg.content = msg.error
       msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'failed', detail: '查询超时（10分钟限制）' }]
       activeAsyncTasks.value.delete(taskId)
+      replaceMsgInArray(msg)
+      onMessageUpdate.value?.()
     }
   }
 

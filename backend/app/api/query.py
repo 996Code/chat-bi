@@ -1053,8 +1053,8 @@ async def _run_async_query(
 
             aq2.status = "done" if success else "failed"
             aq2.generated_sql = sql
-            aq2.columns = json.dumps(columns, ensure_ascii=False) if columns else None
-            aq2.rows = json.dumps(rows, ensure_ascii=False) if rows else None
+            aq2.columns = json.dumps(columns, ensure_ascii=False, default=str) if columns else None
+            aq2.rows = json.dumps(rows, ensure_ascii=False, default=str) if rows else None
             aq2.row_count = row_count
             aq2.error = error if not success else None
             aq2.chart_type = chart_type
