@@ -43,24 +43,16 @@ fi
 
 # ---- Step 1: 初始化 .env ----
 if [ ! -f "$ENV_FILE" ]; then
-  log_warn ".env 不存在，请选择环境模板："
-  log_warn "  cp .env.home .env    # Home 环境 (192.168.3.110)"
-  log_warn "  cp .env.office .env  # Office 环境"
-  log_warn "  cp .env.example .env # 空白模板"
-
   if [ -f "$PROJECT_DIR/.env.home" ]; then
-    log_warn "默认使用 .env.home 模板"
+    log_info ".env 不存在，使用 .env.home 模板创建"
     cp "$PROJECT_DIR/.env.home" "$ENV_FILE"
   elif [ -f "$PROJECT_DIR/.env.example" ]; then
+    log_info ".env 不存在，使用 .env.example 模板创建"
     cp "$PROJECT_DIR/.env.example" "$ENV_FILE"
   else
     log_error "未找到环境模板文件"
     exit 1
   fi
-
-  log_warn "请编辑 $ENV_FILE 填入实际配置"
-  log_warn "按回车继续，或 Ctrl+C 退出修改配置"
-  read -r
 fi
 
 # ---- Step 2: 更新代码 ----
@@ -70,12 +62,6 @@ if [ "$SKIP_PULL" = false ]; then
 
   # Check if this is a git repo
   if git rev-parse --git-dir &> /dev/null; then
-    # Save .env before git pull (it's in .gitignore and will be lost)
-    if [ -f "$ENV_FILE" ]; then
-      cp "$ENV_FILE" "${ENV_FILE}.bak"
-      log_info "已备份 .env"
-    fi
-
     # Stash local changes if any
     if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
       log_warn "检测到本地修改，正在 stash"
@@ -93,11 +79,15 @@ if [ "$SKIP_PULL" = false ]; then
       git stash pop || log_warn "stash 恢复冲突，请手动解决"
     fi
 
-    # Restore .env after git pull
-    if [ -f "${ENV_FILE}.bak" ]; then
-      cp "${ENV_FILE}.bak" "$ENV_FILE"
-      rm -f "${ENV_FILE}.bak"
-      log_info "已恢复 .env"
+    # If .env was lost during git pull, recreate from template
+    if [ ! -f "$ENV_FILE" ]; then
+      if [ -f "$PROJECT_DIR/.env.home" ]; then
+        cp "$PROJECT_DIR/.env.home" "$ENV_FILE"
+        log_info ".env 缺失，已使用 .env.home 模板创建"
+      elif [ -f "$PROJECT_DIR/.env.example" ]; then
+        cp "$PROJECT_DIR/.env.example" "$ENV_FILE"
+        log_info ".env 缺失，已使用 .env.example 模板创建"
+      fi
     fi
   else
     log_warn "不是 git 仓库，跳过代码更新"
