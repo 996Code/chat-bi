@@ -107,6 +107,19 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down --remove-orphans 2
 PROFILES=""
 source "$ENV_FILE" 2>/dev/null || true
 
+# 最终检查：确保 .env 存在（Dockerfile COPY 需要）
+if [ ! -f "$ENV_FILE" ]; then
+  log_warn ".env 不存在，自动从模板创建"
+  if [ -f "$PROJECT_DIR/.env.home" ]; then
+    cp "$PROJECT_DIR/.env.home" "$ENV_FILE"
+  elif [ -f "$PROJECT_DIR/.env.example" ]; then
+    cp "$PROJECT_DIR/.env.example" "$ENV_FILE"
+  else
+    log_error "未找到 .env 模板文件"
+    exit 1
+  fi
+fi
+
 if echo "${DATABASE_URL:-}" | grep -q "@mysql:"; then
   PROFILES="$PROFILES --profile with-mysql"
   log_info "检测到使用内置 MySQL，启用 with-mysql profile"
