@@ -618,6 +618,31 @@ export const useChatStore = defineStore('chat', () => {
         // status === 'running' or 'pending' — keep polling
         const statusLabel = data.status === 'running' ? '正在执行' : '等待中'
         msg.pipelineSteps = [{ type: 'intent', label: '后台查询', status: 'running', detail: statusLabel }]
+
+        // Live progress: replay pipeline_trace from Redis while running
+        if (data.pipeline_trace && data.pipeline_trace.length > 0) {
+          const replayMsg: Message = {
+            id: msg.id,
+            role: 'assistant',
+            content: '',
+            pipelineSteps: [],
+            timestamp: msg.timestamp,
+          }
+          for (const trace of data.pipeline_trace) {
+            handleSSEEvent(trace.event, trace.data, replayMsg)
+          }
+          if (replayMsg.pipelineSteps.length > 0) {
+            msg.pipelineSteps = replayMsg.pipelineSteps
+            // Ensure last step shows running indicator
+            const lastStep = msg.pipelineSteps[msg.pipelineSteps.length - 1]
+            if (lastStep.status === 'done') {
+              // Add running data step if not already there
+              if (!msg.pipelineSteps.some(s => s.type === 'data' && s.status === 'running')) {
+                msg.pipelineSteps.push({ type: 'data', label: '执行查询', status: 'running' })
+              }
+            }
+          }
+        }
         replaceMsgInArray(msg)
         onMessageUpdate.value?.()
       } catch {

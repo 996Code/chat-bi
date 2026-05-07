@@ -854,6 +854,16 @@ async def get_async_query_status(
             status_resp.pipeline_trace = json.loads(aq.pipeline_trace)
         except Exception:
             status_resp.pipeline_trace = []
+    elif aq.status == "running":
+        # Live progress from Redis while running
+        try:
+            from app.core.redis_client import get_redis as _get_redis
+            redis = await _get_redis()
+            raw = await redis.get(f"async_trace:{task_id}")
+            if raw:
+                status_resp.pipeline_trace = json.loads(raw)
+        except Exception:
+            pass
 
     return status_resp
 
@@ -915,8 +925,10 @@ async def _run_async_query(
             aq.status = "running"
             await db.commit()
 
-            # Run full pipeline via shared executor, collecting step events
+            # Run full pipeline via shared executor, collecting step events.
+            # After each event, save trace to Redis so frontend polling can show progress.
             from app.services.pipeline_executor import execute_query_pipeline
+            from app.core.redis_client import get_redis as _get_redis
             pipeline_trace = []
             pipeline_intent = None
             sql = None
@@ -926,6 +938,18 @@ async def _run_async_query(
             error = None
             final_success = False
             chart_type = "none"
+
+            async def _save_progress():
+                """Save current trace to Redis for polling progress updates."""
+                try:
+                    redis = await _get_redis()
+                    await redis.setex(
+                        f"async_trace:{task_id}",
+                        settings.query_pipeline_timeout,
+                        json.dumps(pipeline_trace, ensure_ascii=False, default=str),
+                    )
+                except Exception:
+                    pass
 
             async for event in execute_query_pipeline(question, datasource_id, tenant_id, history):
                 pipeline_trace.append(event)
@@ -947,6 +971,9 @@ async def _run_async_query(
                 if event["event"] == "error":
                     error = event["data"].get("error")
                     final_success = False
+
+                # Save progress after each step
+                await _save_progress()
 
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
