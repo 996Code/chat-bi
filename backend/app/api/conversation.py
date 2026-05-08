@@ -14,15 +14,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/conversations", tags=["会话"])
 
 
-def _iso(dt) -> str:
-    """Format datetime as ISO 8601 with Z suffix so browsers parse as UTC."""
-    if dt is None:
-        return ""
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _error(code: str, message: str) -> dict:
-    return {"code": code, "message": message, "details": None}
+from app.api._helpers import api_error, iso_format
 
 
 def _parse_messages(raw: str) -> list:
@@ -60,8 +52,8 @@ async def list_conversations(
             "title": c.title or "新对话",
             "datasource_id": c.datasource_id,
             "message_count": len(_parse_messages(c.messages)),
-            "created_at": _iso(c.created_at),
-            "updated_at": _iso(c.updated_at),
+            "created_at": iso_format(c.created_at),
+            "updated_at": iso_format(c.updated_at),
         }
         for c in convs
     ]
@@ -94,8 +86,8 @@ async def get_conversation(
         "title": conv.title or "新对话",
         "datasource_id": conv.datasource_id,
         "messages": _parse_messages(conv.messages),
-        "created_at": _iso(conv.created_at),
-        "updated_at": _iso(conv.updated_at),
+        "created_at": iso_format(conv.created_at),
+        "updated_at": iso_format(conv.updated_at),
     }
 
 
@@ -122,8 +114,8 @@ async def create_conversation(
         "title": conv.title,
         "datasource_id": conv.datasource_id,
         "message_count": len(_parse_messages(conv.messages)),
-        "created_at": _iso(conv.created_at),
-        "updated_at": _iso(conv.updated_at),
+        "created_at": iso_format(conv.created_at),
+        "updated_at": iso_format(conv.updated_at),
     }
 
 

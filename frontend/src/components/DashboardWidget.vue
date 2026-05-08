@@ -35,7 +35,7 @@
           @keyup.escape="cancelEditName"
         />
       </div>
-      <div class="widget-actions">
+      <div class="widget-actions" @mousedown.stop>
         <el-select
           v-if="!readonly"
           :model-value="widget.chart_type || 'table'"
@@ -60,7 +60,7 @@
     </div>
 
     <!-- Widget body -->
-    <div class="widget-body">
+    <div ref="widgetBodyRef" class="widget-body">
       <div v-if="widget.error" class="widget-error">
         <el-icon :size="24" color="#f56c6c"><WarningFilled /></el-icon>
         <span>{{ widget.error_msg }}</span>
@@ -70,8 +70,7 @@
         :chart-type="widget.chart_type || 'table'"
         :columns="widget.columns || []"
         :rows="widget.rows || []"
-        :readonly="readonly"
-        @chart-type-change="(type: string) => !readonly && $emit('chart-type-change', widget, type)"
+        :chart-height="bodyHeight"
       />
     </div>
 
@@ -92,7 +91,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { Refresh, Close, Rank, BottomRight, WarningFilled } from '@element-plus/icons-vue'
 import ChartRenderer from '@/components/ChartRenderer.vue'
 
@@ -136,6 +135,10 @@ const isDragOver = ref(false)
 const isEditingName = ref(false)
 const editName = ref('')
 const nameInputRef = ref<InstanceType<typeof import('element-plus')['ElInput']>>()
+const widgetBodyRef = ref<HTMLElement>()
+const bodyHeight = ref(200)
+
+let resizeObserver: ResizeObserver | null = null
 
 function startEditName() {
   editName.value = props.widget.question
@@ -255,6 +258,27 @@ function onResizeStart(e: MouseEvent) {
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup', onMouseUp)
 }
+
+onMounted(() => {
+  if (widgetBodyRef.value) {
+    const updateHeight = () => {
+      if (widgetBodyRef.value) {
+        // clientHeight includes padding, subtract it for chart area
+        const style = getComputedStyle(widgetBodyRef.value)
+        const paddingTop = parseFloat(style.paddingTop) || 0
+        const paddingBottom = parseFloat(style.paddingBottom) || 0
+        bodyHeight.value = Math.floor(widgetBodyRef.value.clientHeight - paddingTop - paddingBottom)
+      }
+    }
+    resizeObserver = new ResizeObserver(updateHeight)
+    resizeObserver.observe(widgetBodyRef.value)
+    requestAnimationFrame(updateHeight)
+  }
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+})
 </script>
 
 <style scoped>

@@ -21,8 +21,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/datasources", tags=["数据源"])
 
 
-def _error(code: str, message: str) -> dict:
-    return {"code": code, "message": message, "details": None}
+from app.api._helpers import api_error
 
 
 def _to_response(ds: DataSource) -> DataSourceResponse:
@@ -85,7 +84,7 @@ async def test_datasource(
     if not result["success"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("CONNECTION_FAILED", result.get("error", "连接失败")),
+            detail=api_error("CONNECTION_FAILED", result.get("error", "连接失败")),
         )
     return result
 
@@ -101,7 +100,7 @@ async def scan_datasource(
     if not ds:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "数据源不存在"),
+            detail=api_error("NOT_FOUND", "数据源不存在"),
         )
 
     # Test connection first
@@ -109,7 +108,7 @@ async def scan_datasource(
     if not test_result["success"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("CONNECTION_FAILED", test_result.get("error", "连接失败")),
+            detail=api_error("CONNECTION_FAILED", test_result.get("error", "连接失败")),
         )
 
     # Scan schema
@@ -130,7 +129,7 @@ async def update_datasource(
     if not ds:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "数据源不存在"),
+            detail=api_error("NOT_FOUND", "数据源不存在"),
         )
     return _to_response(ds)
 
@@ -146,7 +145,7 @@ async def delete_datasource(
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "数据源不存在"),
+            detail=api_error("NOT_FOUND", "数据源不存在"),
         )
     # Close pool
     await pool_manager.close_pool(ds_id)
@@ -164,7 +163,7 @@ async def health_check_datasource(
     if not ds:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "数据源不存在"),
+            detail=api_error("NOT_FOUND", "数据源不存在"),
         )
 
     result = await pool_manager.health_check(ds_id, ds)
@@ -224,7 +223,7 @@ async def toggle_datasource(
     if not ds:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "数据源不存在"),
+            detail=api_error("NOT_FOUND", "数据源不存在"),
         )
 
     ds.is_active = not ds.is_active
@@ -262,7 +261,7 @@ async def get_datasource_schema(
     if not ds:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "数据源不存在"),
+            detail=api_error("NOT_FOUND", "数据源不存在"),
         )
 
     config_result = await db.execute(

@@ -100,6 +100,16 @@ function updateCellSize() {
   }
 }
 
+// Fix widgets with default size (1,1) — saved from chat without grid position
+function normalizeWidgetPositions() {
+  for (const widget of widgets.value) {
+    if (widget.width <= 1 && widget.height <= 1) {
+      widget.width = 6
+      widget.height = 3
+    }
+  }
+}
+
 async function fetchSharedData(pwd?: string) {
   loading.value = true
   errorMsg.value = ''
@@ -109,6 +119,7 @@ async function fetchSharedData(pwd?: string) {
     const res = await api.get(`/dashboards/shared/${shareToken.value}`, { params })
     dashboardName.value = res.data.name
     widgets.value = res.data.widgets || []
+    normalizeWidgetPositions()
     dataLoaded.value = true
     needsPassword.value = false
   } catch (e: any) {

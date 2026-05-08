@@ -6,7 +6,7 @@
       <div class="metric-label">{{ columns[0] }}</div>
     </div>
     <!-- ECharts 图表 -->
-    <div v-else-if="chartType !== 'table'" ref="chartRef" class="echarts-wrapper"></div>
+    <div v-else-if="chartType !== 'table'" ref="chartRef" class="echarts-wrapper" :style="{ height: chartHeight + 'px' }"></div>
     <!-- 表格 -->
     <el-table v-else :data="rows" border size="small" :max-height="tableMaxHeight">
       <el-table-column v-for="col in columns" :key="col" :prop="col" :label="col" />
@@ -18,12 +18,14 @@
 import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick } from 'vue'
 import * as echarts from 'echarts'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   chartType: string
   columns: string[]
   rows: Record<string, any>[]
-  readonly?: boolean
-}>()
+  chartHeight?: number
+}>(), {
+  chartHeight: 300,
+})
 
 const emit = defineEmits<{}>()
 
@@ -48,14 +50,9 @@ const metricValue = computed(() => {
 const tableMaxHeight = ref(300)
 
 function updateTableHeight() {
-  if (!containerRef.value) return
-  const widgetBody = containerRef.value.closest('.widget-body') as HTMLElement
-  if (widgetBody) {
-    const h = widgetBody.getBoundingClientRect().height
-    if (h > 50) {
-      tableMaxHeight.value = Math.floor(h) - 4
-    }
-  }
+  if (props.chartType !== 'table') return
+  // Use chartHeight prop as a hint for table max height too
+  tableMaxHeight.value = props.chartHeight
 }
 
 function getOption(): echarts.EChartsOption {
@@ -122,26 +119,7 @@ function getOption(): echarts.EChartsOption {
 async function renderChart() {
   if (currentType.value === 'metric' || currentType.value === 'table') return
   await nextTick()
-  if (!chartRef.value || !containerRef.value) return
-
-  let chartHeight = 0
-  // Find widget-body for accurate available height
-  const widgetBody = containerRef.value.closest('.widget-body') as HTMLElement
-  if (widgetBody) {
-    const bodyRect = widgetBody.getBoundingClientRect()
-    chartHeight = Math.floor(bodyRect.height)
-  }
-  // Fallback: compute from the whole widget
-  if (chartHeight < 50) {
-    const widget = containerRef.value.closest('.dashboard-widget') as HTMLElement
-    if (widget) {
-      const wRect = widget.getBoundingClientRect()
-      // Subtract header (~40px) + footer (~28px) + body padding (16px)
-      chartHeight = Math.floor(wRect.height - 84)
-    }
-  }
-  chartHeight = Math.max(chartHeight, 100)
-  chartRef.value.style.height = chartHeight + 'px'
+  if (!chartRef.value) return
 
   if (!chart) {
     chart = echarts.init(chartRef.value)
@@ -150,13 +128,15 @@ async function renderChart() {
   if (Object.keys(option).length > 0) {
     chart.setOption(option, true)
   }
+  // Ensure ECharts picks up the current container size
+  chart.resize()
 }
 
 function handleResize() {
   chart?.resize()
 }
 
-watch(() => [props.chartType, props.rows, props.columns], () => {
+watch(() => [props.chartType, props.rows, props.columns, props.chartHeight], () => {
   renderChart()
   updateTableHeight()
 }, { deep: true })
@@ -184,7 +164,6 @@ defineExpose({ getChartDataURL })
 .chart-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
   min-height: 0;
 }
 
@@ -208,8 +187,6 @@ defineExpose({ getChartDataURL })
 }
 
 .echarts-wrapper {
-  flex: 1;
   width: 100%;
-  min-height: 200px;
 }
 </style>

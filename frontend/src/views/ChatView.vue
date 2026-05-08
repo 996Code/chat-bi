@@ -156,6 +156,7 @@
                   :chart-type="msg.chart_type || 'table'"
                   :columns="msg.columns || []"
                   :rows="msg.rows"
+                  :chart-height="300"
                 />
                 <div class="table-footer">
                   <span>共 {{ msg.row_count }} 条结果<span v-if="msg.execution_time_ms">（耗时 {{ msg.execution_time_ms }}ms）</span></span>

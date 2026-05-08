@@ -141,3 +141,62 @@ class TestLoginLock:
             await record_failure("user1@example.com")
         assert await check_lock("user1@example.com") is True
         assert await check_lock("user2@example.com") is False
+
+
+
+# ── _helpers.py tests ──
+
+def test_api_error_returns_structured_dict():
+    from app.api._helpers import api_error
+
+    result = api_error("TEST_CODE", "test message")
+    assert result == {"code": "TEST_CODE", "message": "test message", "details": None}
+
+
+def test_api_error_fields():
+    from app.api._helpers import api_error
+
+    result = api_error("ERR", "msg")
+    assert result["code"] == "ERR"
+    assert result["message"] == "msg"
+    assert result["details"] is None
+
+
+def test_iso_format_with_datetime():
+    from app.api._helpers import iso_format
+    from datetime import datetime
+
+    dt = datetime(2024, 3, 15, 10, 30, 45)
+    assert iso_format(dt) == "2024-03-15T10:30:45Z"
+
+
+def test_iso_format_with_none():
+    from app.api._helpers import iso_format
+
+    assert iso_format(None) == ""
+
+
+def test_iso_format_uses_utc_suffix():
+    from app.api._helpers import iso_format
+    from datetime import datetime
+
+    dt = datetime(2024, 1, 1, 0, 0, 0)
+    assert iso_format(dt).endswith("Z")
+
+
+# ── state.py tests ──
+
+def test_query_state_has_required_fields():
+    from app.ai.state import QueryState
+
+    annotations = QueryState.__annotations__
+    required = ["question", "intent", "sql", "rows", "error", "chart_type"]
+    for field in required:
+        assert field in annotations, f"QueryState missing field: {field}"
+
+
+def test_query_state_is_typed_dict_like():
+    from app.ai.state import QueryState
+
+    assert hasattr(QueryState, '__annotations__')
+    assert isinstance(QueryState.__annotations__, dict)

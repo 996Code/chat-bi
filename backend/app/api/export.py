@@ -13,8 +13,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/export", tags=["导出"])
 
 
-def _error(code: str, message: str) -> dict:
-    return {"code": code, "message": message, "details": None}
+from app.api._helpers import api_error
 
 
 def _sanitize_csv_cell(value: str) -> str:
@@ -47,7 +46,7 @@ async def export_csv(
     if not col_names or not rows:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NO_DATA", "无数据可导出"),
+            detail=api_error("NO_DATA", "无数据可导出"),
         )
 
     # Generate CSV

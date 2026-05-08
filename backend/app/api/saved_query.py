@@ -4,11 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_, or_
 
-
-def _iso(dt) -> str:
-    if dt is None:
-        return ""
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+from app.api._helpers import api_error, iso_format
 
 from app.db.session import get_db
 from app.db.models import SavedQuery
@@ -18,10 +14,6 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/queries", tags=["查询历史"])
-
-
-def _error(code: str, message: str) -> dict:
-    return {"code": code, "message": message, "details": None}
 
 
 @router.get("", response_model=dict)
@@ -82,7 +74,7 @@ async def list_queries(
                 "row_count": q.row_count,
                 "error": q.error,
                 "chart_type": q.chart_type,
-                "created_at": _iso(q.created_at),
+                "created_at": iso_format(q.created_at),
             }
             for q in queries
         ],
@@ -107,12 +99,12 @@ async def save_query(
     if not name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "查询名称不能为空"),
+            detail=api_error("INVALID_INPUT", "查询名称不能为空"),
         )
     if not datasource_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "数据源 ID 不能为空"),
+            detail=api_error("INVALID_INPUT", "数据源 ID 不能为空"),
         )
 
     sq = SavedQuery(
@@ -138,7 +130,7 @@ async def save_query(
         "query_text": sq.query_text,
         "generated_sql": sq.generated_sql,
         "datasource_id": str(sq.datasource_id),
-        "created_at": _iso(sq.created_at),
+        "created_at": iso_format(sq.created_at),
     }
 
 
@@ -160,7 +152,7 @@ async def get_query(
     if not sq:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "查询不存在"),
+            detail=api_error("NOT_FOUND", "查询不存在"),
         )
 
     return {
@@ -174,7 +166,7 @@ async def get_query(
         "row_count": sq.row_count,
         "error": sq.error,
         "chart_type": sq.chart_type,
-        "created_at": _iso(sq.created_at),
+        "created_at": iso_format(sq.created_at),
     }
 
 
@@ -196,7 +188,7 @@ async def delete_query(
     if not sq:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "查询不存在"),
+            detail=api_error("NOT_FOUND", "查询不存在"),
         )
 
     await db.delete(sq)
@@ -222,7 +214,7 @@ async def re_run_query(
     if not sq:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "查询不存在"),
+            detail=api_error("NOT_FOUND", "查询不存在"),
         )
 
     return {

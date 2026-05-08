@@ -8,10 +8,7 @@ from app.db.models import AuditLog
 from app.core.security import require_role
 
 
-def _iso(dt) -> str:
-    if dt is None:
-        return ""
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+from app.api._helpers import iso_format
 
 router = APIRouter(prefix="/audit", tags=["审计"])
 
@@ -76,7 +73,7 @@ async def list_audit_logs(
                 "result_count": log.result_count,
                 "execution_time_ms": log.execution_time_ms,
                 "error_message": log.error_message,
-                "created_at": _iso(log.created_at),
+                "created_at": iso_format(log.created_at),
             }
             for log in logs
         ],

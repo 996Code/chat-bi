@@ -589,13 +589,18 @@ function onGridDragOver(e: DragEvent) {
   const gridEl = getGridEl()
   if (!gridEl) return
 
-  // Auto-scroll when near edges of scrollable container
+  // Auto-scroll when near edges — speed scales with proximity
   const containerRect = gridContainerRef.value.getBoundingClientRect()
   const edgeZone = 80
-  if (containerRect.bottom - e.clientY < edgeZone) {
-    gridContainerRef.value.scrollTop += 20
-  } else if (e.clientY - containerRect.top < edgeZone) {
-    gridContainerRef.value.scrollTop = Math.max(0, gridContainerRef.value.scrollTop - 20)
+  const maxScrollSpeed = 30
+  const distBottom = containerRect.bottom - e.clientY
+  const distTop = e.clientY - containerRect.top
+  if (distBottom < edgeZone) {
+    const ratio = 1 - distBottom / edgeZone
+    gridContainerRef.value.scrollTop += Math.round(maxScrollSpeed * ratio)
+  } else if (distTop < edgeZone) {
+    const ratio = 1 - distTop / edgeZone
+    gridContainerRef.value.scrollTop = Math.max(0, gridContainerRef.value.scrollTop - Math.round(maxScrollSpeed * ratio))
   }
 
   // Use grid element rect (automatically accounts for scroll position)

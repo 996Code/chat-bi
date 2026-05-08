@@ -8,16 +8,9 @@ from app.db.models import Feedback
 from app.core.security import get_current_user
 
 
-def _iso(dt) -> str:
-    if dt is None:
-        return ""
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+from app.api._helpers import api_error, iso_format
 
 router = APIRouter(prefix="/feedback", tags=["反馈"])
-
-
-def _error(code: str, message: str) -> dict:
-    return {"code": code, "message": message, "details": None}
 
 
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
@@ -30,7 +23,7 @@ async def create_feedback(
     if rating not in ("up", "down"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_RATING", "评分必须是 up 或 down"),
+            detail=api_error("INVALID_RATING", "评分必须是 up 或 down"),
         )
 
     fb = Feedback(
@@ -64,7 +57,7 @@ async def list_feedback(
             "query_id": fb.query_id,
             "rating": fb.rating,
             "comment": fb.comment,
-            "created_at": _iso(fb.created_at),
+            "created_at": iso_format(fb.created_at),
         }
         for fb in feedbacks
     ]

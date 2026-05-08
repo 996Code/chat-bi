@@ -9,8 +9,7 @@ from app.services.evaluation_service import run_evaluation
 router = APIRouter(prefix="/evaluation", tags=["评估"])
 
 
-def _error(code: str, message: str) -> dict:
-    return {"code": code, "message": message, "details": None}
+from app.api._helpers import api_error
 
 
 @router.post("/run")
@@ -40,7 +39,7 @@ async def run_eval(
     if not datasource_id or not dataset:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "需要 datasource_id 和 dataset 字段"),
+            detail=api_error("INVALID_INPUT", "需要 datasource_id 和 dataset 字段"),
         )
 
     result = await run_evaluation(db, tenant_id, datasource_id, dataset, admin["user_id"])

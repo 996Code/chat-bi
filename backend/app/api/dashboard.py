@@ -1,4 +1,48 @@
-"""Dashboard layout and persistence API."""
+"""
+仪表盘 (Dashboard) API —— 看板的 CRUD、分享、网格布局、组件 (Widget) 管理
+
+本文件实现 ChatBI 的看板功能，让用户将多个查询组件组合成一个可视化仪表盘。
+
+核心概念
+--------
+1. **仪表盘 (Dashboard)**：一个看板页面，包含名称、数据源、布局配置
+2. **组件 (Widget)**：看板中的一个图表/表格卡片，绑定一个 SQL 查询
+3. **网格布局 (Grid Layout)**：12 列网格系统，每个组件有 position_x/y 和 width/height
+4. **分享 (Share)**：生成带 token 的公开链接，支持密码保护和过期时间
+
+CRUD 操作
+---------
+- POST   /dashboards              — 创建看板
+- GET    /dashboards              — 列出看板
+- GET    /dashboards/{id}         — 获取看板详情（含组件数据）
+- PUT    /dashboards/{id}         — 更新看板
+- DELETE /dashboards/{id}         — 删除看板
+
+组件管理
+-------
+- POST   /dashboards/{id}/widgets              — 添加组件
+- PUT    /dashboards/{id}/widgets/positions     — 批量更新组件位置
+- PUT    /dashboards/{id}/widgets/{wid}         — 更新组件属性
+- PUT    /dashboards/{id}/widgets/{wid}/position — 更新单个组件位置
+- POST   /dashboards/{id}/widgets/{wid}/refresh — 刷新组件数据
+- DELETE /dashboards/{id}/widgets/{wid}         — 删除组件
+
+分享功能
+-------
+- POST   /dashboards/{id}/shares              — 创建分享链接
+- GET    /dashboards/{id}/shares              — 列出分享链接
+- DELETE /dashboards/{id}/shares/{sid}        — 撤销分享
+- GET    /dashboards/shared/{token}           — 公开访问分享的看板（无需认证）
+
+与其他文件的关系
+----------------
+- `app/db/models.py`：Dashboard, DashboardWidget, DashboardShare ORM 模型
+- `app/ai/nodes/execution.py`：execute_sql() 执行 SQL 获取组件数据
+- `app/ai/chart_type.py`：infer_chart_type() 根据数据推断图表类型
+- `app/ai/graph.py`：build_graph() 构建 AI 管道（组件添加时自动生成 SQL）
+- `app/core/security.py`：hash_password/verify_password 用于分享链接密码保护
+- `app/api/_helpers.py`：api_error() 统一错误格式、iso_format() 日期格式化
+"""
 import asyncio
 import json
 import secrets
@@ -17,18 +61,46 @@ from app.ai.chart_type import infer_chart_type
 
 logger = get_logger(__name__)
 
+# APIRouter 注册所有 /dashboards 路由，tags=["仪表盘"] 用于 Swagger UI 分组
 router = APIRouter(prefix="/dashboards", tags=["仪表盘"])
 
 
-def _error(code: str, message: str) -> dict:
-    return {"code": code, "message": message, "details": None}
+from app.api._helpers import api_error, iso_format
 
 
-COL_COUNT = 12  # 12-column grid
+# ---- 网格布局常量 ----
+# 12 列网格：类似 Bootstrap/Element UI 的栅格系统
+# 每个组件的 width 取值 1-12，12 表示占满整行
+COL_COUNT = 12
 
 
 async def _auto_position(session, dashboard_id: str, w: int, h: int, tenant_id: str) -> tuple[int, int]:
-    """Calculate next available grid position. Row-by-row scan, finds first gap that fits w*h."""
+    """
+    自动计算组件的网格位置 —— 找到第一个能放下 w*h 组件的空位。
+
+    算法：逐行扫描，从左到右检查每个位置是否与已有组件碰撞。
+    如果所有行都放不下，则放到最后一行下方（新开一行）。
+
+    参数
+    ----
+    session : AsyncSession — 数据库会话
+    dashboard_id : str — 看板 ID
+    w : int — 组件宽度（列数）
+    h : int — 组件高度（行数）
+    tenant_id : str — 租户 ID
+
+    返回
+    ----
+    tuple[int, int] — (x, y) 坐标
+
+    Python 提示
+    -----------
+    - `w = min(w, COL_COUNT)` 确保宽度不超过网格总列数
+    - `_collides(x, y)` 是闭包（closure），可以访问外层函数的 w、h、placed 变量
+      这是 Python 的词法作用域特性：内层函数可以读取外层函数的局部变量
+    - `dict.fromkeys(from_match + join_match)` 利用字典键唯一性实现去重保序
+      Python 3.7+ 字典保持插入顺序，所以这比 set() 更好（set 不保序）
+    """
     w = min(w, COL_COUNT)
     result = await session.execute(
         select(DashboardWidget)
@@ -37,30 +109,35 @@ async def _auto_position(session, dashboard_id: str, w: int, h: int, tenant_id: 
     )
     existing = result.scalars().all()
 
+    # 将已有组件的位置信息提取为字典列表，方便碰撞检测
     placed: list[dict] = [
         {"x": e.position_x, "y": e.position_y, "w": max(e.width, 1), "h": max(e.height, 1)}
         for e in existing
     ]
+    # 计算当前已有组件的最大 y 坐标，用于确定扫描范围
     max_y = max((p["y"] + p["h"] for p in placed), default=0) if placed else 0
 
     def _collides(x: int, y: int) -> bool:
+        """
+        检测新组件放在 (x, y) 是否与已有组件碰撞（矩形重叠检测）。
+
+        两个矩形不重叠的条件：一个在另一个的左边/右边/上边/下边
+        取反即为重叠条件。
+        """
         return any(
             x < p["x"] + p["w"] and x + w > p["x"] and
             y < p["y"] + p["h"] and y + h > p["y"]
             for p in placed
         )
 
+    # 逐行扫描：从第 0 行到 max_y + 10 行（+10 留一些余量）
     for y in range(max_y + 10):
-        for x in range(COL_COUNT - w + 1):
+        for x in range(COL_COUNT - w + 1):  # 每行从左到右扫描
             if not _collides(x, y):
                 return x, y
+    # 所有位置都碰撞了，放到最后一行下方
     return 0, max_y
 
-
-def _iso(dt) -> str:
-    if dt is None:
-        return ""
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_layout_config(val):
@@ -93,8 +170,8 @@ async def list_dashboards(
                 "name": d.name,
                 "datasource_id": str(d.datasource_id) if d.datasource_id else None,
                 "layout_config": _parse_layout_config(d.layout_config),
-                "created_at": _iso(d.created_at),
-                "updated_at": _iso(d.updated_at),
+                "created_at": iso_format(d.created_at),
+                "updated_at": iso_format(d.updated_at),
             }
             for d in dashboards
         ],
@@ -114,14 +191,14 @@ async def create_dashboard(
     if not name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "仪表盘名称不能为空"),
+            detail=api_error("INVALID_INPUT", "仪表盘名称不能为空"),
         )
 
     datasource_id = data.get("datasource_id")
     if not datasource_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "请选择数据源"),
+            detail=api_error("INVALID_INPUT", "请选择数据源"),
         )
     # Verify datasource exists and belongs to tenant
     ds_result = await db.execute(
@@ -134,7 +211,7 @@ async def create_dashboard(
     if not ds:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
+            detail=api_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
         )
 
     dashboard = Dashboard(
@@ -153,8 +230,8 @@ async def create_dashboard(
         "name": dashboard.name,
         "datasource_id": str(dashboard.datasource_id) if dashboard.datasource_id else None,
         "layout_config": _parse_layout_config(dashboard.layout_config),
-        "created_at": _iso(dashboard.created_at),
-        "updated_at": _iso(dashboard.updated_at),
+        "created_at": iso_format(dashboard.created_at),
+        "updated_at": iso_format(dashboard.updated_at),
     }
 
 
@@ -176,23 +253,23 @@ async def access_shared_dashboard(
     )
     share = result.scalar_one_or_none()
     if not share:
-        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "分享链接不存在或已失效"))
+        raise HTTPException(status_code=404, detail=api_error("NOT_FOUND", "分享链接不存在或已失效"))
 
     if share.expires_at and share.expires_at < datetime.now():
-        raise HTTPException(status_code=410, detail=_error("EXPIRED", "分享链接已过期"))
+        raise HTTPException(status_code=410, detail=api_error("EXPIRED", "分享链接已过期"))
 
     if share.password:
         if not password:
-            raise HTTPException(status_code=401, detail=_error("PASSWORD_REQUIRED", "此分享链接需要密码"))
+            raise HTTPException(status_code=401, detail=api_error("PASSWORD_REQUIRED", "此分享链接需要密码"))
         if not verify_password(password, share.password):
-            raise HTTPException(status_code=401, detail=_error("WRONG_PASSWORD", "密码错误"))
+            raise HTTPException(status_code=401, detail=api_error("WRONG_PASSWORD", "密码错误"))
 
     dash_result = await db.execute(
         select(Dashboard).where(Dashboard.id == share.dashboard_id)
     )
     dashboard = dash_result.scalar_one_or_none()
     if not dashboard:
-        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "仪表盘不存在"))
+        raise HTTPException(status_code=404, detail=api_error("NOT_FOUND", "仪表盘不存在"))
 
     widgets_result = await db.execute(
         select(DashboardWidget)
@@ -229,8 +306,8 @@ async def access_shared_dashboard(
         "name": dashboard.name,
         "layout_config": _parse_layout_config(dashboard.layout_config),
         "widgets": widget_list,
-        "shared_at": _iso(share.created_at),
-        "expires_at": _iso(share.expires_at),
+        "shared_at": iso_format(share.created_at),
+        "expires_at": iso_format(share.expires_at),
     }
 
 
@@ -252,7 +329,7 @@ async def get_dashboard(
     if not dashboard:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "仪表盘不存在"),
+            detail=api_error("NOT_FOUND", "仪表盘不存在"),
         )
 
     widgets_result = await db.execute(
@@ -274,8 +351,8 @@ async def get_dashboard(
             "position_y": w.position_y,
             "width": w.width,
             "height": w.height,
-            "created_at": _iso(w.created_at),
-            "updated_at": _iso(w.updated_at),
+            "created_at": iso_format(w.created_at),
+            "updated_at": iso_format(w.updated_at),
         }
         # Execute SQL to get fresh data
         if w.query_sql:
@@ -349,8 +426,8 @@ async def get_dashboard(
         "datasource_id": str(dashboard.datasource_id) if dashboard.datasource_id else None,
         "layout_config": _parse_layout_config(dashboard.layout_config),
         "widgets": widget_dicts,
-        "created_at": _iso(dashboard.created_at),
-        "updated_at": _iso(dashboard.updated_at),
+        "created_at": iso_format(dashboard.created_at),
+        "updated_at": iso_format(dashboard.updated_at),
     }
 
 
@@ -373,7 +450,7 @@ async def update_dashboard(
     if not dashboard:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "仪表盘不存在"),
+            detail=api_error("NOT_FOUND", "仪表盘不存在"),
         )
 
     if "name" in data:
@@ -381,7 +458,7 @@ async def update_dashboard(
         if not name:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=_error("INVALID_INPUT", "仪表盘名称不能为空"),
+                detail=api_error("INVALID_INPUT", "仪表盘名称不能为空"),
             )
         dashboard.name = name
 
@@ -399,7 +476,7 @@ async def update_dashboard(
             if not ds:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
+                    detail=api_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
                 )
             dashboard.datasource_id = ds_id
         else:
@@ -422,8 +499,8 @@ async def update_dashboard(
         "name": dashboard.name,
         "datasource_id": str(dashboard.datasource_id) if dashboard.datasource_id else None,
         "layout_config": _parse_layout_config(dashboard.layout_config),
-        "created_at": _iso(dashboard.created_at),
-        "updated_at": _iso(dashboard.updated_at),
+        "created_at": iso_format(dashboard.created_at),
+        "updated_at": iso_format(dashboard.updated_at),
     }
 
 
@@ -445,7 +522,7 @@ async def delete_dashboard(
     if not dashboard:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "仪表盘不存在"),
+            detail=api_error("NOT_FOUND", "仪表盘不存在"),
         )
 
     # Delete all widgets first
@@ -480,7 +557,7 @@ async def add_widget(
     if not dashboard:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "仪表盘不存在"),
+            detail=api_error("NOT_FOUND", "仪表盘不存在"),
         )
 
     question = data.get("question", "").strip()
@@ -491,12 +568,12 @@ async def add_widget(
     if not question:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "问题不能为空"),
+            detail=api_error("INVALID_INPUT", "问题不能为空"),
         )
     if not datasource_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "数据源 ID 不能为空"),
+            detail=api_error("INVALID_INPUT", "数据源 ID 不能为空"),
         )
 
     # Verify datasource belongs to tenant
@@ -510,14 +587,14 @@ async def add_widget(
     if not ds:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
+            detail=api_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
         )
 
     # Check datasource is active
     if not ds.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("DATASOURCE_INACTIVE", "数据源已禁用，请联系管理员"),
+            detail=api_error("DATASOURCE_INACTIVE", "数据源已禁用，请联系管理员"),
         )
 
     # Validate chart_type
@@ -526,7 +603,7 @@ async def add_widget(
     if chart_type not in VALID_CHART_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", f"不支持的图表类型: {chart_type}"),
+            detail=api_error("INVALID_INPUT", f"不支持的图表类型: {chart_type}"),
         )
 
     # Validate position/dimension fields
@@ -538,7 +615,7 @@ async def add_widget(
     except (TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "位置和尺寸必须为整数"),
+            detail=api_error("INVALID_INPUT", "位置和尺寸必须为整数"),
         )
 
     # Auto-calculate position if not specified (pos_x=-1 or position is (0,0) collision)
@@ -563,7 +640,7 @@ async def add_widget(
         if not state.get("success") or not query_sql:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=_error("SQL_GEN_FAILED", state.get("error", "SQL 生成失败")),
+                detail=api_error("SQL_GEN_FAILED", state.get("error", "SQL 生成失败")),
             )
         if chart_type == "table":
             chart_type = infer_chart_type_from_sql(query_sql) or "table"
@@ -614,8 +691,8 @@ async def add_widget(
         "position_y": widget.position_y,
         "width": widget.width,
         "height": widget.height,
-        "created_at": _iso(widget.created_at),
-        "updated_at": _iso(widget.updated_at),
+        "created_at": iso_format(widget.created_at),
+        "updated_at": iso_format(widget.updated_at),
     }
 
 
@@ -640,14 +717,14 @@ async def batch_update_widget_positions(
     if not dashboard:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "仪表盘不存在"),
+            detail=api_error("NOT_FOUND", "仪表盘不存在"),
         )
 
     widgets_data = data.get("widgets", [])
     if not isinstance(widgets_data, list) or not widgets_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "widgets 必须为非空列表"),
+            detail=api_error("INVALID_INPUT", "widgets 必须为非空列表"),
         )
 
     updated = []
@@ -673,7 +750,7 @@ async def batch_update_widget_positions(
             except (TypeError, ValueError):
                 raise HTTPException(
                     status_code=400,
-                    detail=_error("INVALID_INPUT", f"widget {widget_id}: position_x 必须为整数"),
+                    detail=api_error("INVALID_INPUT", f"widget {widget_id}: position_x 必须为整数"),
                 )
         if "position_y" in item:
             try:
@@ -681,7 +758,7 @@ async def batch_update_widget_positions(
             except (TypeError, ValueError):
                 raise HTTPException(
                     status_code=400,
-                    detail=_error("INVALID_INPUT", f"widget {widget_id}: position_y 必须为整数"),
+                    detail=api_error("INVALID_INPUT", f"widget {widget_id}: position_y 必须为整数"),
                 )
         if "width" in item:
             try:
@@ -689,7 +766,7 @@ async def batch_update_widget_positions(
             except (TypeError, ValueError):
                 raise HTTPException(
                     status_code=400,
-                    detail=_error("INVALID_INPUT", f"widget {widget_id}: width 必须为整数"),
+                    detail=api_error("INVALID_INPUT", f"widget {widget_id}: width 必须为整数"),
                 )
         if "height" in item:
             try:
@@ -697,7 +774,7 @@ async def batch_update_widget_positions(
             except (TypeError, ValueError):
                 raise HTTPException(
                     status_code=400,
-                    detail=_error("INVALID_INPUT", f"widget {widget_id}: height 必须为整数"),
+                    detail=api_error("INVALID_INPUT", f"widget {widget_id}: height 必须为整数"),
                 )
 
         updated.append({
@@ -735,7 +812,7 @@ async def update_widget(
     if not widget:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "Widget 不存在"),
+            detail=api_error("NOT_FOUND", "Widget 不存在"),
         )
 
     VALID_CHART_TYPES = {"table", "line", "bar", "pie", "metric", "area", "scatter"}
@@ -744,7 +821,7 @@ async def update_widget(
         if ct not in VALID_CHART_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=_error("INVALID_INPUT", f"不支持的图表类型: {ct}"),
+                detail=api_error("INVALID_INPUT", f"不支持的图表类型: {ct}"),
             )
         widget.chart_type = ct
 
@@ -753,7 +830,7 @@ async def update_widget(
         if not question:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=_error("INVALID_INPUT", "组件名称不能为空"),
+                detail=api_error("INVALID_INPUT", "组件名称不能为空"),
             )
         widget.question = question
 
@@ -761,22 +838,22 @@ async def update_widget(
         try:
             widget.position_x = int(data["position_x"])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "position_x 必须为整数"))
+            raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", "position_x 必须为整数"))
     if "position_y" in data:
         try:
             widget.position_y = int(data["position_y"])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "position_y 必须为整数"))
+            raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", "position_y 必须为整数"))
     if "width" in data:
         try:
             widget.width = int(data["width"])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "width 必须为整数"))
+            raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", "width 必须为整数"))
     if "height" in data:
         try:
             widget.height = int(data["height"])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "height 必须为整数"))
+            raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", "height 必须为整数"))
 
     await db.commit()
     await db.refresh(widget)
@@ -794,8 +871,8 @@ async def update_widget(
         "position_y": widget.position_y,
         "width": widget.width,
         "height": widget.height,
-        "created_at": _iso(widget.created_at),
-        "updated_at": _iso(widget.updated_at),
+        "created_at": iso_format(widget.created_at),
+        "updated_at": iso_format(widget.updated_at),
     }
 
 
@@ -821,25 +898,25 @@ async def update_widget_position(
     if not widget:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "Widget 不存在"),
+            detail=api_error("NOT_FOUND", "Widget 不存在"),
         )
 
     if "position_x" in data:
         try: widget.position_x = int(data["position_x"])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "position_x 必须为整数"))
+            raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", "position_x 必须为整数"))
     if "position_y" in data:
         try: widget.position_y = int(data["position_y"])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "position_y 必须为整数"))
+            raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", "position_y 必须为整数"))
     if "width" in data:
         try: widget.width = int(data["width"])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "width 必须为整数"))
+            raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", "width 必须为整数"))
     if "height" in data:
         try: widget.height = int(data["height"])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "height 必须为整数"))
+            raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", "height 必须为整数"))
 
     await db.commit()
     await db.refresh(widget)
@@ -874,14 +951,14 @@ async def refresh_widget(
     if not widget:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "Widget 不存在"),
+            detail=api_error("NOT_FOUND", "Widget 不存在"),
         )
 
     if not widget.query_sql:
         # No saved SQL — cannot refresh
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("NO_SQL", "该组件无保存的 SQL，无法刷新"),
+            detail=api_error("NO_SQL", "该组件无保存的 SQL，无法刷新"),
         )
 
     # Re-execute the saved SQL directly
@@ -909,8 +986,8 @@ async def refresh_widget(
         "position_y": widget.position_y,
         "width": widget.width,
         "height": widget.height,
-        "created_at": _iso(widget.created_at),
-        "updated_at": _iso(widget.updated_at),
+        "created_at": iso_format(widget.created_at),
+        "updated_at": iso_format(widget.updated_at),
     }
 
 
@@ -935,7 +1012,7 @@ async def delete_widget(
     if not widget:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=_error("NOT_FOUND", "Widget 不存在"),
+            detail=api_error("NOT_FOUND", "Widget 不存在"),
         )
 
     await db.delete(widget)
@@ -973,13 +1050,13 @@ async def create_share(
     )
     dashboard = result.scalar_one_or_none()
     if not dashboard:
-        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "仪表盘不存在"))
+        raise HTTPException(status_code=404, detail=api_error("NOT_FOUND", "仪表盘不存在"))
 
     # Parse expiry
     expires_in = data.get("expires_in", "7d")
     delta = _SHARE_EXPIRY_OPTIONS.get(expires_in)
     if delta is None and expires_in != "never":
-        raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", f"不支持的过期时间: {expires_in}"))
+        raise HTTPException(status_code=400, detail=api_error("INVALID_INPUT", f"不支持的过期时间: {expires_in}"))
 
     expires_at = datetime.now() + delta if delta else None
 
@@ -1006,9 +1083,9 @@ async def create_share(
     return {
         "id": str(share.id),
         "share_token": share.share_token,
-        "expires_at": _iso(share.expires_at),
+        "expires_at": iso_format(share.expires_at),
         "has_password": share.password is not None,
-        "created_at": _iso(share.created_at),
+        "created_at": iso_format(share.created_at),
     }
 
 
@@ -1029,7 +1106,7 @@ async def list_shares(
         )
     )
     if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "仪表盘不存在"))
+        raise HTTPException(status_code=404, detail=api_error("NOT_FOUND", "仪表盘不存在"))
 
     shares_result = await db.execute(
         select(DashboardShare)
@@ -1044,11 +1121,11 @@ async def list_shares(
             {
                 "id": str(s.id),
                 "share_token": s.share_token,
-                "expires_at": _iso(s.expires_at),
+                "expires_at": iso_format(s.expires_at),
                 "has_password": s.password is not None,
                 "is_active": s.is_active,
                 "is_expired": s.expires_at is not None and s.expires_at < now if s.expires_at else False,
-                "created_at": _iso(s.created_at),
+                "created_at": iso_format(s.created_at),
             }
             for s in shares
         ]
@@ -1073,7 +1150,7 @@ async def revoke_share(
     )
     share = result.scalar_one_or_none()
     if not share:
-        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "分享链接不存在"))
+        raise HTTPException(status_code=404, detail=api_error("NOT_FOUND", "分享链接不存在"))
     share.is_active = False
     await db.commit()
     return None

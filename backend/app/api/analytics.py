@@ -8,10 +8,7 @@ from app.db.models import AnalyticsEvent
 from app.core.security import get_current_user, require_role
 
 
-def _iso(dt) -> str:
-    if dt is None:
-        return ""
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+from app.api._helpers import iso_format
 
 router = APIRouter(prefix="/analytics", tags=["分析"])
 
@@ -143,7 +140,7 @@ async def list_events(
             "user_id": str(e.user_id),
             "event_name": e.event_name,
             "event_data": e.event_data,
-            "created_at": _iso(e.created_at),
+            "created_at": iso_format(e.created_at),
         }
         for e in events
     ]

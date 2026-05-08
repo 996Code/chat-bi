@@ -1,10 +1,48 @@
-"""多轮对话上下文解析：解析追问中的代词/省略/相对时间。"""
-import re
+"""
+多轮对话上下文解析节点
+========================
+
+本文件是 LangGraph AI 管道中的一个节点，负责把用户的"追问"补全为独立可理解的完整问题。
+
+为什么需要这个节点？
+--------------------
+在多轮对话中，用户经常使用代词、省略或相对时间来表达追问，例如：
+  - 用户第 1 轮："2024年3月的销售额是多少？"
+  - 用户第 2 轮："那上个月呢？"          ← "上个月"是相对时间，需要替换为具体月份
+  - 用户第 2 轮："按地区分组呢？"        ← 省略了主语"销售额"
+  - 用户第 2 轮："换个方式"              ← 省略了要换什么
+
+如果直接把"那上个月呢？"丢给 LLM 生成 SQL，LLM 可能无法正确理解上下文。
+本节点在调用 LLM 之前，先把这些模糊表达"解析"成完整问题，提高 SQL 生成准确率。
+
+核心概念
+--------
+1. **追问检测**：通过正则匹配代词/语气词/省略模式，判断当前问题是否是追问
+2. **相对时间解析**：把"昨天""上周"等相对时间替换为历史对话中的具体时间
+3. **上下文拼接**：把追问和上一轮问题拼接，形成独立可理解的完整问题
+
+与其他文件的关系
+----------------
+- 被调用方：`app/ai/graph.py` 将本节点注册到 LangGraph 状态图中
+- 上游节点：用户输入 → intent_classifier → **context_resolver**（本节点）
+- 下游节点：本节点输出 → schema_selector → sql_generator
+- 依赖：`app/core/logging.py` 提供日志记录器
+"""
+import re  # Python 标准库：正则表达式模块，用于模式匹配和字符串替换
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Relative time patterns (Chinese)
+# ---------------------------------------------------------------------------
+# 相对时间映射表
+# ---------------------------------------------------------------------------
+# key   → 用户可能使用的中文相对时间表达
+# value → 替换后的标准化描述（用于拼接上下文，不是最终日期计算）
+#
+# 设计思路：这里只做"语义替换"而非"日期计算"。
+# 例如 "上个月" → "2024年3月对应的当前月"，让下游 LLM 能理解具体时间范围。
+# 真正的日期计算由 SQL 层面（如 DATE_SUB）完成，本节点只负责消除歧义。
+# ---------------------------------------------------------------------------
 RELATIVE_TIME = {
     "上个月": "上一个月",
     "这个月": "当前月",
@@ -12,88 +50,193 @@ RELATIVE_TIME = {
     "这周": "当前周",
     "昨天": "前一天",
     "今天": "当前日",
-    "去年同期": "去年同期",
-    "上月": "上一个月",
-    "本月": "当前月",
+    "去年同期": "去年同期",  # "去年同期"是复合概念，保持原样不拆分
+    "上月": "上一个月",      # "上月"是"上个月"的简写，映射到同一含义
+    "本月": "当前月",        # "本月"是"这个月"的简写
 }
 
-# Pronoun/ellipsis patterns that indicate follow-up
+# ---------------------------------------------------------------------------
+# 追问模式列表 — 用于判断当前输入是否是上一轮问题的追问
+# ---------------------------------------------------------------------------
+# 每个元素是一个正则表达式字符串（raw string，r"..." 前缀避免转义问题）。
+# re.search() 会在输入中搜索匹配，只要命中任意一个就判定为追问。
+#
+# 为什么用正则而不是 LLM 来判断追问？
+#   - 速度快：正则匹配是 O(n) 操作，毫秒级；LLM 推理需要秒级
+#   - 成本低：不消耗 API 调用
+#   - 够用：追问的语法模式有限，正则已经能覆盖大部分场景
+# ---------------------------------------------------------------------------
 FOLLOW_UP_PATTERNS = [
-    r"^(那|然后|接着|再|呢|又|还|也)",  # conversational continuations
-    r"^(换个|换一个|另外|除了)",  # alternative queries
-    r"^(按|根据|排序|分组|过滤)",  # modification
-    r"(呢|吧|吗|啊|哦)$",  # trailing particles
-    r"^(那|那这个|那个|这些|那些)",  # pronoun references
+    r"^(那|然后|接着|再|呢|又|还|也)",      # 对话延续词：以"那""然后"等开头的追问
+    r"^(换个|换一个|另外|除了)",            # 替换/排除类追问：用户想换一种方式看数据
+    r"^(按|根据|排序|分组|过滤)",           # 修改类追问：在原查询基础上调整维度
+    r"(呢|吧|吗|啊|哦)$",                   # 句末语气词：中文口语中常用于追问，如"销售额呢？"
+    r"^(那|那这个|那个|这些|那些)",         # 代词引用：用"那个""这些"指代上文提到的实体
 ]
 
 
 def _resolve_relative_time(question: str, prev_question: str) -> str:
-    """Resolve relative time references using previous question context."""
+    """解析相对时间引用，用上一轮问题中的具体时间替换模糊表达。
+
+    参数
+    ----
+    question : str
+        当前用户输入，可能包含"上个月""昨天"等相对时间词。
+    prev_question : str
+        上一轮用户问题，从中提取具体时间（如"2024年3月"）作为上下文。
+
+    返回
+    ----
+    str : 替换后的完整问题。如果当前问题不含相对时间词，原样返回。
+
+    工作原理
+    --------
+    1. 遍历 RELATIVE_TIME 映射表，检查当前问题是否包含某个相对时间词
+    2. 如果包含，用 re.findall() 从上一轮问题中提取具体时间词
+       - 正则 r"(\\d{4}年|\\d{1,2}月|\\d{1,2}日|去年|今年|当月)" 匹配：
+         - \\d{4}年  → 四位数年份，如 "2024年"
+         - \\d{1,2}月 → 一到两位月份，如 "3月""12月"
+         - \\d{1,2}日 → 一到两位日期，如 "5日""25日"
+         - 去年/今年/当月 → 常见时间指代词
+    3. 将相对时间词替换为"具体时间 + 对应的 + 标准化描述"
+       例如："上个月" → "2024年3月对应的上一个月"
+
+    Python 小知识
+    -------------
+    - re.findall() 返回所有匹配的子串列表，不匹配则返回空列表 []
+    - dict.items() 同时遍历 key 和 value，比先取 key 再取 value 更简洁
+    - str.replace(old, new) 替换所有匹配的子串，不会修改原字符串（字符串不可变）
+    """
     for pattern, replacement in RELATIVE_TIME.items():
         if pattern in question:
-            # Find the table/time context from previous question
+            # 从上一轮问题中提取具体时间词
             time_words = re.findall(r"(\d{4}年|\d{1,2}月|\d{1,2}日|去年|今年|当月)", prev_question)
             if time_words:
+                # 拼接：具体时间 + "对应的" + 标准化描述
+                # 例如 "2024年3月对应的上一个月"
                 question = question.replace(pattern, time_words[0] + "对应的" + replacement)
     return question
 
 
 def resolve_context(question: str, history: list[dict]) -> str:
-    """Resolve follow-up question context using conversation history.
+    """解析追问上下文，将模糊追问补全为独立可理解的完整问题。
 
-    Returns the resolved question that can be understood independently.
+    这是本模块的主入口函数，在 LangGraph 管道中被 context_resolver 节点调用。
+
+    参数
+    ----
+    question : str
+        当前用户输入的原始问题。
+    history : list[dict]
+        对话历史，每个元素是 {"question": "...", "answer": "..."} 格式的字典。
+        按时间顺序排列，越新的越靠后。
+
+    返回
+    ----
+    str : 解析后的完整问题。如果不是追问，原样返回。
+
+    处理流程
+    --------
+    1. 空历史 → 直接返回（没有上下文可解析）
+    2. 追问检测 → 用正则判断当前输入是否是追问
+    3. 提取上一轮问题 → 从历史中倒序查找最近一个不同的问题
+    4. 相对时间解析 → 调用 _resolve_relative_time() 替换模糊时间
+    5. 纯语气词处理 → "呢？""那呢？"等极短追问，尝试时间维度替换
+    6. 修改类追问 → "按X分组"拼接到上一轮问题后面
+    7. 替换类追问 → "换个方式"拼接到上一轮问题后面
+    8. 默认拼接 → 其他追问也和上一轮问题拼接
+
+    Python 小知识
+    -------------
+    - list[dict] 是 Python 3.9+ 的类型注解语法，3.8 需要用 List[Dict]
+    - dict.get("key") 安全取值，key 不存在时返回 None 而非抛 KeyError
+    - reversed(list) 返回反向迭代器，不创建新列表，比 list[::-1] 更省内存
+    - any() 接收可迭代对象，只要有一个为 True 就返回 True（短路求值）
     """
+    # 没有历史对话，说明是第一轮，无需解析上下文
     if not history:
         return question
 
+    # 统一转小写并去除首尾空白，方便后续正则匹配（中文不受大小写影响，但英文会）
     stripped = question.strip().lower()
 
-    # Check if this is a follow-up
+    # ------------------------------------------------------------------
+    # 追问检测：用正则列表逐一匹配，命中任意一个就判定为追问
+    # ------------------------------------------------------------------
+    # any() + 生成器表达式的写法比 for 循环更 Pythonic
+    # re.search() 在字符串任意位置搜索匹配（vs re.match() 只匹配开头）
     is_follow_up = any(re.search(pat, stripped) for pat in FOLLOW_UP_PATTERNS)
 
+    # 特殊情况：极短输入（<5字符）很可能是追问，如"呢？""排序"
+    # 这类输入虽然没命中正则，但语义上就是追问
     if not is_follow_up and len(stripped) < 5:
-        # Very short input is likely a follow-up like "呢？"
         is_follow_up = True
 
+    # 不是追问，直接返回原问题
     if not is_follow_up:
         return question
 
-    # Get the last meaningful turn (with a real question)
+    # ------------------------------------------------------------------
+    # 提取上一轮有效问题
+    # ------------------------------------------------------------------
+    # 从历史记录倒序查找，跳过和当前输入相同的问题（避免重复）
+    # 这里的 h["question"] 用了直接取值而非 h.get()，因为 question 是必需字段
     prev_question = ""
     for h in reversed(history):
         if h.get("question") and h["question"].strip().lower() != stripped:
             prev_question = h["question"]
             break
 
+    # 找不到有效的上一轮问题，无法解析，原样返回
     if not prev_question:
         return question
 
-    # Resolve relative time
+    # ------------------------------------------------------------------
+    # 第一步：解析相对时间引用
+    # ------------------------------------------------------------------
     resolved = _resolve_relative_time(stripped, prev_question)
 
-    # Handle "呢？" / "那呢？" — inherit previous question's context
+    # ------------------------------------------------------------------
+    # 第二步：处理纯语气词追问（"呢？""那呢？"）
+    # ------------------------------------------------------------------
+    # 这类追问的语义是"换一个时间维度看同样的数据"
+    # 例如：上轮问"去年销售额"，追问"今年呢？" → 应替换为"今年销售额"
     if resolved.strip() in ("呢", "吧", "吗", "那呢", "那呢？", "那?", "那个呢"):
-        # Find time/group dimension to swap
+        # 常见时间维度词列表，按从长到短的时间粒度排列
         time_words = ["去年", "今年", "上月", "本月", "上周", "本周", "昨天", "今天"]
         for tw in time_words:
             if tw in prev_question:
-                # Look for a different time word in current question
+                # 在当前追问中查找不同的时间词，做时间维度替换
                 for other_tw in time_words:
                     if other_tw in resolved and other_tw != tw:
+                        # 把上一轮问题中的旧时间词替换为新时间词
+                        # 例如："去年销售额" → "今年销售额"
                         return prev_question.replace(tw, other_tw)
-        # If no time swap found, return as-is with context hint
+        # 追问中没有明确的新时间词，无法替换，原样返回
         return resolved
 
-    # Handle "按X排序呢" / "按X分组" — modify previous query
+    # ------------------------------------------------------------------
+    # 第三步：处理修改类追问（"按X排序""按X分组"）
+    # ------------------------------------------------------------------
+    # re.match() 只匹配字符串开头，所以 r"^(按|根据)" 等价于检查是否以"按"或"根据"开头
+    # 拼接策略：上一轮问题 + 逗号 + 当前追问
+    # 例如："2024年销售额" + "，" + "按地区分组" = "2024年销售额，按地区分组"
     if re.match(r"^(按|根据)", resolved):
         return f"{prev_question}，{resolved}"
 
-    # Handle "换个方式" / "除了X"
+    # ------------------------------------------------------------------
+    # 第四步：处理替换/排除类追问（"换个方式""除了X"）
+    # ------------------------------------------------------------------
     if re.match(r"^(换个|另外|除了)", resolved):
         return f"{prev_question}，{resolved}"
 
-    # Default: combine with previous context
+    # ------------------------------------------------------------------
+    # 第五步：默认拼接 — 其他追问也和上一轮问题组合
+    # ------------------------------------------------------------------
+    # 再次检查是否匹配追问模式，避免对非追问做错误拼接
     if not any(re.search(pat, resolved) for pat in FOLLOW_UP_PATTERNS):
         return resolved
 
+    # 拼接：上一轮问题 + 逗号 + 当前追问
+    # f-string 是 Python 3.6+ 的格式化语法，比 % 和 .format() 更简洁高效
     return f"{prev_question}，{resolved}"

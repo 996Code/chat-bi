@@ -1,3 +1,4 @@
+# ⚠️ 已废弃：RAG 检索已被 schema_selection 替代，此文件不再使用
 """RAG 检索节点：从数据库获取 metadata 并检索相关表结构。"""
 from sqlalchemy import select
 
