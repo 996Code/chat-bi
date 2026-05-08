@@ -26,7 +26,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick } from 'vue'
 import * as echarts from 'echarts'
 
 const props = defineProps<{
@@ -125,9 +125,10 @@ function getOption(): echarts.EChartsOption {
   return {}
 }
 
-function renderChart() {
-  if (!chartRef.value) return
+async function renderChart() {
   if (currentType.value === 'metric' || currentType.value === 'table') return
+  await nextTick()
+  if (!chartRef.value) return
 
   if (!chart) {
     chart = echarts.init(chartRef.value)

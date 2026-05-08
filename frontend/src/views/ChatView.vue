@@ -63,7 +63,7 @@
         </div>
         <div class="conv-list">
           <div
-            v-for="conv in chatStore.conversations"
+            v-for="conv in filteredConversations"
             :key="conv.id"
             :class="['conv-item', { active: chatStore.currentConversationId === conv.id }]"
             @click="handleLoadConversation(conv)"
@@ -83,7 +83,7 @@
               <el-icon><Delete /></el-icon>
             </el-button>
           </div>
-          <div v-if="chatStore.conversations.length === 0" class="conv-empty">
+          <div v-if="filteredConversations.length === 0" class="conv-empty">
             暂无对话历史
           </div>
         </div>
@@ -261,6 +261,13 @@ const showPipelineDialog = ref(false)
 const pipelineTraceSteps = ref<any[]>([])
 const suggestedQuestions = ref<string[]>([])
 const chartRendererMap = ref<Record<string, any>>({})
+
+// Filtered conversations by current datasource
+const filteredConversations = computed(() => {
+  const dsId = chatStore.currentDatasourceId
+  if (!dsId) return chatStore.conversations
+  return chatStore.conversations.filter(c => !c.datasource_id || c.datasource_id === dsId)
+})
 
 // Save to dashboard
 const showSaveDialog = ref(false)
@@ -468,7 +475,12 @@ async function openSaveToDashboard(msg: any) {
   pendingSaveMsg.value = msg
   try {
     const res = await api.get('/dashboards')
-    dashboardsForSave.value = res.data.data || []
+    const allDashboards = res.data.data || []
+    // Filter dashboards by current datasource
+    const currentDsId = chatStore.currentDatasourceId
+    dashboardsForSave.value = currentDsId
+      ? allDashboards.filter((d: any) => d.datasource_id === currentDsId)
+      : allDashboards
     if (dashboardsForSave.value.length === 0) {
       selectedDashboardId.value = ''
     } else {
@@ -506,13 +518,10 @@ async function saveToDashboard() {
       datasource_id: chatStore.currentDatasourceId,
       query_sql: msg.sql || '',
       chart_type: msg.chart_type || 'table',
-      columns: msg.columns || [],
-      rows: msg.rows || [],
-      row_count: msg.row_count || 0,
       position_x: 0,
       position_y: 0,
-      width: 1,
-      height: 1,
+      width: 6,
+      height: 4,
     })
     showSaveDialog.value = false
     pendingSaveMsg.value = null

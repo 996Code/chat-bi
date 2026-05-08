@@ -1,4 +1,5 @@
 """Dashboard layout and persistence API."""
+import asyncio
 import json
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -27,6 +28,16 @@ def _iso(dt) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _parse_layout_config(val):
+    """Parse layout_config from JSON string to dict, or return None."""
+    if val is None:
+        return None
+    try:
+        return json.loads(val)
+    except (json.JSONDecodeError, TypeError):
+        return val
+
+
 @router.get("", response_model=dict)
 async def list_dashboards(
     user=Depends(get_current_user),
@@ -45,6 +56,8 @@ async def list_dashboards(
             {
                 "id": str(d.id),
                 "name": d.name,
+                "datasource_id": str(d.datasource_id) if d.datasource_id else None,
+                "layout_config": _parse_layout_config(d.layout_config),
                 "created_at": _iso(d.created_at),
                 "updated_at": _iso(d.updated_at),
             }
@@ -69,11 +82,32 @@ async def create_dashboard(
             detail=_error("INVALID_INPUT", "仪表盘名称不能为空"),
         )
 
+    datasource_id = data.get("datasource_id")
+    if not datasource_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_error("INVALID_INPUT", "请选择数据源"),
+        )
+    # Verify datasource exists and belongs to tenant
+    ds_result = await db.execute(
+        select(DataSource).where(
+            DataSource.id == datasource_id,
+            DataSource.tenant_id == tenant_id,
+        )
+    )
+    ds = ds_result.scalar_one_or_none()
+    if not ds:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
+        )
+
     dashboard = Dashboard(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
         user_id=user["user_id"],
         name=name,
+        datasource_id=datasource_id,
     )
     db.add(dashboard)
     await db.commit()
@@ -82,6 +116,8 @@ async def create_dashboard(
     return {
         "id": str(dashboard.id),
         "name": dashboard.name,
+        "datasource_id": str(dashboard.datasource_id) if dashboard.datasource_id else None,
+        "layout_config": _parse_layout_config(dashboard.layout_config),
         "created_at": _iso(dashboard.created_at),
         "updated_at": _iso(dashboard.updated_at),
     }
@@ -93,7 +129,7 @@ async def get_dashboard(
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取仪表盘详情，包含完整 widget 列表。"""
+    """获取仪表盘详情，包含完整 widget 列表（自动执行 SQL 获取最新数据）。"""
     tenant_id = user["tenant_id"]
     result = await db.execute(
         select(Dashboard).where(
@@ -115,7 +151,7 @@ async def get_dashboard(
     )
     widgets = widgets_result.scalars().all()
 
-    def _widget_to_dict(w):
+    async def _widget_to_dict(w):
         d = {
             "id": str(w.id),
             "question": w.question,
@@ -130,20 +166,78 @@ async def get_dashboard(
             "created_at": _iso(w.created_at),
             "updated_at": _iso(w.updated_at),
         }
-        try:
-            d["columns"] = json.loads(w.columns) if w.columns else []
-        except (json.JSONDecodeError, TypeError):
-            d["columns"] = []
-        try:
-            d["rows"] = json.loads(w.rows) if w.rows else []
-        except (json.JSONDecodeError, TypeError):
-            d["rows"] = []
+        # Execute SQL to get fresh data
+        if w.query_sql:
+            # Check if datasource still exists
+            ds_result = await db.execute(
+                select(DataSource).where(
+                    DataSource.id == w.datasource_id,
+                    DataSource.tenant_id == tenant_id,
+                )
+            )
+            ds = ds_result.scalar_one_or_none()
+            if not ds:
+                d["columns"] = []
+                d["rows"] = []
+                d["error"] = "DATASOURCE_DELETED"
+                d["error_msg"] = "该组件绑定的数据源已删除，请重新配置"
+            else:
+                try:
+                    exec_result = await execute_sql(w.query_sql, str(w.datasource_id), tenant_id=str(tenant_id))
+                    if exec_result.get("success"):
+                        d["columns"] = exec_result.get("columns", [])
+                        d["rows"] = exec_result.get("rows", [])
+                        d["row_count"] = exec_result.get("row_count", 0)
+                        # Update cached data in DB
+                        w.columns = json.dumps(d["columns"], ensure_ascii=False)
+                        w.rows = json.dumps(d["rows"], ensure_ascii=False, default=str)
+                        w.row_count = d["row_count"]
+                    else:
+                        # Fall back to cached data
+                        try:
+                            d["columns"] = json.loads(w.columns) if w.columns else []
+                        except (json.JSONDecodeError, TypeError):
+                            d["columns"] = []
+                        try:
+                            d["rows"] = json.loads(w.rows) if w.rows else []
+                        except (json.JSONDecodeError, TypeError):
+                            d["rows"] = []
+                        d["error"] = "QUERY_FAILED"
+                        d["error_msg"] = exec_result.get("error", "查询执行失败")
+                except Exception:
+                    # Fall back to cached data on execution error
+                    try:
+                        d["columns"] = json.loads(w.columns) if w.columns else []
+                    except (json.JSONDecodeError, TypeError):
+                        d["columns"] = []
+                    try:
+                        d["rows"] = json.loads(w.rows) if w.rows else []
+                    except (json.JSONDecodeError, TypeError):
+                        d["rows"] = []
+                    d["error"] = "QUERY_FAILED"
+                    d["error_msg"] = "查询执行异常"
+        else:
+            try:
+                d["columns"] = json.loads(w.columns) if w.columns else []
+            except (json.JSONDecodeError, TypeError):
+                d["columns"] = []
+            try:
+                d["rows"] = json.loads(w.rows) if w.rows else []
+            except (json.JSONDecodeError, TypeError):
+                d["rows"] = []
+
         return d
+
+    widget_dicts = await asyncio.gather(*[_widget_to_dict(w) for w in widgets])
+    # Commit any cached data updates
+    await db.commit()
 
     return {
         "id": str(dashboard.id),
         "name": dashboard.name,
-        "widgets": [_widget_to_dict(w) for w in widgets],
+        "datasource_id": str(dashboard.datasource_id) if dashboard.datasource_id else None,
+        "layout_config": _parse_layout_config(dashboard.layout_config),
+        "widgets": widget_dicts,
         "created_at": _iso(dashboard.created_at),
         "updated_at": _iso(dashboard.updated_at),
     }
@@ -156,7 +250,7 @@ async def update_dashboard(
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """更新仪表盘名称。"""
+    """更新仪表盘（名称、布局配置）。"""
     tenant_id = user["tenant_id"]
     result = await db.execute(
         select(Dashboard).where(
@@ -171,20 +265,52 @@ async def update_dashboard(
             detail=_error("NOT_FOUND", "仪表盘不存在"),
         )
 
-    name = data.get("name", "").strip()
-    if not name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_error("INVALID_INPUT", "仪表盘名称不能为空"),
-        )
+    if "name" in data:
+        name = data["name"].strip() if data["name"] else ""
+        if not name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_error("INVALID_INPUT", "仪表盘名称不能为空"),
+            )
+        dashboard.name = name
 
-    dashboard.name = name
+    if "datasource_id" in data:
+        ds_id = data["datasource_id"]
+        if ds_id:
+            # Verify datasource exists
+            ds_result = await db.execute(
+                select(DataSource).where(
+                    DataSource.id == ds_id,
+                    DataSource.tenant_id == tenant_id,
+                )
+            )
+            ds = ds_result.scalar_one_or_none()
+            if not ds:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=_error("DATASOURCE_NOT_FOUND", "数据源不存在或无权访问"),
+                )
+            dashboard.datasource_id = ds_id
+        else:
+            dashboard.datasource_id = None
+
+    if "layout_config" in data:
+        layout = data["layout_config"]
+        if isinstance(layout, dict):
+            dashboard.layout_config = json.dumps(layout, ensure_ascii=False)
+        elif layout is None:
+            dashboard.layout_config = None
+        else:
+            dashboard.layout_config = str(layout)
+
     await db.commit()
     await db.refresh(dashboard)
 
     return {
         "id": str(dashboard.id),
         "name": dashboard.name,
+        "datasource_id": str(dashboard.datasource_id) if dashboard.datasource_id else None,
+        "layout_config": _parse_layout_config(dashboard.layout_config),
         "created_at": _iso(dashboard.created_at),
         "updated_at": _iso(dashboard.updated_at),
     }
@@ -304,33 +430,11 @@ async def add_widget(
             detail=_error("INVALID_INPUT", "位置和尺寸必须为整数"),
         )
 
-    # Use columns/rows from request if provided (frontend already has query results)
-    # Otherwise run AI pipeline to generate them from natural language question
-    if data.get("columns") is not None and data.get("rows") is not None:
-        # Frontend already executed — use provided results directly
-        columns_json = json.dumps(data["columns"], ensure_ascii=False)
-        rows_json = json.dumps(data["rows"], ensure_ascii=False, default=str)
-        row_count = len(data["rows"])
-        if chart_type == "table":
-            inferred = infer_chart_type(data["columns"], data["rows"])
-            chart_type = inferred
-    elif query_sql:
-        # SQL provided — execute directly
-        exec_result = await execute_sql(query_sql, str(datasource_id), tenant_id=str(tenant_id))
-        if exec_result.get("success"):
-            columns_json = json.dumps(exec_result.get("columns", []), ensure_ascii=False)
-            rows_json = json.dumps(exec_result.get("rows", []), ensure_ascii=False, default=str)
-            row_count = exec_result.get("row_count", 0)
-            if chart_type == "table":
-                inferred_chart = infer_chart_type(
-                    exec_result.get("columns", []),
-                    exec_result.get("rows", []),
-                )
-                chart_type = inferred_chart
-        else:
-            columns_json = json.dumps([])
-            rows_json = json.dumps([])
-            row_count = 0
+    # Generate SQL and execute to get initial data
+    # Only store question + query_sql + chart_type — data is re-executed on load/refresh
+    if query_sql:
+        # SQL provided — use it directly
+        pass
     else:
         # Run AI pipeline to generate SQL from natural language
         from app.ai.graph import build_graph
@@ -341,36 +445,37 @@ async def add_widget(
             "tenant_id": str(tenant_id),
         })
         query_sql = state.get("sql")
-        if state.get("success") and query_sql:
-            exec_result = await execute_sql(query_sql, str(datasource_id), tenant_id=str(tenant_id))
-        else:
-            exec_result = {"success": False, "error": state.get("error", "SQL 生成失败")}
+        if not state.get("success") or not query_sql:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_error("SQL_GEN_FAILED", state.get("error", "SQL 生成失败")),
+            )
+        if chart_type == "table":
+            chart_type = infer_chart_type_from_sql(query_sql) or "table"
 
-        if exec_result.get("success"):
-            columns_json = json.dumps(exec_result.get("columns", []), ensure_ascii=False)
-            rows_json = json.dumps(exec_result.get("rows", []), ensure_ascii=False, default=str)
-            row_count = exec_result.get("row_count", 0)
-            if chart_type == "table":
-                inferred_chart = infer_chart_type(
-                    exec_result.get("columns", []),
-                    exec_result.get("rows", []),
-                )
-                chart_type = inferred_chart
-        else:
-            columns_json = json.dumps([])
-            rows_json = json.dumps([])
-            row_count = 0
+    # Execute SQL to get initial data for the response
+    exec_result = await execute_sql(query_sql, str(datasource_id), tenant_id=str(tenant_id))
+    if exec_result.get("success"):
+        columns = exec_result.get("columns", [])
+        rows = exec_result.get("rows", [])
+        row_count = exec_result.get("row_count", 0)
+        if chart_type == "table":
+            chart_type = infer_chart_type(columns, rows)
+    else:
+        columns = []
+        rows = []
+        row_count = 0
 
     widget = DashboardWidget(
         id=uuid.uuid4(),
         dashboard_id=dashboard_id,
         tenant_id=tenant_id,
         question=question,
-        query_sql=query_sql or None,
+        query_sql=query_sql,
         datasource_id=datasource_id,
         chart_type=chart_type,
-        columns=columns_json,
-        rows=rows_json,
+        columns=json.dumps(columns, ensure_ascii=False),
+        rows=json.dumps(rows, ensure_ascii=False, default=str),
         row_count=row_count,
         position_x=pos_x,
         position_y=pos_y,
@@ -397,6 +502,100 @@ async def add_widget(
         "created_at": _iso(widget.created_at),
         "updated_at": _iso(widget.updated_at),
     }
+
+
+@router.put("/{dashboard_id}/widgets/positions", response_model=dict)
+async def batch_update_widget_positions(
+    dashboard_id: str,
+    data: dict,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量更新 widget 位置和尺寸。"""
+    tenant_id = user["tenant_id"]
+
+    # Verify dashboard ownership
+    result = await db.execute(
+        select(Dashboard).where(
+            Dashboard.id == dashboard_id,
+            Dashboard.tenant_id == tenant_id,
+        )
+    )
+    dashboard = result.scalar_one_or_none()
+    if not dashboard:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_error("NOT_FOUND", "仪表盘不存在"),
+        )
+
+    widgets_data = data.get("widgets", [])
+    if not isinstance(widgets_data, list) or not widgets_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_error("INVALID_INPUT", "widgets 必须为非空列表"),
+        )
+
+    updated = []
+    for item in widgets_data:
+        widget_id = item.get("id")
+        if not widget_id:
+            continue
+
+        w_result = await db.execute(
+            select(DashboardWidget).where(
+                DashboardWidget.id == widget_id,
+                DashboardWidget.dashboard_id == dashboard_id,
+                DashboardWidget.tenant_id == tenant_id,
+            )
+        )
+        widget = w_result.scalar_one_or_none()
+        if not widget:
+            continue
+
+        if "position_x" in item:
+            try:
+                widget.position_x = int(item["position_x"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=_error("INVALID_INPUT", f"widget {widget_id}: position_x 必须为整数"),
+                )
+        if "position_y" in item:
+            try:
+                widget.position_y = int(item["position_y"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=_error("INVALID_INPUT", f"widget {widget_id}: position_y 必须为整数"),
+                )
+        if "width" in item:
+            try:
+                widget.width = int(item["width"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=_error("INVALID_INPUT", f"widget {widget_id}: width 必须为整数"),
+                )
+        if "height" in item:
+            try:
+                widget.height = int(item["height"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=_error("INVALID_INPUT", f"widget {widget_id}: height 必须为整数"),
+                )
+
+        updated.append({
+            "id": str(widget.id),
+            "position_x": widget.position_x,
+            "position_y": widget.position_y,
+            "width": widget.width,
+            "height": widget.height,
+        })
+
+    await db.commit()
+
+    return {"updated": updated, "count": len(updated)}
 
 
 @router.put("/{dashboard_id}/widgets/{widget_id}", response_model=dict)
@@ -433,6 +632,36 @@ async def update_widget(
                 detail=_error("INVALID_INPUT", f"不支持的图表类型: {ct}"),
             )
         widget.chart_type = ct
+
+    if "question" in data:
+        question = data["question"].strip() if data["question"] else ""
+        if not question:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_error("INVALID_INPUT", "组件名称不能为空"),
+            )
+        widget.question = question
+
+    if "position_x" in data:
+        try:
+            widget.position_x = int(data["position_x"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "position_x 必须为整数"))
+    if "position_y" in data:
+        try:
+            widget.position_y = int(data["position_y"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "position_y 必须为整数"))
+    if "width" in data:
+        try:
+            widget.width = int(data["width"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "width 必须为整数"))
+    if "height" in data:
+        try:
+            widget.height = int(data["height"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", "height 必须为整数"))
 
     await db.commit()
     await db.refresh(widget)

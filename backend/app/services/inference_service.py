@@ -5,6 +5,7 @@
 import json
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.ai.nodes.shared_utils import get_llm
 
 logger = get_logger(__name__)
 
@@ -13,11 +14,6 @@ async def infer_relationships(models: list[dict]) -> list[dict]:
     """使用 LLM 推断表之间的关联关系。"""
     if not models:
         return []
-
-    try:
-        from langchain_openai import ChatOpenAI
-    except ImportError:
-        raise RuntimeError("langchain_openai 不可用，无法推断关联关系")
 
     # Build table structure description
     tables_desc = []

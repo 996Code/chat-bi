@@ -67,6 +67,28 @@ async def lifespan(app: FastAPI):
                     "AFTER question"
                 ))
                 logger.info("Auto-migration: added query_sql column to dashboard_widgets")
+
+            # dashboards: layout_config
+            columns_result = await conn.execute(text(
+                "SHOW COLUMNS FROM dashboards LIKE 'layout_config'"
+            ))
+            if not columns_result.fetchone():
+                await conn.execute(text(
+                    "ALTER TABLE dashboards ADD COLUMN layout_config TEXT NULL "
+                    "AFTER name"
+                ))
+                logger.info("Auto-migration: added layout_config column to dashboards")
+
+            # dashboards: datasource_id
+            columns_result = await conn.execute(text(
+                "SHOW COLUMNS FROM dashboards LIKE 'datasource_id'"
+            ))
+            if not columns_result.fetchone():
+                await conn.execute(text(
+                    "ALTER TABLE dashboards ADD COLUMN datasource_id CHAR(36) NOT NULL "
+                    "AFTER name"
+                ))
+                logger.info("Auto-migration: added datasource_id column to dashboards")
     except Exception as e:
         logger.warning("Auto-migration failed (non-fatal): %s", e)
 

@@ -183,6 +183,8 @@ class Dashboard(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    datasource_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    layout_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON: grid settings, theme, etc.
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, server_default=func.now(), onupdate=func.now())
 
