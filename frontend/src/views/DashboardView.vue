@@ -21,6 +21,13 @@
         <el-button
           v-if="currentDashboard"
           size="small"
+          @click="openShareDialog"
+        >
+          <el-icon><Share /></el-icon> 分享
+        </el-button>
+        <el-button
+          v-if="currentDashboard"
+          size="small"
           @click="showAddWidgetDialog = true"
         >
           <el-icon><Plus /></el-icon> 添加组件
@@ -63,7 +70,13 @@
     </div>
 
     <!-- Main area -->
-    <div class="dashboard-body" ref="gridContainerRef">
+    <div
+      class="dashboard-body"
+      ref="gridContainerRef"
+      @dragover="onGridDragOver"
+      @drop="onGridDrop"
+      @dragleave="onGridDragLeave"
+    >
       <!-- Empty state: no dashboard selected -->
       <div v-if="!currentDashboard" class="empty-state">
         <el-empty description="暂无看板数据，从聊天中添加查询到看板">
@@ -87,9 +100,6 @@
         v-else
         class="widget-grid"
         :style="gridStyle"
-        @dragover="onGridDragOver"
-        @drop="onGridDrop"
-        @dragleave="onGridDragLeave"
       >
         <DashboardWidget
           v-for="widget in currentDashboard.widgets"
@@ -196,12 +206,95 @@
             :rows="2"
           />
         </el-form-item>
+        <el-form-item label="组件名称（可选）">
+          <el-input
+            v-model="addWidgetName"
+            placeholder="留空则使用问题作为名称"
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showAddWidgetDialog = false">取消</el-button>
         <el-button type="primary" :disabled="!addWidgetQuestion.trim() && (!currentDashboard?.datasource_id && !addWidgetDatasourceId)" @click="addQuestionWidget">
           添加
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Share dialog -->
+    <el-dialog v-model="showShareDialog" title="分享看板" width="500px">
+      <!-- Create share -->
+      <div v-if="!shareCreated">
+        <el-form label-position="top">
+          <el-form-item label="有效期">
+            <el-radio-group v-model="shareExpiresIn">
+              <el-radio-button value="1h">1 小时</el-radio-button>
+              <el-radio-button value="24h">24 小时</el-radio-button>
+              <el-radio-button value="7d">7 天</el-radio-button>
+              <el-radio-button value="30d">30 天</el-radio-button>
+              <el-radio-button value="never">永久</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="访问密码（可选）">
+            <el-input
+              v-model="sharePassword"
+              placeholder="留空则无需密码"
+              show-password
+            />
+          </el-form-item>
+        </el-form>
+      </div>
+      <!-- Show created link -->
+      <div v-else>
+        <el-form label-position="top">
+          <el-form-item label="分享链接">
+            <el-input :model-value="shareLink" readonly>
+              <template #append>
+                <el-button @click="copyShareLink">复制</el-button>
+              </template>
+            </el-input>
+          </el-form-item>
+          <div v-if="sharePassword" style="color: #909399; font-size: 13px; margin-bottom: 12px;">
+            访问密码: <strong>{{ sharePassword }}</strong>
+          </div>
+          <div style="color: #909399; font-size: 13px;">
+            <span v-if="shareExpiresIn !== 'never'">链接将在设定时间后失效</span>
+            <span v-else>链接永久有效</span>
+          </div>
+        </el-form>
+      </div>
+      <!-- Existing shares -->
+      <div v-if="existingShares.length > 0" style="margin-top: 16px; border-top: 1px solid #ebeef5; padding-top: 16px;">
+        <div style="font-size: 14px; font-weight: 500; margin-bottom: 8px;">已创建的分享链接</div>
+        <div
+          v-for="s in existingShares"
+          :key="s.id"
+          style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f0f0f0;"
+        >
+          <div>
+            <span v-if="s.is_expired" style="color: #f56c6c; font-size: 12px;">已过期</span>
+            <span v-else style="color: #67c23a; font-size: 12px;">有效</span>
+            <span style="margin-left: 8px; font-size: 13px; color: #606266;">
+              {{ s.expires_at || '永久' }}
+            </span>
+            <span v-if="s.has_password" style="margin-left: 4px; font-size: 12px; color: #909399;">有密码</span>
+          </div>
+          <div style="display: flex; gap: 4px;">
+            <el-button v-if="!s.is_expired" size="small" text @click="copyExistingShareLink(s.share_token)">复制链接</el-button>
+            <el-button size="small" text type="danger" @click="revokeShare(s.id)">撤销</el-button>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <template v-if="!shareCreated">
+          <el-button @click="showShareDialog = false">取消</el-button>
+          <el-button type="primary" :loading="creatingShare" @click="createShare">
+            生成链接
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="closeShareDialog">关闭</el-button>
+        </template>
       </template>
     </el-dialog>
   </div>
@@ -213,7 +306,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   DataBoard, Plus, ArrowLeft, Check,
-  MoreFilled, Edit, Delete
+  MoreFilled, Edit, Delete, Share
 } from '@element-plus/icons-vue'
 import api from '@/api'
 import { useDatasourceStore } from '@/stores/datasourceStore'
@@ -251,6 +344,7 @@ interface Dashboard {
 // ===== Grid constants =====
 const colCount = 12
 const gridGap = 16
+const gridRowHeight = 80
 const cellSize = ref(100) // Will be computed from container width
 
 // ===== State =====
@@ -270,6 +364,16 @@ const datasources = computed(() => datasourceStore.datasources)
 // Add widget state
 const addWidgetDatasourceId = ref('')
 const addWidgetQuestion = ref('')
+const addWidgetName = ref('')
+
+// Share state
+const showShareDialog = ref(false)
+const shareExpiresIn = ref('7d')
+const sharePassword = ref('')
+const creatingShare = ref(false)
+const shareCreated = ref(false)
+const shareToken = ref('')
+const existingShares = ref<any[]>([])
 
 // Drop placeholder
 const dropPlaceholder = reactive({
@@ -287,7 +391,7 @@ const currentDashboard = computed(() => {
 const gridStyle = computed(() => {
   return {
     gridTemplateColumns: `repeat(${colCount}, 1fr)`,
-    gridAutoRows: '80px',
+    gridAutoRows: `${gridRowHeight}px`,
     gap: `${gridGap}px`,
   }
 })
@@ -427,14 +531,6 @@ async function deleteDashboard() {
   }
 }
 
-async function onTabChange() {
-  console.log('[TAB] onTabChange, activeId:', activeDashboardId.value)
-  if (activeDashboardId.value) {
-    await fetchDashboardDetail(activeDashboardId.value)
-    console.log('[TAB] fetchDashboardDetail done, widgets count:', currentDashboard.value?.widgets?.length)
-  }
-}
-
 // ===== Widget operations =====
 async function refreshWidget(widget: Widget) {
   if (!activeDashboardId.value) return
@@ -479,6 +575,10 @@ async function deleteWidget(widget: Widget) {
 }
 
 // ===== Grid drag & drop =====
+function getGridEl(): HTMLElement | null {
+  return gridContainerRef.value?.querySelector('.widget-grid') as HTMLElement ?? null
+}
+
 function onGridDragOver(e: DragEvent) {
   e.preventDefault()
   if (!e.dataTransfer) return
@@ -486,18 +586,28 @@ function onGridDragOver(e: DragEvent) {
 
   if (!currentDashboard.value || !gridContainerRef.value) return
 
-  // Calculate grid position from mouse position
-  const rect = gridContainerRef.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const gridEl = getGridEl()
+  if (!gridEl) return
 
-  // Compute column width from the grid container
-  const containerWidth = rect.width
+  // Auto-scroll when near edges of scrollable container
+  const containerRect = gridContainerRef.value.getBoundingClientRect()
+  const edgeZone = 80
+  if (containerRect.bottom - e.clientY < edgeZone) {
+    gridContainerRef.value.scrollTop += 20
+  } else if (e.clientY - containerRect.top < edgeZone) {
+    gridContainerRef.value.scrollTop = Math.max(0, gridContainerRef.value.scrollTop - 20)
+  }
+
+  // Use grid element rect (automatically accounts for scroll position)
+  const gridRect = gridEl.getBoundingClientRect()
+  const x = e.clientX - gridRect.left
+  const y = e.clientY - gridRect.top
+
+  const containerWidth = gridRect.width
   const colWidth = (containerWidth - (colCount - 1) * gridGap) / colCount
-  const rowHeight = 80
 
   const gridX = Math.max(0, Math.min(colCount - 2, Math.floor(x / (colWidth + gridGap))))
-  const gridY = Math.max(0, Math.floor(y / (rowHeight + gridGap)))
+  const gridY = Math.max(0, Math.floor(y / (gridRowHeight + gridGap)))
 
   dropPlaceholder.visible = true
   dropPlaceholder.x = gridX
@@ -516,20 +626,20 @@ function onGridDrop(e: DragEvent) {
   const widget = currentDashboard.value.widgets.find(w => w.id === widgetId)
   if (!widget) return
 
-  // Calculate target position
-  const rect = gridContainerRef.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const gridEl = getGridEl()
+  if (!gridEl) return
 
-  const containerWidth = rect.width
+  const gridRect = gridEl.getBoundingClientRect()
+  const x = e.clientX - gridRect.left
+  const y = e.clientY - gridRect.top
+
+  const containerWidth = gridRect.width
   const colWidth = (containerWidth - (colCount - 1) * gridGap) / colCount
-  const rowHeight = 80
 
   const targetX = Math.max(0, Math.min(colCount - widget.width, Math.floor(x / (colWidth + gridGap))))
-  const targetY = Math.max(0, Math.floor(y / (rowHeight + gridGap)))
+  const targetY = Math.max(0, Math.floor(y / (gridRowHeight + gridGap)))
 
   if (targetX !== widget.position_x || targetY !== widget.position_y) {
-    // Check for collisions with other widgets
     const collision = hasCollision(widget.id, targetX, targetY, widget.width, widget.height)
     if (!collision) {
       widget.position_x = targetX
@@ -541,14 +651,12 @@ function onGridDrop(e: DragEvent) {
 }
 
 function onGridDragLeave(e: DragEvent) {
-  // Only hide placeholder if actually leaving the grid
   const rect = gridContainerRef.value?.getBoundingClientRect()
   if (!rect) return
   if (
     e.clientX <= rect.left ||
     e.clientX >= rect.right ||
-    e.clientY <= rect.top ||
-    e.clientY >= rect.bottom
+    e.clientY <= rect.top
   ) {
     dropPlaceholder.visible = false
   }
@@ -675,28 +783,112 @@ async function addQuestionWidget() {
   }
 
   try {
-    // Find position for new widget
-    const pos = findNextPosition(6, 3)
-
     await api.post(`/dashboards/${activeDashboardId.value}/widgets`, {
-      question: addWidgetQuestion.value.trim(),
+      question: addWidgetName.value.trim() || addWidgetQuestion.value.trim(),
       datasource_id: dsId,
       chart_type: 'table',
-      position_x: pos.x,
-      position_y: pos.y,
-      width: 6,
-      height: 3,
     })
 
     // Refresh the dashboard to get the new widget
     await fetchDashboardDetail(activeDashboardId.value)
 
     addWidgetQuestion.value = ''
+    addWidgetName.value = ''
     showAddWidgetDialog.value = false
     ElMessage.success('组件已添加')
   } catch (e: any) {
     ElMessage.error('添加失败: ' + (e?.response?.data?.detail?.message || e?.message || '未知错误'))
   }
+}
+
+// ===== Share =====
+const shareLink = computed(() => {
+  if (!shareToken.value) return ''
+  const base = import.meta.env.VITE_BASE_PATH || '/chat-bi/'
+  const baseClean = base.endsWith('/') ? base.slice(0, -1) : base
+  return `${window.location.origin}${baseClean}/dashboards/share/${shareToken.value}`
+})
+
+async function openShareDialog() {
+  shareCreated.value = false
+  shareToken.value = ''
+  sharePassword.value = ''
+  shareExpiresIn.value = '7d'
+  showShareDialog.value = true
+  await fetchExistingShares()
+}
+
+function closeShareDialog() {
+  showShareDialog.value = false
+  shareCreated.value = false
+}
+
+async function fetchExistingShares() {
+  if (!activeDashboardId.value) return
+  try {
+    const res = await api.get(`/dashboards/${activeDashboardId.value}/shares`)
+    existingShares.value = res.data.data || []
+  } catch {
+    existingShares.value = []
+  }
+}
+
+async function createShare() {
+  if (!activeDashboardId.value) return
+  creatingShare.value = true
+  try {
+    const res = await api.post(`/dashboards/${activeDashboardId.value}/shares`, {
+      expires_in: shareExpiresIn.value,
+      password: sharePassword.value || undefined,
+    })
+    shareToken.value = res.data.share_token
+    shareCreated.value = true
+    await fetchExistingShares()
+  } catch (e: any) {
+    ElMessage.error('创建分享失败: ' + (e?.response?.data?.detail?.message || e?.message || '未知错误'))
+  } finally {
+    creatingShare.value = false
+  }
+}
+
+async function revokeShare(shareId: string) {
+  if (!activeDashboardId.value) return
+  try {
+    await api.delete(`/dashboards/${activeDashboardId.value}/shares/${shareId}`)
+    await fetchExistingShares()
+    ElMessage.success('已撤销')
+  } catch {
+    ElMessage.error('撤销失败')
+  }
+}
+
+async function copyShareLink() {
+  try {
+    await navigator.clipboard.writeText(shareLink.value)
+    ElMessage.success('链接已复制')
+  } catch {
+    fallbackCopy(shareLink.value)
+  }
+}
+
+function copyExistingShareLink(token: string) {
+  const base = import.meta.env.VITE_BASE_PATH || '/chat-bi/'
+  const baseClean = base.endsWith('/') ? base.slice(0, -1) : base
+  const url = `${window.location.origin}${baseClean}/dashboards/share/${token}`
+  navigator.clipboard.writeText(url).then(
+    () => ElMessage.success('链接已复制'),
+    () => fallbackCopy(url),
+  )
+}
+
+function fallbackCopy(text: string) {
+  const input = document.createElement('input')
+  input.value = text
+  document.body.appendChild(input)
+  input.select()
+  document.execCommand('copy')
+  document.body.removeChild(input)
+  ElMessage.success('链接已复制')
 }
 
 // ===== Auto-assign positions for widgets without proper grid data =====
@@ -841,7 +1033,7 @@ onUnmounted(() => {
 .widget-grid {
   display: grid;
   grid-template-columns: repeat(12, 1fr);
-  grid-auto-rows: 80px;
+  grid-auto-rows: v-bind(gridRowHeight + 'px');
   gap: 16px;
   position: relative;
   min-height: 400px;

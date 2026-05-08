@@ -1,7 +1,7 @@
 <template>
   <div
     class="dashboard-widget"
-    :class="{ dragging: isDragging, resizing: isResizing, 'drag-over': isDragOver }"
+    :class="{ dragging: isDragging, resizing: isResizing, 'drag-over': isDragOver, 'readonly': readonly }"
     :style="widgetStyle"
     @dragover.prevent="onDragOver"
     @dragleave="onDragLeave"
@@ -10,17 +10,19 @@
     <!-- Drag handle: top header bar -->
     <div
       class="widget-header"
-      draggable="true"
+      :class="{ 'readonly-header': readonly }"
+      :draggable="!readonly"
       @dragstart="onDragStart"
       @dragend="onDragEnd"
     >
       <div class="widget-header-left">
-        <el-icon class="drag-handle" :size="14"><Rank /></el-icon>
+        <el-icon v-if="!readonly" class="drag-handle" :size="14"><Rank /></el-icon>
         <span
           v-if="!isEditingName"
           class="widget-question"
+          :class="{ 'readonly-title': readonly }"
           :title="widget.question"
-          @dblclick="startEditName"
+          @dblclick="!readonly && startEditName()"
         >{{ widget.question }}</span>
         <el-input
           v-else
@@ -34,10 +36,24 @@
         />
       </div>
       <div class="widget-actions">
-        <el-button size="small" text @click="$emit('refresh', widget)">
+        <el-select
+          v-if="!readonly"
+          :model-value="widget.chart_type || 'table'"
+          size="small"
+          class="chart-type-select"
+          @change="(val: string) => $emit('chart-type-change', widget, val)"
+        >
+          <el-option label="表格" value="table" />
+          <el-option label="折线图" value="line" />
+          <el-option label="柱状图" value="bar" />
+          <el-option label="饼图" value="pie" />
+          <el-option label="指标卡" value="metric" />
+          <el-option label="散点图" value="scatter" />
+        </el-select>
+        <el-button v-if="!readonly" size="small" text @click="$emit('refresh', widget)">
           <el-icon><Refresh /></el-icon>
         </el-button>
-        <el-button size="small" text class="widget-delete" @click="$emit('delete', widget)">
+        <el-button v-if="!readonly" size="small" text class="widget-delete" @click="$emit('delete', widget)">
           <el-icon><Close /></el-icon>
         </el-button>
       </div>
@@ -54,7 +70,8 @@
         :chart-type="widget.chart_type || 'table'"
         :columns="widget.columns || []"
         :rows="widget.rows || []"
-        @chart-type-change="(type: string) => $emit('chart-type-change', widget, type)"
+        :readonly="readonly"
+        @chart-type-change="(type: string) => !readonly && $emit('chart-type-change', widget, type)"
       />
     </div>
 
@@ -65,6 +82,7 @@
 
     <!-- Resize handle: bottom-right corner -->
     <div
+      v-if="!readonly"
       class="resize-handle"
       @mousedown.prevent="onResizeStart"
     >
@@ -100,6 +118,7 @@ const props = defineProps<{
   cellSize: number
   gap: number
   colCount: number
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -284,6 +303,15 @@ function onResizeStart(e: MouseEvent) {
   cursor: grabbing;
 }
 
+.widget-header.readonly-header {
+  cursor: default;
+  background: #fafafa;
+}
+
+.widget-header.readonly-header:active {
+  cursor: default;
+}
+
 .widget-header-left {
   display: flex;
   align-items: center;
@@ -316,6 +344,14 @@ function onResizeStart(e: MouseEvent) {
   color: #409eff;
 }
 
+.widget-question.readonly-title {
+  cursor: default;
+}
+
+.widget-question.readonly-title:hover {
+  color: #303133;
+}
+
 .widget-name-input {
   flex: 1;
   min-width: 0;
@@ -331,8 +367,23 @@ function onResizeStart(e: MouseEvent) {
 
 .widget-actions {
   display: flex;
+  align-items: center;
   gap: 2px;
   flex-shrink: 0;
+}
+
+.chart-type-select {
+  width: 90px;
+}
+
+.chart-type-select :deep(.el-input__inner) {
+  font-size: 12px;
+  height: 24px;
+  line-height: 24px;
+}
+
+.chart-type-select :deep(.el-input__wrapper) {
+  padding: 0 4px;
 }
 
 .widget-delete {

@@ -212,13 +212,22 @@
 
     <!-- Save to Dashboard Dialog -->
     <el-dialog v-model="showSaveDialog" title="保存到看板" width="400px">
-      <div v-if="dashboardsForSave.length === 0" class="save-empty">
-        <p>还没有看板，请先创建一个</p>
-        <el-button type="primary" size="small" @click="showCreateDashDialog = true">新建看板</el-button>
-      </div>
-      <el-select v-else v-model="selectedDashboardId" placeholder="选择看板" style="width: 100%">
-        <el-option v-for="d in dashboardsForSave" :key="d.id" :label="d.name" :value="d.id" />
-      </el-select>
+      <el-form label-position="top">
+        <el-form-item label="组件名称">
+          <el-input v-model="saveWidgetName" placeholder="输入组件名称" />
+        </el-form-item>
+        <el-form-item v-if="dashboardsForSave.length === 0" label="选择看板">
+          <div class="save-empty">
+            <p>还没有看板，请先创建一个</p>
+            <el-button type="primary" size="small" @click="showCreateDashDialog = true">新建看板</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item v-else label="选择看板">
+          <el-select v-model="selectedDashboardId" placeholder="选择看板" style="width: 100%">
+            <el-option v-for="d in dashboardsForSave" :key="d.id" :label="d.name" :value="d.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
       <template #footer>
         <el-button @click="showSaveDialog = false">取消</el-button>
         <el-button type="primary" :disabled="!selectedDashboardId" @click="saveToDashboard">保存</el-button>
@@ -276,6 +285,7 @@ const dashboardsForSave = ref<any[]>([])
 const selectedDashboardId = ref<string>('')
 const newDashName = ref('')
 const pendingSaveMsg = ref<any>(null)
+const saveWidgetName = ref('')
 
 // Async query mode
 const useAsyncMode = ref(false)
@@ -473,6 +483,7 @@ function formatDate(dateStr: string): string {
 
 async function openSaveToDashboard(msg: any) {
   pendingSaveMsg.value = msg
+  saveWidgetName.value = msg.content || ''
   try {
     const res = await api.get('/dashboards')
     const allDashboards = res.data.data || []
@@ -509,19 +520,26 @@ async function createDashFromSave() {
   }
 }
 
+function suggestWidgetSize(chartType: string) {
+  if (chartType === 'metric') return { width: 4, height: 2 }
+  if (chartType === 'pie') return { width: 4, height: 3 }
+  return { width: 6, height: 3 }
+}
+
 async function saveToDashboard() {
   if (!selectedDashboardId.value || !pendingSaveMsg.value) return
   const msg = pendingSaveMsg.value
+  const chartType = msg.chart_type || 'table'
+  const size = suggestWidgetSize(chartType)
+  const name = saveWidgetName.value.trim() || msg.content
   try {
     await api.post(`/dashboards/${selectedDashboardId.value}/widgets`, {
-      question: msg.content,
+      question: name,
       datasource_id: chatStore.currentDatasourceId,
       query_sql: msg.sql || '',
-      chart_type: msg.chart_type || 'table',
-      position_x: 0,
-      position_y: 0,
-      width: 6,
-      height: 4,
+      chart_type: chartType,
+      width: size.width,
+      height: size.height,
     })
     showSaveDialog.value = false
     pendingSaveMsg.value = null

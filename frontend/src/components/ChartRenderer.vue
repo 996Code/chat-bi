@@ -1,25 +1,14 @@
 <template>
-  <div class="chart-container">
-    <!-- Chart type selector -->
-    <div class="chart-toolbar">
-      <el-select v-model="currentType" size="small" style="width: 120px" @change="onChartTypeChange">
-        <el-option label="指标卡" value="metric" />
-        <el-option label="折线图" value="line" />
-        <el-option label="柱状图" value="bar" />
-        <el-option label="饼图" value="pie" />
-        <el-option label="散点图" value="scatter" />
-        <el-option label="表格" value="table" />
-      </el-select>
-    </div>
+  <div ref="containerRef" class="chart-container">
     <!-- 指标卡 -->
     <div v-if="chartType === 'metric'" class="metric-card">
       <div class="metric-value">{{ metricValue }}</div>
       <div class="metric-label">{{ columns[0] }}</div>
     </div>
     <!-- ECharts 图表 -->
-    <div v-else-if="chartType !== 'table'" ref="chartRef" class="echarts-wrapper" :style="{ height: chartHeight + 'px' }"></div>
+    <div v-else-if="chartType !== 'table'" ref="chartRef" class="echarts-wrapper"></div>
     <!-- 表格 -->
-    <el-table v-else :data="rows" border size="small" max-height="400">
+    <el-table v-else :data="rows" border size="small" :max-height="tableMaxHeight">
       <el-table-column v-for="col in columns" :key="col" :prop="col" :label="col" />
     </el-table>
   </div>
@@ -33,11 +22,10 @@ const props = defineProps<{
   chartType: string
   columns: string[]
   rows: Record<string, any>[]
+  readonly?: boolean
 }>()
 
-const emit = defineEmits<{
-  'chart-type-change': [type: string]
-}>()
+const emit = defineEmits<{}>()
 
 const currentType = ref(props.chartType)
 
@@ -46,15 +34,8 @@ watch(() => props.chartType, (val) => {
 })
 
 const chartRef = ref<HTMLElement>()
+const containerRef = ref<HTMLElement>()
 let chart: echarts.ECharts | null = null
-
-const chartHeight = computed(() => {
-  const ct = currentType.value
-  const n = props.rows.length
-  if (ct === 'pie') return Math.max(300, Math.min(500, n * 30 + 200))
-  if (ct === 'bar' || ct === 'line') return Math.max(280, Math.min(600, n * 28 + 100))
-  return 320
-})
 
 const metricValue = computed(() => {
   if (props.rows.length > 0 && props.columns.length > 0) {
@@ -63,6 +44,19 @@ const metricValue = computed(() => {
   }
   return '-'
 })
+
+const tableMaxHeight = ref(300)
+
+function updateTableHeight() {
+  if (!containerRef.value) return
+  const widgetBody = containerRef.value.closest('.widget-body') as HTMLElement
+  if (widgetBody) {
+    const h = widgetBody.getBoundingClientRect().height
+    if (h > 50) {
+      tableMaxHeight.value = Math.floor(h) - 4
+    }
+  }
+}
 
 function getOption(): echarts.EChartsOption {
   const { columns, rows } = props
@@ -128,7 +122,26 @@ function getOption(): echarts.EChartsOption {
 async function renderChart() {
   if (currentType.value === 'metric' || currentType.value === 'table') return
   await nextTick()
-  if (!chartRef.value) return
+  if (!chartRef.value || !containerRef.value) return
+
+  let chartHeight = 0
+  // Find widget-body for accurate available height
+  const widgetBody = containerRef.value.closest('.widget-body') as HTMLElement
+  if (widgetBody) {
+    const bodyRect = widgetBody.getBoundingClientRect()
+    chartHeight = Math.floor(bodyRect.height)
+  }
+  // Fallback: compute from the whole widget
+  if (chartHeight < 50) {
+    const widget = containerRef.value.closest('.dashboard-widget') as HTMLElement
+    if (widget) {
+      const wRect = widget.getBoundingClientRect()
+      // Subtract header (~40px) + footer (~28px) + body padding (16px)
+      chartHeight = Math.floor(wRect.height - 84)
+    }
+  }
+  chartHeight = Math.max(chartHeight, 100)
+  chartRef.value.style.height = chartHeight + 'px'
 
   if (!chart) {
     chart = echarts.init(chartRef.value)
@@ -139,26 +152,18 @@ async function renderChart() {
   }
 }
 
-function onChartTypeChange() {
-  emit('chart-type-change', currentType.value)
-  if (currentType.value === 'table' || currentType.value === 'metric') {
-    chart?.dispose()
-    chart = null
-  } else {
-    renderChart()
-  }
-}
-
 function handleResize() {
   chart?.resize()
 }
 
 watch(() => [props.chartType, props.rows, props.columns], () => {
   renderChart()
+  updateTableHeight()
 }, { deep: true })
 
 onMounted(() => {
   renderChart()
+  updateTableHeight()
   window.addEventListener('resize', handleResize)
 })
 
@@ -177,35 +182,34 @@ defineExpose({ getChartDataURL })
 
 <style scoped>
 .chart-container {
-  margin-top: 8px;
-}
-
-.chart-toolbar {
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 8px;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 
 .metric-card {
   text-align: center;
-  padding: 24px 32px;
+  padding: 12px 16px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-radius: 12px;
+  border-radius: 8px;
   color: white;
 }
 
 .metric-value {
-  font-size: 36px;
+  font-size: 28px;
   font-weight: 700;
 }
 
 .metric-label {
-  font-size: 14px;
+  font-size: 12px;
   opacity: 0.85;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .echarts-wrapper {
+  flex: 1;
   width: 100%;
+  min-height: 200px;
 }
 </style>

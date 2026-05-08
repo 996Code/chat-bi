@@ -1,14 +1,16 @@
 """Dashboard layout and persistence API."""
 import asyncio
 import json
+import secrets
 import uuid
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models import Dashboard, DashboardWidget, DataSource
-from app.core.security import get_current_user
+from app.db.models import Dashboard, DashboardShare, DashboardWidget, DataSource
+from app.core.security import get_current_user, hash_password, verify_password
 from app.core.logging import get_logger
 from app.ai.nodes.execution import execute_sql
 from app.ai.chart_type import infer_chart_type
@@ -20,6 +22,39 @@ router = APIRouter(prefix="/dashboards", tags=["仪表盘"])
 
 def _error(code: str, message: str) -> dict:
     return {"code": code, "message": message, "details": None}
+
+
+COL_COUNT = 12  # 12-column grid
+
+
+async def _auto_position(session, dashboard_id: str, w: int, h: int, tenant_id: str) -> tuple[int, int]:
+    """Calculate next available grid position. Row-by-row scan, finds first gap that fits w*h."""
+    w = min(w, COL_COUNT)
+    result = await session.execute(
+        select(DashboardWidget)
+        .where(DashboardWidget.dashboard_id == dashboard_id)
+        .order_by(DashboardWidget.position_y, DashboardWidget.position_x)
+    )
+    existing = result.scalars().all()
+
+    placed: list[dict] = [
+        {"x": e.position_x, "y": e.position_y, "w": max(e.width, 1), "h": max(e.height, 1)}
+        for e in existing
+    ]
+    max_y = max((p["y"] + p["h"] for p in placed), default=0) if placed else 0
+
+    def _collides(x: int, y: int) -> bool:
+        return any(
+            x < p["x"] + p["w"] and x + w > p["x"] and
+            y < p["y"] + p["h"] and y + h > p["y"]
+            for p in placed
+        )
+
+    for y in range(max_y + 10):
+        for x in range(COL_COUNT - w + 1):
+            if not _collides(x, y):
+                return x, y
+    return 0, max_y
 
 
 def _iso(dt) -> str:
@@ -120,6 +155,82 @@ async def create_dashboard(
         "layout_config": _parse_layout_config(dashboard.layout_config),
         "created_at": _iso(dashboard.created_at),
         "updated_at": _iso(dashboard.updated_at),
+    }
+
+
+# ===== Public share access (no auth required) =====
+# MUST be registered before /{dashboard_id} to avoid "shared" being parsed as dashboard_id
+
+@router.get("/shared/{share_token}", response_model=dict)
+async def access_shared_dashboard(
+    share_token: str,
+    password: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """通过分享 token 访问仪表盘（无需认证）。"""
+    result = await db.execute(
+        select(DashboardShare).where(
+            DashboardShare.share_token == share_token,
+            DashboardShare.is_active == True,
+        )
+    )
+    share = result.scalar_one_or_none()
+    if not share:
+        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "分享链接不存在或已失效"))
+
+    if share.expires_at and share.expires_at < datetime.now():
+        raise HTTPException(status_code=410, detail=_error("EXPIRED", "分享链接已过期"))
+
+    if share.password:
+        if not password:
+            raise HTTPException(status_code=401, detail=_error("PASSWORD_REQUIRED", "此分享链接需要密码"))
+        if not verify_password(password, share.password):
+            raise HTTPException(status_code=401, detail=_error("WRONG_PASSWORD", "密码错误"))
+
+    dash_result = await db.execute(
+        select(Dashboard).where(Dashboard.id == share.dashboard_id)
+    )
+    dashboard = dash_result.scalar_one_or_none()
+    if not dashboard:
+        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "仪表盘不存在"))
+
+    widgets_result = await db.execute(
+        select(DashboardWidget)
+        .where(DashboardWidget.dashboard_id == str(dashboard.id))
+        .order_by(DashboardWidget.position_y, DashboardWidget.position_x)
+    )
+    widgets = widgets_result.scalars().all()
+
+    widget_list = []
+    for w in widgets:
+        try:
+            cols = json.loads(w.columns) if w.columns else []
+        except (json.JSONDecodeError, TypeError):
+            cols = []
+        try:
+            rows = json.loads(w.rows) if w.rows else []
+        except (json.JSONDecodeError, TypeError):
+            rows = []
+        widget_list.append({
+            "id": str(w.id),
+            "question": w.question,
+            "query_sql": w.query_sql,
+            "chart_type": w.chart_type,
+            "columns": cols,
+            "rows": rows,
+            "row_count": w.row_count,
+            "position_x": w.position_x,
+            "position_y": w.position_y,
+            "width": w.width,
+            "height": w.height,
+        })
+
+    return {
+        "name": dashboard.name,
+        "layout_config": _parse_layout_config(dashboard.layout_config),
+        "widgets": widget_list,
+        "shared_at": _iso(share.created_at),
+        "expires_at": _iso(share.expires_at),
     }
 
 
@@ -420,15 +531,19 @@ async def add_widget(
 
     # Validate position/dimension fields
     try:
-        pos_x = int(data.get("position_x", 0))
-        pos_y = int(data.get("position_y", 0))
-        w = int(data.get("width", 6))
-        h = int(data.get("height", 4))
+        pos_x = int(data.get("position_x", -1))
+        pos_y = int(data.get("position_y", -1))
+        w = int(data.get("width", 0)) or 6
+        h = int(data.get("height", 0)) or 3
     except (TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_error("INVALID_INPUT", "位置和尺寸必须为整数"),
         )
+
+    # Auto-calculate position if not specified (pos_x=-1 or position is (0,0) collision)
+    if pos_x < 0 or pos_y < 0:
+        pos_x, pos_y = await _auto_position(db, dashboard_id, w, h, tenant_id)
 
     # Generate SQL and execute to get initial data
     # Only store question + query_sql + chart_type — data is re-executed on load/refresh
@@ -824,5 +939,141 @@ async def delete_widget(
         )
 
     await db.delete(widget)
+    await db.commit()
+    return None
+
+
+# ===== Share endpoints =====
+
+_SHARE_EXPIRY_OPTIONS = {
+    "1h": timedelta(hours=1),
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+    "never": None,
+}
+
+
+@router.post("/{dashboard_id}/shares", response_model=dict, status_code=status.HTTP_201_CREATED)
+async def create_share(
+    dashboard_id: str,
+    data: dict,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """创建看板分享链接。"""
+    tenant_id = user["tenant_id"]
+
+    # Verify dashboard ownership
+    result = await db.execute(
+        select(Dashboard).where(
+            Dashboard.id == dashboard_id,
+            Dashboard.tenant_id == tenant_id,
+        )
+    )
+    dashboard = result.scalar_one_or_none()
+    if not dashboard:
+        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "仪表盘不存在"))
+
+    # Parse expiry
+    expires_in = data.get("expires_in", "7d")
+    delta = _SHARE_EXPIRY_OPTIONS.get(expires_in)
+    if delta is None and expires_in != "never":
+        raise HTTPException(status_code=400, detail=_error("INVALID_INPUT", f"不支持的过期时间: {expires_in}"))
+
+    expires_at = datetime.now() + delta if delta else None
+
+    # Optional password
+    password = data.get("password", "").strip()
+    password_hash = None
+    if password:
+        password_hash = hash_password(password)
+
+    share = DashboardShare(
+        id=uuid.uuid4(),
+        dashboard_id=dashboard_id,
+        tenant_id=tenant_id,
+        share_token=secrets.token_urlsafe(32),
+        created_by=user["user_id"],
+        expires_at=expires_at,
+        password=password_hash,
+        is_active=True,
+    )
+    db.add(share)
+    await db.commit()
+    await db.refresh(share)
+
+    return {
+        "id": str(share.id),
+        "share_token": share.share_token,
+        "expires_at": _iso(share.expires_at),
+        "has_password": share.password is not None,
+        "created_at": _iso(share.created_at),
+    }
+
+
+@router.get("/{dashboard_id}/shares", response_model=dict)
+async def list_shares(
+    dashboard_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出租户仪表盘的所有分享链接。"""
+    tenant_id = user["tenant_id"]
+
+    # Verify dashboard ownership
+    result = await db.execute(
+        select(Dashboard).where(
+            Dashboard.id == dashboard_id,
+            Dashboard.tenant_id == tenant_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "仪表盘不存在"))
+
+    shares_result = await db.execute(
+        select(DashboardShare)
+        .where(DashboardShare.dashboard_id == dashboard_id)
+        .order_by(desc(DashboardShare.created_at))
+    )
+    shares = shares_result.scalars().all()
+
+    now = datetime.now()
+    return {
+        "data": [
+            {
+                "id": str(s.id),
+                "share_token": s.share_token,
+                "expires_at": _iso(s.expires_at),
+                "has_password": s.password is not None,
+                "is_active": s.is_active,
+                "is_expired": s.expires_at is not None and s.expires_at < now if s.expires_at else False,
+                "created_at": _iso(s.created_at),
+            }
+            for s in shares
+        ]
+    }
+
+
+@router.delete("/{dashboard_id}/shares/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_share(
+    dashboard_id: str,
+    share_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """撤销分享链接。"""
+    tenant_id = user["tenant_id"]
+    result = await db.execute(
+        select(DashboardShare).where(
+            DashboardShare.id == share_id,
+            DashboardShare.dashboard_id == dashboard_id,
+            DashboardShare.tenant_id == tenant_id,
+        )
+    )
+    share = result.scalar_one_or_none()
+    if not share:
+        raise HTTPException(status_code=404, detail=_error("NOT_FOUND", "分享链接不存在"))
+    share.is_active = False
     await db.commit()
     return None

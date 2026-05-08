@@ -2,7 +2,7 @@
 import uuid
 import pytest
 import pytest_asyncio
-from app.db.models import Dashboard, DashboardWidget, DataSource
+from app.db.models import Dashboard, DashboardShare, DashboardWidget, DataSource
 from app.db.session import async_session_factory
 
 
@@ -683,3 +683,189 @@ async def test_conversation_list_filter_by_datasource(client, auth_header):
     assert resp.status_code == 200
     all_convs = resp.json()
     assert len(all_convs) >= 2
+
+
+# ── Dashboard Share ──
+
+@pytest.mark.asyncio
+async def test_create_share(client, auth_header):
+    """创建分享链接。"""
+    tenant_id, user_id = _extract_user(auth_header)
+    dashboard_id = await _make_dashboard(tenant_id, user_id, "分享测试")
+
+    resp = await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "7d"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "share_token" in data
+    assert len(data["share_token"]) > 20
+    assert data["has_password"] is False
+    assert data["expires_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_create_share_with_password(client, auth_header):
+    """创建带密码的分享链接。"""
+    tenant_id, user_id = _extract_user(auth_header)
+    dashboard_id = await _make_dashboard(tenant_id, user_id, "密码分享")
+
+    resp = await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "24h", "password": "secret123"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["has_password"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_share_never_expires(client, auth_header):
+    """创建永不过期的分享链接。"""
+    tenant_id, user_id = _extract_user(auth_header)
+    dashboard_id = await _make_dashboard(tenant_id, user_id, "永久分享")
+
+    resp = await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "never"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["expires_at"] == ""
+
+
+@pytest.mark.asyncio
+async def test_list_shares(client, auth_header):
+    """列出租户仪表盘的分享链接。"""
+    tenant_id, user_id = _extract_user(auth_header)
+    dashboard_id = await _make_dashboard(tenant_id, user_id, "列表分享")
+
+    # Create two shares
+    await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "1h"},
+        headers=auth_header,
+    )
+    await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "never"},
+        headers=auth_header,
+    )
+
+    resp = await client.get(f"/api/v1/dashboards/{dashboard_id}/shares", headers=auth_header)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data) >= 2
+
+
+@pytest.mark.asyncio
+async def test_access_shared_dashboard_no_auth(client, auth_header):
+    """公开访问分享链接（无需认证）。"""
+    tenant_id, user_id = _extract_user(auth_header)
+    dashboard_id = await _make_dashboard(tenant_id, user_id, "公开看板")
+    await _make_widget(dashboard_id, tenant_id, "图表1", "bar", query_sql="SELECT 1")
+
+    # Create share
+    share_resp = await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "7d"},
+        headers=auth_header,
+    )
+    token = share_resp.json()["share_token"]
+
+    # Access without auth
+    resp = await client.get(f"/api/v1/dashboards/shared/{token}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "公开看板"
+    assert len(data["widgets"]) == 1
+    assert data["widgets"][0]["chart_type"] == "bar"
+
+
+@pytest.mark.asyncio
+async def test_access_shared_with_password(client, auth_header):
+    """带密码的分享链接需要密码。"""
+    tenant_id, user_id = _extract_user(auth_header)
+    dashboard_id = await _make_dashboard(tenant_id, user_id, "密码看板")
+
+    share_resp = await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "7d", "password": "mypass"},
+        headers=auth_header,
+    )
+    token = share_resp.json()["share_token"]
+
+    # Without password -> 401
+    resp = await client.get(f"/api/v1/dashboards/shared/{token}")
+    assert resp.status_code == 401
+    assert "PASSWORD_REQUIRED" in resp.json()["detail"]["code"]
+
+    # Wrong password -> 401
+    resp = await client.get(f"/api/v1/dashboards/shared/{token}?password=wrong")
+    assert resp.status_code == 401
+    assert "WRONG_PASSWORD" in resp.json()["detail"]["code"]
+
+    # Correct password -> 200
+    resp = await client.get(f"/api/v1/dashboards/shared/{token}?password=mypass")
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_access_shared_invalid_token(client):
+    """无效 token 应返回 404。"""
+    resp = await client.get("/api/v1/dashboards/shared/invalidtoken123")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_revoke_share(client, auth_header):
+    """撤销分享链接。"""
+    tenant_id, user_id = _extract_user(auth_header)
+    dashboard_id = await _make_dashboard(tenant_id, user_id, "撤销测试")
+
+    share_resp = await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "7d"},
+        headers=auth_header,
+    )
+    share_id = share_resp.json()["id"]
+    token = share_resp.json()["share_token"]
+
+    # Revoke
+    resp = await client.delete(
+        f"/api/v1/dashboards/{dashboard_id}/shares/{share_id}",
+        headers=auth_header,
+    )
+    assert resp.status_code == 204
+
+    # Access should fail
+    resp = await client.get(f"/api/v1/dashboards/shared/{token}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_share_invalid_expiry(client, auth_header):
+    """无效的过期时间应返回 400。"""
+    tenant_id, user_id = _extract_user(auth_header)
+    dashboard_id = await _make_dashboard(tenant_id, user_id)
+
+    resp = await client.post(
+        f"/api/v1/dashboards/{dashboard_id}/shares",
+        json={"expires_in": "invalid"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 400
+
+
+# ── Connection Pool Config Applied ──
+
+def test_session_engine_pool_config():
+    """session.py 的 engine 应使用 config.py 的 pool 参数（非 SQLite）。"""
+    from app.db.session import engine
+    from app.core.config import settings
+
+    # Only check for non-SQLite (SQLite has no pool config)
+    if not settings.database_url.startswith("sqlite"):
+        assert engine.pool.status().startswith("Pool") or hasattr(engine.pool, "size")

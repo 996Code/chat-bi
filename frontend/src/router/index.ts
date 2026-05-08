@@ -69,6 +69,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DashboardView.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/dashboards/share/:token',
+    name: 'SharedDashboard',
+    component: () => import('@/views/SharedDashboardView.vue'),
+    meta: { public: true },
+  },
 ]
 
 const router = createRouter({
@@ -79,6 +85,9 @@ const router = createRouter({
 router.beforeEach((to, _from) => {
   const authStore = useAuthStore()
   authStore.initFromStorage()
+
+  // Public routes: no auth check at all (shared dashboards, etc.)
+  if (to.meta.public) return true
 
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     return { name: 'Login', query: { redirect: to.fullPath } }
