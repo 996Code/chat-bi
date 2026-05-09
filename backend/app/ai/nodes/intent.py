@@ -32,7 +32,7 @@ import json
 
 from langchain_openai import ChatOpenAI
 
-from app.ai.nodes.shared_utils import get_llm, LLM_NO_THINKING
+from app.ai.nodes.shared_utils import get_llm, LLM_NO_THINKING, LLMAPIError, is_auth_error
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.redis_client import get_redis
@@ -229,7 +229,14 @@ async def classify_intent(question: str) -> str:
             if intent not in ("DataQuery", "Other"):
                 intent = "DataQuery"
     except Exception as e:
-        # LLM 调用失败（超时/网络错误/JSON 解析失败）→ 关键词兜底
+        # 认证错误（401）是配置问题，应立即抛出，不应静默降级
+        if is_auth_error(e):
+            logger.error("LLM API authentication failed: %s", e)
+            raise LLMAPIError(
+                f"LLM API 认证失败，请检查 LLM_BASE_URL 和 LLM_API_KEY 配置。错误信息: {e}",
+                error_code="auth_error"
+            )
+        # 其他错误（超时/网络/JSON 解析）→ 关键词兜底
         logger.warning("Intent LLM failed: %s", e)
         intent = _keyword_fallback(q)
 

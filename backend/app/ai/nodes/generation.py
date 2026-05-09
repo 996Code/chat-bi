@@ -36,7 +36,7 @@ from difflib import SequenceMatcher
 
 from langchain_openai import ChatOpenAI
 
-from app.ai.nodes.shared_utils import get_llm, LLM_NO_THINKING
+from app.ai.nodes.shared_utils import get_llm, LLM_NO_THINKING, LLMAPIError, is_auth_error
 from app.ai.prompts.query_prompt import SYSTEM_PROMPT, build_user_prompt, build_semantic_prompt
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -487,6 +487,13 @@ async def _llm_generate(messages: list, llm: ChatOpenAI | None = None, attempt: 
         return None
     except Exception as e:
         # 捕获所有其他异常（网络错误、API 限流、无效响应等）
+        # 认证错误（401）是配置问题，应立即抛出，不应静默降级
+        if is_auth_error(e):
+            logger.error("LLM API authentication failed: %s", e)
+            raise LLMAPIError(
+                f"LLM API 认证失败，请检查 LLM_BASE_URL 和 LLM_API_KEY 配置。错误信息: {e}",
+                error_code="auth_error"
+            )
         logger.warning("LLM error: %s", e)
         return None
 

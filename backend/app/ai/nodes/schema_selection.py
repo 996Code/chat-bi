@@ -41,7 +41,7 @@ LangGraph 概念速查
 """
 import json  # json：将数据库中存储的 JSON 字符串解析为 Python 字典
 
-from app.ai.nodes.shared_utils import get_llm  # get_llm：统一创建 LLM 实例的工厂函数，封装了模型名、API Key 等配置
+from app.ai.nodes.shared_utils import get_llm, LLMAPIError, is_auth_error  # get_llm：统一创建 LLM 实例的工厂函数，封装了模型名、API Key 等配置
 from app.core.config import settings  # settings：全局配置对象，从 .env 环境变量加载
 from app.core.logging import get_logger  # get_logger：项目统一的日志器工厂，自动附加模块名
 from app.db.models import MetadataConfig  # MetadataConfig：SQLAlchemy ORM 模型，对应 metadata_configs 表，存储数据源的元数据（表结构、关联关系等）
@@ -173,8 +173,15 @@ async def _select_tables(question: str, metadata: dict) -> list[str]:
         logger.info("Table selection: %s -> %s", question[:50], selected)
         return selected
     except Exception as e:
-        # 防御性编程：LLM 调用可能因网络、限流等原因失败
-        # 返回空列表而非抛异常，让流程继续（后续有兜底逻辑）
+        # 认证错误（401）是配置问题，应立即抛出，不应静默降级
+        if is_auth_error(e):
+            logger.error("LLM API authentication failed: %s", e)
+            raise LLMAPIError(
+                f"LLM API 认证失败，请检查 LLM_BASE_URL 和 LLM_API_KEY 配置。错误信息: {e}",
+                error_code="auth_error"
+            )
+        # 其他错误（网络、限流等）防御性编程：返回空列表而非抛异常
+        # 让流程继续（后续有兜底逻辑）
         logger.warning("Table selection failed: %s", e)
         return []
 
@@ -266,7 +273,14 @@ async def _select_columns(question: str, selected_tables: list[str], metadata: d
         logger.info("Column selection: %s", result)
         return result
     except Exception as e:
-        # LLM 调用失败时返回空字典，后续 _build_schema_context 有兜底逻辑
+        # 认证错误（401）是配置问题，应立即抛出，不应静默降级
+        if is_auth_error(e):
+            logger.error("LLM API authentication failed: %s", e)
+            raise LLMAPIError(
+                f"LLM API 认证失败，请检查 LLM_BASE_URL 和 LLM_API_KEY 配置。错误信息: {e}",
+                error_code="auth_error"
+            )
+        # 其他错误返回空字典，后续 _build_schema_context 有兜底逻辑
         logger.warning("Column selection failed: %s", e)
         return {}
 

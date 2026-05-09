@@ -5,6 +5,36 @@ from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
 
+
+class LLMAPIError(Exception):
+    """LLM API 调用失败异常。
+
+    当 LLM API 返回认证错误、配额不足等不可恢复的错误时抛出，
+    提醒用户检查配置而非静默失败。
+    """
+
+    def __init__(self, message: str, error_code: str | None = None):
+        self.error_code = error_code
+        super().__init__(message)
+
+
+def is_auth_error(error: Exception) -> bool:
+    """判断异常是否为认证错误（应立即抛出而非静默降级）。"""
+    error_str = str(error).lower()
+    # 匹配常见的认证错误特征
+    auth_keywords = [
+        "invalid_api_key",
+        "invalid access token",
+        "token expired",
+        "unauthorized",
+        "401",
+        "authentication",
+        "api key",
+        "access denied",
+    ]
+    return any(kw in error_str for kw in auth_keywords)
+
+
 # Shared extra_body for disabling LLM reasoning/thinking mode.
 # Compatible with Mimo API (thinking.type) and other providers (enable_thinking).
 LLM_NO_THINKING = {"enable_thinking": False, "thinking": {"type": "disabled"}}
