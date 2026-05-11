@@ -5678,7 +5678,7 @@ console.table({ eventType, duration_ms: data.duration_ms, detail: data.detail?.s
 
 #### 真实代码
 
-**缓存 key 生成** — [`cache_service.py:60-62](../backend/app/services/cache_service.py#L60-L62)：
+**缓存 key 生成** — [`cache_service.py:118-137](../backend/app/services/cache_service.py#L60-L62)：
 
 ```python
 def _cache_key(question: str, datasource_id: str, tenant_id: str = "") -> str:
@@ -5686,7 +5686,7 @@ def _cache_key(question: str, datasource_id: str, tenant_id: str = "") -> str:
     return f"query:{hashlib.sha256(raw.encode()).hexdigest()}"
 ```
 
-**精确缓存读取** — [`cache_service.py:71-84](../backend/app/services/cache_service.py#L71-L84)：
+**精确缓存读取** — [`cache_service.py:158-188](../backend/app/services/cache_service.py#L71-L84)：
 
 ```python
 async def cache_get(question: str, datasource_id: str, tenant_id: str = "") -> dict | None:
@@ -5705,7 +5705,7 @@ async def cache_get(question: str, datasource_id: str, tenant_id: str = "") -> d
     return None
 ```
 
-**精确缓存写入** — [`cache_service.py:87-110](../backend/app/services/cache_service.py#L87-L110)：
+**精确缓存写入** — [`cache_service.py:191-237](../backend/app/services/cache_service.py#L87-L110)：
 
 ```python
 async def cache_set(question: str, datasource_id: str, result: dict, tenant_id: str = "", ttl: int | None = None) -> None:
@@ -5728,7 +5728,7 @@ async def cache_set(question: str, datasource_id: str, result: dict, tenant_id: 
         logger.warning("Redis cache set failed: %s", e)
 ```
 
-**语义缓存查找** — [`cache_service.py:203-232](../backend/app/services/cache_service.py#L203-L232)：
+**语义缓存查找** — [`cache_service.py:401-450](../backend/app/services/cache_service.py#L203-L232)：
 
 ```python
 async def semantic_cache_get(question: str, datasource_id: str, tenant_id: str = "", threshold: float = 0.8) -> dict | None:
@@ -5758,7 +5758,7 @@ async def semantic_cache_get(question: str, datasource_id: str, tenant_id: str =
     return None
 ```
 
-**词重叠度计算** — [`cache_service.py:194-200](../backend/app/services/cache_service.py#L194-L200)：
+**词重叠度计算** — [`cache_service.py:375-398](../backend/app/services/cache_service.py#L194-L200)：
 
 ```python
 def _simple_similarity(a: str, b: str) -> float:
@@ -5929,7 +5929,7 @@ ChatBI 支持多个数据源（不同数据库实例），每个数据源需要�
 
 #### 真实代码
 
-**URL 构建** — [`connection_pool.py:16-41](../backend/app/services/connection_pool.py#L16-L41)：
+**URL 构建** — [`connection_pool.py:42-87](../backend/app/services/connection_pool.py#L16-L41)：
 
 ```python
 def _build_url(ds: DataSource) -> URL:
@@ -5943,7 +5943,7 @@ def _build_url(ds: DataSource) -> URL:
         return URL.create("mysql+aiomysql", username=username, password=password, host=ds.host, port=ds.port, database=ds.database_name, query={"charset": "utf8mb4"})
 ```
 
-**连接池获取** — [`connection_pool.py:47-71](../backend/app/services/connection_pool.py#L47-L71)：
+**连接池获取** — [`connection_pool.py:112-156](../backend/app/services/connection_pool.py#L47-L71)：
 
 ```python
 class ConnectionPoolManager:
@@ -5967,7 +5967,7 @@ class ConnectionPoolManager:
         return engine
 ```
 
-**健康检查** — [`connection_pool.py:119-126](../backend/app/services/connection_pool.py#L119-L126)：
+**健康检查** — [`connection_pool.py:268-288](../backend/app/services/connection_pool.py#L119-L126)：
 
 ```python
 async def health_check(self, ds_id: str, ds: DataSource) -> dict:
@@ -6722,16 +6722,16 @@ print(stats)  # {'total_slow_queries': 3, 'avg_execution_time_ms': 8500, 'max_ex
 | **Python** | 3.12 | 整个后端 | 全书 |
 | **FastAPI** | - | `backend/app/main.py` — API 入口 | 第 6 章 |
 | **SQLAlchemy** | async | `backend/app/db/` — ORM + 异步会话 | 第 7 章 7.2 |
-| **aiomysql** | - | [`connection_pool.py:34](../backend/app/services/connection_pool.py#L34) — MySQL 异步驱动 | 第 7 章 7.2 |
-| **asyncpg** | - | [`connection_pool.py:23](../backend/app/services/connection_pool.py#L23) — PostgreSQL 异步驱动 | 第 7 章 7.2 |
+| **aiomysql** | - | [`connection_pool.py:80](../backend/app/services/connection_pool.py#L34) — MySQL 异步驱动 | 第 7 章 7.2 |
+| **asyncpg** | - | [`connection_pool.py:67](../backend/app/services/connection_pool.py#L23) — PostgreSQL 异步驱动 | 第 7 章 7.2 |
 | **LangGraph** | - | `backend/app/ai/graph.py` — 状态图编排 | 第 6 章 6.3 |
 | **LangChain** | - | `backend/app/ai/nodes/shared_utils.py` — LLM 调用封装 | 第 6 章 6.3 |
 | **ChatOpenAI** | - | [`intent.py:33](../backend/app/ai/nodes/intent.py#L33) — OpenAI 兼容 API | 第 6 章 6.3 |
 | **SQLGlot** | - | [`execution.py:38](../backend/app/ai/nodes/execution.py#L38) — SQL AST 校验 | 第 6 章 6.2 |
 | **Redis** | 7 | `backend/app/core/redis_client.py` — 缓存/限流/登录锁 | 第 7 章 7.1 |
-| **bcrypt** | - | [`security.py:4](../backend/app/core/security.py#L4) — 密码哈希 | 第 7 章 7.5 |
-| **python-jose** | - | [`security.py:6](../backend/app/core/security.py#L6) — JWT 签发/验证 | 第 7 章 7.5 |
-| **itsdangerous** | - | [`security.py:7](../backend/app/core/security.py#L7) — 时间令牌 | 第 7 章 7.5 |
+| **bcrypt** | - | [`security.py:27](../backend/app/core/security.py#L4) — 密码哈希 | 第 7 章 7.5 |
+| **python-jose** | - | [`security.py:30](../backend/app/core/security.py#L6) — JWT 签发/验证 | 第 7 章 7.5 |
+| **itsdangerous** | - | [`security.py:36](../backend/app/core/security.py#L7) — 时间令牌 | 第 7 章 7.5 |
 | **Fernet** | - | `backend/app/core/encryption.py` — 数据源密码加密 | 第 7 章 7.2 |
 | **Vue 3** | - | `frontend/src/` — 整个前端 | 第 6 章 6.5 |
 | **TypeScript** | - | `frontend/src/stores/chatStore.ts` — 状态管理 | 第 6 章 6.5 |
@@ -6887,7 +6887,7 @@ print(stats)  # {'total_slow_queries': 3, 'avg_execution_time_ms': 8500, 'max_ex
   │  │    pipeline_executor.py:468  execute_sql(sql, datasource_id)             │  │
   │  │    │  [execution.py:102]                                                 │  │
   │  │    │  ├── validate_sql() — SQLGlot AST 校验 [execution.py:51]           │  │
-  │  │    │  ├── pool_manager.get_pool() — 获取连接池 [connection_pool.py:47]  │  │
+  │  │    │  ├── pool_manager.get_pool() — 获取连接池 [connection_pool.py:112]  │  │
   │  │    │  ├── SET SESSION TRANSACTION READ ONLY — 数据库只读保护             │  │
   │  │    │  ├── asyncio.timeout(30s) — 超时保护                               │  │
   │  │    │  ├── conn.execute(text(sql)) — 执行 SQL                             │  │
@@ -6954,7 +6954,7 @@ print(stats)  # {'total_slow_queries': 3, 'avg_execution_time_ms': 8500, 'max_ex
   │    └── async_trace:* — 异步查询进度 (TTL=管线超时)                               │
   │                                                                                │
   │  用户数据源 (MySQL/PostgreSQL/SQLite)                                            │
-  │    └── 连接池管理: ConnectionPoolManager._pools [connection_pool.py:45]         │
+  │    └── 连接池管理: ConnectionPoolManager._pools [connection_pool.py:110]         │
   └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
