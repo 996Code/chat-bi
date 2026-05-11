@@ -23,33 +23,37 @@
 
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
-import { marked } from 'marked'
+import { Marked } from 'marked'
 import hljs from 'highlight.js'
+import { markedHighlight } from 'marked-highlight'
 
 const rendered = ref('')
 const headings = ref<{ id: string; text: string; level: number }[]>([])
 const showToc = ref(true)
 
-marked.setOptions({
-  gfm: true,
-  highlight(code: string, lang: string) {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value
-    }
-    return hljs.highlightAuto(code).value
-  },
-})
-
-const renderer = new marked.Renderer()
 let _headings: { id: string; text: string; level: number }[] = []
 
-renderer.heading = function ({ text, depth }: { text: string; depth: number }) {
-  const slug = 'h-' + text.replace(/[^\w一-鿿]+/g, '-').toLowerCase()
-  _headings.push({ id: slug, text, level: depth })
-  return `<h${depth} id="${slug}">${text}</h${depth}>`
-}
-
-marked.use({ renderer })
+const markedInstance = new Marked(
+  markedHighlight({
+    langPrefix: 'hljs language-',
+    highlight(code: string, lang: string) {
+      if (lang && hljs.getLanguage(lang)) {
+        return hljs.highlight(code, { language: lang }).value
+      }
+      return hljs.highlightAuto(code).value
+    },
+  }),
+  {
+    gfm: true,
+    renderer: {
+      heading({ text, depth }: { text: string; depth: number }) {
+        const slug = 'h-' + text.replace(/[^\w一-鿿]+/g, '-').toLowerCase()
+        _headings.push({ id: slug, text, level: depth })
+        return `<h${depth} id="${slug}">${text}</h${depth}>`
+      },
+    },
+  },
+)
 
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' })
@@ -61,7 +65,7 @@ onMounted(async () => {
     const res = await fetch('/chat-bi/api/v1/docs/learning-guide')
     const data = await res.json()
     _headings = []
-    rendered.value = marked.parse(data.content) as string
+    rendered.value = markedInstance.parse(data.content) as string
     headings.value = _headings
     await nextTick()
     document.querySelectorAll('.doc-content pre code').forEach((el) => {
