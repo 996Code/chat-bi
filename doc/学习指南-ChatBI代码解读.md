@@ -23,7 +23,7 @@ is_active: bool = True    # 变量 is_active 是布尔值
 
 ### 在我们的项目里
 
-打开 [`config.py:59`](../backend/app/core/config.py#L59)，第 59 行开始：
+打开 [`config.py:59`](../backend/app/core/config.py)，第 59 行开始：
 
 ```python
 app_env: str = "development"   # 运行环境
@@ -121,7 +121,7 @@ async def get_user(email):
 
 ### 在我们的项目里
 
-打开 [`auth.py:87`](../backend/app/api/auth.py#L87)，第 87 行None：
+打开 [`auth.py:87`](../backend/app/api/auth.py)，第 87 行None：
 
 ```python
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
@@ -241,7 +241,7 @@ add(1, 2)  # 输出: 调用函数: add → 函数返回: 3
 
 **1. @router.post — FastAPI 路由装饰器**
 
-打开 [`auth.py:82-86`](../backend/app/api/auth.py#L82-L86)
+打开 [`auth.py:82-86`](../backend/app/api/auth.py)
 
 ```python
 @router.post(
@@ -357,7 +357,7 @@ user_dict = {key: str(value) for key, value in user_data.items()}
 
 ### 在我们的项目里
 
-打开 [`auth.py:252-257`](../backend/app/api/auth.py#L252-L257)
+打开 [`auth.py:252-257`](../backend/app/api/auth.py)
 
 ```python
 token_data = {
@@ -436,7 +436,7 @@ print(f"Pi is approximately {pi:.2f}")  # "Pi is approximately 3.14"
 
 ### 在我们的项目里
 
-打开 [`auth.py:125`](../backend/app/api/auth.py#L125)，第 125 行None：
+打开 [`auth.py:125`](../backend/app/api/auth.py)，第 125 行None：
 
 ```python
 tenant = Tenant(name=f"user-{uuid.uuid4().hex[:6]}")
@@ -629,7 +629,7 @@ async with async_session_factory() as session:
 
 ### 在我们的项目里
 
-打开 [`session.py:27-29`](../backend/app/db/session.py#L27-L29)
+打开 [`session.py:27-29`](../backend/app/db/session.py)
 
 ```python
 async def get_db():
@@ -803,7 +803,7 @@ async def login(req: LoginRequest):
 
 ### 在我们的项目里
 
-打开 [`main.py:33-44`](../backend/app/main.py#L33-L44)
+打开 [`main.py:33-44`](../backend/app/main.py)
 
 ```python
 from app.api.auth import router as auth_router
@@ -922,7 +922,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 ### 在我们的项目里
 
-打开 [`auth.py:87`](../backend/app/api/auth.py#L87)，第 87 行None：
+打开 [`auth.py:87`](../backend/app/api/auth.py)，第 87 行None：
 
 ```python
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
@@ -1263,7 +1263,7 @@ async def sync(background_tasks: BackgroundTasks):
 
 ### 在我们的项目里
 
-打开 [`main.py:63`](../backend/app/main.py#L63)，第 63 行开始：
+打开 [`main.py:63`](../backend/app/main.py)，第 63 行开始：
 
 ```python
 @asynccontextmanager
@@ -1451,7 +1451,7 @@ ORM 的核心思想：**一个 Python 类 = 一张数据库表**。
 
 ### 在我们的项目里
 
-打开 [`models.py:47`](../backend/app/db/models.py#L47)，第 47 行None：
+打开 [`models.py:47`](../backend/app/db/models.py)，第 47 行None：
 
 ```python
 class Tenant(Base):
@@ -1956,7 +1956,7 @@ classify_intent ──→ (DataQuery?) ──→ resolve_context ──→ schem
 
 #### 真实代码
 
-[`graph.py:215](../backend/app/ai/graph.py#L215)：
+[`graph.py:215](../backend/app/ai/graph.py)：
 
 ```python
 graph = StateGraph(QueryState)
@@ -2051,7 +2051,7 @@ ChatBI 用 Python 的 `TypedDict` 定义状态，这是一种轻量级的类型�
 
 #### 真实代码
 
-[`state.py:64](../backend/app/ai/state.py#L64)（行号已校验）：
+[`state.py:64](../backend/app/ai/state.py)（行号已校验）：
 
 ```python
 class QueryState(TypedDict, total=False):
@@ -2226,7 +2226,7 @@ ChatBI 的 `graph.py` 中定义了 6 个节点函数，全部在 `build_graph()`
 
 #### 真实代码
 
-**意图分类节点** — [`graph.py:223-225](../backend/app/ai/graph.py#L223-L225)：
+**意图分类节点** — [`graph.py:223-225](../backend/app/ai/graph.py)：
 
 ```python
 async def intent_node(state: QueryState) -> dict:
@@ -2239,7 +2239,7 @@ async def intent_node(state: QueryState) -> dict:
   第 224 行：`intent = await classify_intent(state["question"])` — await 等待 LLM API 调用完成，从 state 读取用户问题
   第 225 行：`return {"intent": intent}` — 只返回增量，LangGraph 自动合并到全局 state
 
-**上下文补全节点** — [`graph.py:234-241](../backend/app/ai/graph.py#L234-L241)：
+**上下文补全节点** — [`graph.py:234-241](../backend/app/ai/graph.py)：
 
 ```python
 async def resolve_context_node(state: QueryState) -> dict:
@@ -2259,7 +2259,7 @@ async def resolve_context_node(state: QueryState) -> dict:
   第 238-239 行：`if resolved != state["question"]: return {"question": resolved}` — 只有补全结果不同时才返回增量
   第 241 行：`return {}` — 无变化返回空字典，LangGraph 不会修改任何字段
 
-**SQL 执行节点** — [`graph.py:267-306](../backend/app/ai/graph.py#L267-L306)：
+**SQL 执行节点** — [`graph.py:267-306](../backend/app/ai/graph.py)：
 
 ```python
 async def execution_node(state: QueryState) -> dict:
@@ -2310,7 +2310,7 @@ async def execution_node(state: QueryState) -> dict:
   第 291-295 行：推断图表类型，基于结果的列名和数据行
   第 297-306 行：返回最终结果的增量 dict，包含 sql、success、error、columns、rows 等
 
-**注册节点到图中** — [`graph.py:313-318](../backend/app/ai/graph.py#L313-L318)：
+**注册节点到图中** — [`graph.py:313-318](../backend/app/ai/graph.py)：
 
 ```python
 graph.add_node("classify_intent", intent_node)
@@ -2451,7 +2451,7 @@ print(result)  # {'value': 21, 'doubled': 42}
 
 #### 真实代码
 
-**设置入口节点** — [`graph.py:321](../backend/app/ai/graph.py#L321)：
+**设置入口节点** — [`graph.py:321](../backend/app/ai/graph.py)：
 
 ```python
 graph.set_entry_point("classify_intent")
@@ -2460,7 +2460,7 @@ graph.set_entry_point("classify_intent")
 逐行解读：
   第 321 行：`graph.set_entry_point("classify_intent")` — 设置图的入口节点，数据从这里开始流动
 
-**条件边：意图路由** — [`graph.py:326-330](../backend/app/ai/graph.py#L326-L330)：
+**条件边：意图路由** — [`graph.py:326-330](../backend/app/ai/graph.py)：
 
 ```python
 graph.add_conditional_edges(
@@ -2476,7 +2476,7 @@ graph.add_conditional_edges(
   第 328 行：`route_by_intent,` — 路由函数，读取 state 中的 intent 返回节点名称
   第 329 行：`{"schema_selection": "resolve_context", "misleading": "misleading"},` — 映射表：路由返回 "schema_selection" 时跳到 "resolve_context"
 
-**路由函数** — [`graph.py:111-134](../backend/app/ai/graph.py#L111-L134)：
+**路由函数** — [`graph.py:111-134](../backend/app/ai/graph.py)：
 
 ```python
 def route_by_intent(state: QueryState) -> str:
@@ -2491,7 +2491,7 @@ def route_by_intent(state: QueryState) -> str:
   第 133 行：`return "schema_selection"` — 数据查询意图，走 schema_selection 分支
   第 134 行：`return "misleading"` — 非数据查询意图，走 misleading 分支
 
-**普通边：线性流转** — [`graph.py:333-335](../backend/app/ai/graph.py#L333-L335)：
+**普通边：线性流转** — [`graph.py:333-335](../backend/app/ai/graph.py)：
 
 ```python
 graph.add_edge("resolve_context", "schema_selection")
@@ -2504,7 +2504,7 @@ graph.add_edge("generate_sql", "execute_sql")
   第 334 行：`graph.add_edge("schema_selection", "generate_sql")` — Schema 选择后生成 SQL
   第 335 行：`graph.add_edge("generate_sql", "execute_sql")` — SQL 生成后执行
 
-**终止边** — [`graph.py:336-337](../backend/app/ai/graph.py#L336-L337)：
+**终止边** — [`graph.py:336-337](../backend/app/ai/graph.py)：
 
 ```python
 graph.add_edge("misleading", END)
@@ -2655,7 +2655,7 @@ graph.add_edge("execute_sql", END)
 
 #### 真实代码
 
-[`graph.py:340](../backend/app/ai/graph.py#L340)：
+[`graph.py:340](../backend/app/ai/graph.py)：
 
 ```python
 return graph.compile()
@@ -2909,7 +2909,7 @@ print(result["error"])  # "抱歉，我无法理解您的问题。请尝试提�
 
 #### 真实代码
 
-[`graph.py:157-340](../backend/app/ai/graph.py#L157-L340) — `build_graph()` 函数骨架：
+[`graph.py:157-340](../backend/app/ai/graph.py) — `build_graph()` 函数骨架：
 
 ```python
 def build_graph():
@@ -2977,7 +2977,7 @@ ChatBI 采用**三层策略**，按速度从快到慢依次尝试：
 
 #### 真实代码
 
-**主入口函数** — [`intent.py:158-239](../backend/app/ai/nodes/intent.py#L158-L239)：
+**主入口函数** — [`intent.py:158-239](../backend/app/ai/nodes/intent.py)：
 
 ```python
 async def classify_intent(question: str) -> str:
@@ -3072,7 +3072,7 @@ async def classify_intent(question: str) -> str:
 > - Python 的 `json.loads()` → Java 的 `ObjectMapper.readValue()`（Jackson）或 `JSONObject`（Gson）
 > - Python 的 `await redis.setex()` → Java 的 `redis.opsForValue().set(key, value, 300, TimeUnit.SECONDS)`
 
-**关键词分类** — [`intent.py:87-130](../backend/app/ai/nodes/intent.py#L87-L130)：
+**关键词分类** — [`intent.py:87-130](../backend/app/ai/nodes/intent.py)：
 
 ```python
 def _keyword_classify(q: str) -> str | None:
@@ -3148,7 +3148,7 @@ LLM 可能无法正确理解上下文。本节点在调用 LLM 之前，先把�
 
 #### 真实代码
 
-**主入口函数** — [`context_resolver.py:121-242](../backend/app/ai/nodes/context_resolver.py#L121-L242)：
+**主入口函数** — [`context_resolver.py:121-242](../backend/app/ai/nodes/context_resolver.py)：
 
 ```python
 def resolve_context(question: str, history: list[dict]) -> str:
@@ -3261,7 +3261,7 @@ def resolve_context(question: str, history: list[dict]) -> str:
 > - Python 的 `re.match()`（只匹配开头）→ Java 的 `Pattern.matcher().lookingAt()`
 > - Python 的 `dict.items()` → Java 的 `Map.entrySet()` 遍历
 
-**相对时间解析** — [`context_resolver.py:78-118](../backend/app/ai/nodes/context_resolver.py#L78-L118)：
+**相对时间解析** — [`context_resolver.py:78-118](../backend/app/ai/nodes/context_resolver.py)：
 
 ```python
 RELATIVE_TIME = {
@@ -3337,7 +3337,7 @@ Step 2 — 选列：用户问题 + Step 1 选中的表的完整字段列表 → 
 
 #### 真实代码
 
-**节点主入口** — [`schema_selection.py:391-499](../backend/app/ai/nodes/schema_selection.py#L391-L499)：
+**节点主入口** — [`schema_selection.py:391-499](../backend/app/ai/nodes/schema_selection.py)：
 
 ```python
 async def schema_selection_node(state: dict) -> dict:
@@ -3427,7 +3427,7 @@ async def schema_selection_node(state: dict) -> dict:
 > - Python 的 `frozenset` 做成员检查 → Java 的 `Set.contains()`
 > - Python 的 `chr(10).join(lines)` → Java 的 `String.join("\n", lines)`
 
-**Step 1: 选表** — [`schema_selection.py:85-186](../backend/app/ai/nodes/schema_selection.py#L85-L186)：
+**Step 1: 选表** — [`schema_selection.py:85-186](../backend/app/ai/nodes/schema_selection.py)：
 
 ```python
 async def _select_tables(question: str, metadata: dict) -> list[str]:
@@ -3468,7 +3468,7 @@ async def _select_tables(question: str, metadata: dict) -> list[str]:
     # ... 解析 LLM 返回的表名 ...
 ```
 
-**Step 2: 选列** — [`schema_selection.py:189-285](../backend/app/ai/nodes/schema_selection.py#L189-L285)：
+**Step 2: 选列** — [`schema_selection.py:189-285](../backend/app/ai/nodes/schema_selection.py)：
 
 ```python
 async def _select_columns(question: str, selected_tables: list[str], metadata: dict) -> dict[str, list[str]]:
@@ -3586,7 +3586,7 @@ ChatBI 采用**三次降级重试策略**，确保在各种情况下都能生成
 
 #### 真实代码
 
-**核心入口** — [`generation.py:549-649](../backend/app/ai/nodes/generation.py#L549-L649)：
+**核心入口** — [`generation.py:549-649](../backend/app/ai/nodes/generation.py)：
 
 ```python
 async def generate_sql(
@@ -3690,7 +3690,7 @@ async def generate_sql(
 > - Python 的 `dict[str, list[str]]` 返回值 → Java 的 record/DTO 对象 `SqlResult`
 > - Python 的 `frozenset` 幻觉列名集合 → Java 的 `Set.of("created_at", "updated_at", ...)`
 
-**表名模糊匹配修复** — [`generation.py:173-208](../backend/app/ai/nodes/generation.py#L173-L208)：
+**表名模糊匹配修复** — [`generation.py:173-208](../backend/app/ai/nodes/generation.py)：
 
 ```python
 def _fix_table_names(sql: str, invalid: set[str], valid: set[str]) -> str:
@@ -3702,7 +3702,7 @@ def _fix_table_names(sql: str, invalid: set[str], valid: set[str]) -> str:
     return sql
 ```
 
-**列名幻觉修复** — [`generation.py:238-325](../backend/app/ai/nodes/generation.py#L238-L325)：
+**列名幻觉修复** — [`generation.py:238-325](../backend/app/ai/nodes/generation.py)：
 
 ```python
 def _validate_and_fix_columns(sql: str, schema_context: str, raw_metadata: str = "") -> tuple[str, list[str]]:
@@ -3822,7 +3822,7 @@ SQL 执行节点是管线的"动手"环节，把 LLM 生成的 SQL 真正送到�
 
 #### 真实代码
 
-**AST 安全校验** — [`execution.py:51-99](../backend/app/ai/nodes/execution.py#L51-L99)：
+**AST 安全校验** — [`execution.py:51-99](../backend/app/ai/nodes/execution.py)：
 
 ```python
 def validate_sql(sql: str, dialect: str = "mysql") -> tuple[bool, str]:
@@ -3907,7 +3907,7 @@ def validate_sql(sql: str, dialect: str = "mysql") -> tuple[bool, str]:
 > - Python 的 `dict(row._mapping)` → Java 的 `ResultSetMetaData + ResultSet` 遍历
 > - Python 的 `isinstance(v, (datetime, date))` 类型检查 → Java 的 `ResultSetMetaData.getColumnType()`
 
-**SQL 执行主函数** — [`execution.py:102-236](../backend/app/ai/nodes/execution.py#L102-L236)：
+**SQL 执行主函数** — [`execution.py:102-236](../backend/app/ai/nodes/execution.py)：
 
 ```python
 async def execute_sql(sql: str, datasource_id: str, dialect: str = "mysql", tenant_id: str | None = None) -> dict[str, Any]:
@@ -4050,7 +4050,7 @@ print(validate_sql("SELECT * FROM (DELETE FROM users) AS t"))  # (False, "禁止
 
 #### 真实代码
 
-**自愈主循环** — [`self_heal.py:174-269](../backend/app/ai/nodes/self_heal.py#L174-L269)：
+**自愈主循环** — [`self_heal.py:174-269](../backend/app/ai/nodes/self_heal.py)：
 
 ```python
 async def self_heal_sql(
@@ -4156,7 +4156,7 @@ async def self_heal_sql(
 > - Python 的 `_strip_markdown()` → Java 的 `response.content().replaceAll("^```.*?\\n", "").replaceAll("\\n```$", "")`
 > - Python 的 `settings.llm_self_heal_max_retries` → Java 的 `@Value("${llm.self-heal.max-retries:2}")`
 
-**修复 prompt 构建** — [`self_heal.py:100-142](../backend/app/ai/nodes/self_heal.py#L100-L142)：
+**修复 prompt 构建** — [`self_heal.py:100-142](../backend/app/ai/nodes/self_heal.py)：
 
 ```python
 def build_fix_prompt(question: str, failed_sql: str, error: str, retry_count: int, schema_context: str) -> str:
@@ -4177,7 +4177,7 @@ def build_fix_prompt(question: str, failed_sql: str, error: str, retry_count: in
 请只返回修复后的 SQL，不要包含任何解释或 markdown 代码块。"""
 ```
 
-**错误码提取** — [`self_heal.py:73-97](../backend/app/ai/nodes/self_heal.py#L73-L97)：
+**错误码提取** — [`self_heal.py:73-97](../backend/app/ai/nodes/self_heal.py)：
 
 ```python
 AUTO_FIX_RULES = {
@@ -4279,7 +4279,7 @@ logger.info("Self-heal attempt %d for SQL: %s", retry_count, sql[:100])
 
 #### 真实代码
 
-**主入口函数** — [`chart_type.py:46-114](../backend/app/ai/chart_type.py#L46-L114)：
+**主入口函数** — [`chart_type.py:46-114](../backend/app/ai/chart_type.py)：
 
 ```python
 def infer_chart_type(columns: list[str], rows: list[dict]) -> ChartType:
@@ -4387,7 +4387,7 @@ def infer_chart_type(columns: list[str], rows: list[dict]) -> ChartType:
 > - Python 的 `_is_numeric()` 支持 `float("1,234.56".replace(",", ""))` → Java 的 `NumberFormat.parse()`
 > - Python 的 `any(ind in s for ind in time_indicators)` → Java 的 `timeIndicators.stream().anyMatch(s::contains)`
 
-**时间列检测** — [`chart_type.py:163-185](../backend/app/ai/chart_type.py#L163-L185)：
+**时间列检测** — [`chart_type.py:163-185](../backend/app/ai/chart_type.py)：
 
 ```python
 def _looks_like_time(value: Any) -> bool:
@@ -4468,7 +4468,7 @@ Prompt 工程是 NL→SQL 管线中影响 SQL 生成质量的最关键因素。
 
 #### 真实代码
 
-**系统提示词** — [`query_prompt.py:39-62](../backend/app/ai/prompts/query_prompt.py#L39-L62)：
+**系统提示词** — [`query_prompt.py:39-62](../backend/app/ai/prompts/query_prompt.py)：
 
 ```python
 SYSTEM_PROMPT = """你是一个专业的 SQL 生成助手。你的任务根据用户的自然语言问题和提供的数据库结构，生成准确的 SQL 查询。
@@ -4561,7 +4561,7 @@ SYSTEM_PROMPT = """你是一个专业的 SQL 生成助手。你的任务根据�
 > - Python 的 `dict.get("key", default)` → Java 的 `Map.getOrDefault(key, default)`
 > - Python 的提示词与代码分离（独立 .py 文件）→ Java 的模板文件（.ftl / .html）与代码分离
 
-**基础用户提示词** — [`query_prompt.py:82-88](../backend/app/ai/prompts/query_prompt.py#L82-L88)：
+**基础用户提示词** — [`query_prompt.py:82-88](../backend/app/ai/prompts/query_prompt.py)：
 
 ```python
 def build_user_prompt(question: str, schema_context: str) -> str:
@@ -4573,7 +4573,7 @@ def build_user_prompt(question: str, schema_context: str) -> str:
 请生成对应的 SQL 查询语句。"""
 ```
 
-**增强版用户提示词** — [`query_prompt.py:122-172](../backend/app/ai/prompts/query_prompt.py#L122-L172)：
+**增强版用户提示词** — [`query_prompt.py:122-172](../backend/app/ai/prompts/query_prompt.py)：
 
 ```python
 def build_semantic_prompt(question: str, schema_context: str, semantics: dict) -> str:
@@ -4693,7 +4693,7 @@ def build_user_prompt(question: str, schema_context: str) -> str:
 
 #### 真实代码
 
-**状态定义** — [`state.py:64-169](../backend/app/ai/state.py#L64-L169)：
+**状态定义** — [`state.py:64-169](../backend/app/ai/state.py)：
 
 ```python
 class QueryState(TypedDict, total=False):
@@ -4843,19 +4843,19 @@ Python 的 **async generator**（异步生成器）是 `async def` + `yield` 的
 
 #### 真实代码
 
-[`pipeline_executor.py:90](../backend/app/services/pipeline_executor.py#L90) — 函数签名：
+[`pipeline_executor.py:90](../backend/app/services/pipeline_executor.py) — 函数签名：
 
 ```python
 async def execute_query_pipeline(question: str, datasource_id: str, tenant_id: str, history: list[dict] | None = None):
 ```
 
-[`pipeline_executor.py:158](../backend/app/services/pipeline_executor.py#L158) — 第一个 yield（缓存命中事件）：
+[`pipeline_executor.py:158](../backend/app/services/pipeline_executor.py) — 第一个 yield（缓存命中事件）：
 
 ```python
 yield {"event": "cache", "data": {"hit": True, "type": "exact", "duration_ms": cache_duration}}
 ```
 
-[`pipeline_executor.py:170](../backend/app/services/pipeline_executor.py#L170) — 第二个 yield（意图识别事件）：
+[`pipeline_executor.py:170](../backend/app/services/pipeline_executor.py) — 第二个 yield（意图识别事件）：
 
 ```python
 yield {"event": "intent", "data": {"intent": intent, "detail": f"识别为{intent_label}意图（关键词匹配）", "duration_ms": intent_duration, "method": "cached"}}
@@ -4907,7 +4907,7 @@ yield {"event": "intent", "data": {"intent": intent, "detail": f"识别为{inten
 
 #### 调用方式
 
-在 [`query.py:727](../backend/app/api/query.py#L727)，SSE 路由这样消费生成器：
+在 [`query.py:727](../backend/app/api/query.py)，SSE 路由这样消费生成器：
 
 ```python
 async for event in execute_query_pipeline(data.question, data.datasource_id, tenant_id, data.history):
@@ -4961,7 +4961,7 @@ logger.info("Pipeline started for question: %s", question[:50])
 
 #### 真实代码
 
-**精确缓存命中** — [`pipeline_executor.py:155-158](../backend/app/services/pipeline_executor.py#L155-L158)：
+**精确缓存命中** — [`pipeline_executor.py:155-158](../backend/app/services/pipeline_executor.py)：
 
 ```python
 cached = await cache_get(question, datasource_id, tenant_id)
@@ -4970,7 +4970,7 @@ if cached:
     yield {"event": "cache", "data": {"hit": True, "type": "exact", "duration_ms": cache_duration}}
 ```
 
-**语义缓存命中** — [`pipeline_executor.py:279-282](../backend/app/services/pipeline_executor.py#L279-L282)：
+**语义缓存命中** — [`pipeline_executor.py:279-282](../backend/app/services/pipeline_executor.py)：
 
 ```python
 sem_cached = await semantic_cache_get(question, datasource_id, tenant_id)
@@ -4979,7 +4979,7 @@ if sem_cached:
     yield {"event": "cache", "data": {"hit": True, "type": "semantic", "duration_ms": cache_duration}}
 ```
 
-**缓存命中后的 SQL 安全校验** — [`pipeline_executor.py:201-216](../backend/app/services/pipeline_executor.py#L201-L216)：
+**缓存命中后的 SQL 安全校验** — [`pipeline_executor.py:201-216](../backend/app/services/pipeline_executor.py)：
 
 ```python
 import sqlglot
@@ -5083,13 +5083,13 @@ redis-cli set "query:test" '{"sql":"DROP TABLE users","success":true,"rows":[]}'
 
 #### 真实代码
 
-**缓存未命中事件** — [`pipeline_executor.py:392](../backend/app/services/pipeline_executor.py#L392)：
+**缓存未命中事件** — [`pipeline_executor.py:392](../backend/app/services/pipeline_executor.py)：
 
 ```python
 yield {"event": "cache", "data": {"hit": False, "duration_ms": cache_duration}}
 ```
 
-**Step 1: 意图识别** — [`pipeline_executor.py:397-402](../backend/app/services/pipeline_executor.py#L397-L402)：
+**Step 1: 意图识别** — [`pipeline_executor.py:397-402](../backend/app/services/pipeline_executor.py)：
 
 ```python
 from app.ai.nodes.intent import classify_intent
@@ -5099,7 +5099,7 @@ intent_label = "数据查询" if intent == "DataQuery" else "非数据查询"
 yield {"event": "intent", "data": {"intent": intent, "detail": f"识别为{intent_label}意图", "duration_ms": intent_duration}}
 ```
 
-**Step 2: Schema 选择** — [`pipeline_executor.py:413-429](../backend/app/services/pipeline_executor.py#L413-L429)：
+**Step 2: Schema 选择** — [`pipeline_executor.py:413-429](../backend/app/services/pipeline_executor.py)：
 
 ```python
 from app.ai.nodes.schema_selection import schema_selection_node
@@ -5115,21 +5115,21 @@ selected_tables = schema_result.get("selected_tables", [])
 selected_columns = schema_result.get("selected_columns", {})
 ```
 
-**Step 3: SQL 生成** — [`pipeline_executor.py:433-459](../backend/app/services/pipeline_executor.py#L433-L459)：
+**Step 3: SQL 生成** — [`pipeline_executor.py:433-459](../backend/app/services/pipeline_executor.py)：
 
 ```python
 from app.ai.nodes.generation import generate_sql
 gen_result = await generate_sql(question, schema_context, raw_metadata=raw_metadata, history=history)
 ```
 
-**Step 4: SQL 执行** — [`pipeline_executor.py:468-479](../backend/app/services/pipeline_executor.py#L468-L479)：
+**Step 4: SQL 执行** — [`pipeline_executor.py:468-479](../backend/app/services/pipeline_executor.py)：
 
 ```python
 from app.ai.nodes.execution import execute_sql
 exec_result = await execute_sql(sql, datasource_id, tenant_id=tenant_id)
 ```
 
-**Step 5: 自愈（失败时）** — [`pipeline_executor.py:483-502](../backend/app/services/pipeline_executor.py#L483-L502)：
+**Step 5: 自愈（失败时）** — [`pipeline_executor.py:483-502](../backend/app/services/pipeline_executor.py)：
 
 ```python
 if not final_success and schema_context:
@@ -5141,7 +5141,7 @@ if not final_success and schema_context:
     )
 ```
 
-**Step 6: 图表推断** — [`pipeline_executor.py:506-510](../backend/app/services/pipeline_executor.py#L506-L510)：
+**Step 6: 图表推断** — [`pipeline_executor.py:506-510](../backend/app/services/pipeline_executor.py)：
 
 ```python
 if exec_result.get("rows") and exec_result.get("columns"):
@@ -5358,7 +5358,7 @@ ChatBI 的 SSE 对接链路：
 
 #### 后端：StreamingResponse
 
-[`query.py:784-788](../backend/app/api/query.py#L784-L788)：
+[`query.py:784-788](../backend/app/api/query.py)：
 
 ```python
 return StreamingResponse(
@@ -5378,7 +5378,7 @@ return StreamingResponse(
 
 #### 后端：event_stream() 内部
 
-[`query.py:482-783](../backend/app/api/query.py#L482-L783) — `event_stream()` 是一个嵌套的 async generator：
+[`query.py:482-783](../backend/app/api/query.py) — `event_stream()` 是一个嵌套的 async generator：
 
 ```python
 async def event_stream():
@@ -5678,7 +5678,7 @@ console.table({ eventType, duration_ms: data.duration_ms, detail: data.detail?.s
 
 #### 真实代码
 
-**缓存 key 生成** — [`cache_service.py:118-137](../backend/app/services/cache_service.py#L60-L62)：
+**缓存 key 生成** — [`cache_service.py:118-137](../backend/app/services/cache_service.py)：
 
 ```python
 def _cache_key(question: str, datasource_id: str, tenant_id: str = "") -> str:
@@ -5686,7 +5686,7 @@ def _cache_key(question: str, datasource_id: str, tenant_id: str = "") -> str:
     return f"query:{hashlib.sha256(raw.encode()).hexdigest()}"
 ```
 
-**精确缓存读取** — [`cache_service.py:158-188](../backend/app/services/cache_service.py#L71-L84)：
+**精确缓存读取** — [`cache_service.py:158-188](../backend/app/services/cache_service.py)：
 
 ```python
 async def cache_get(question: str, datasource_id: str, tenant_id: str = "") -> dict | None:
@@ -5705,7 +5705,7 @@ async def cache_get(question: str, datasource_id: str, tenant_id: str = "") -> d
     return None
 ```
 
-**精确缓存写入** — [`cache_service.py:191-237](../backend/app/services/cache_service.py#L87-L110)：
+**精确缓存写入** — [`cache_service.py:191-237](../backend/app/services/cache_service.py)：
 
 ```python
 async def cache_set(question: str, datasource_id: str, result: dict, tenant_id: str = "", ttl: int | None = None) -> None:
@@ -5728,7 +5728,7 @@ async def cache_set(question: str, datasource_id: str, result: dict, tenant_id: 
         logger.warning("Redis cache set failed: %s", e)
 ```
 
-**语义缓存查找** — [`cache_service.py:401-450](../backend/app/services/cache_service.py#L203-L232)：
+**语义缓存查找** — [`cache_service.py:401-450](../backend/app/services/cache_service.py)：
 
 ```python
 async def semantic_cache_get(question: str, datasource_id: str, tenant_id: str = "", threshold: float = 0.8) -> dict | None:
@@ -5758,7 +5758,7 @@ async def semantic_cache_get(question: str, datasource_id: str, tenant_id: str =
     return None
 ```
 
-**词重叠度计算** — [`cache_service.py:375-398](../backend/app/services/cache_service.py#L194-L200)：
+**词重叠度计算** — [`cache_service.py:375-398](../backend/app/services/cache_service.py)：
 
 ```python
 def _simple_similarity(a: str, b: str) -> float:
@@ -5782,7 +5782,7 @@ def _simple_similarity(a: str, b: str) -> float:
 
 #### 缓存统计
 
-[`cache_service.py:20-57](../backend/app/services/cache_service.py#L20-L57) — `CacheStats` 类：
+[`cache_service.py:20-57](../backend/app/services/cache_service.py) — `CacheStats` 类：
 
 ```python
 class CacheStats:
@@ -5929,7 +5929,7 @@ ChatBI 支持多个数据源（不同数据库实例），每个数据源需要�
 
 #### 真实代码
 
-**URL 构建** — [`connection_pool.py:42-87](../backend/app/services/connection_pool.py#L16-L41)：
+**URL 构建** — [`connection_pool.py:42-87](../backend/app/services/connection_pool.py)：
 
 ```python
 def _build_url(ds: DataSource) -> URL:
@@ -5943,7 +5943,7 @@ def _build_url(ds: DataSource) -> URL:
         return URL.create("mysql+aiomysql", username=username, password=password, host=ds.host, port=ds.port, database=ds.database_name, query={"charset": "utf8mb4"})
 ```
 
-**连接池获取** — [`connection_pool.py:112-156](../backend/app/services/connection_pool.py#L47-L71)：
+**连接池获取** — [`connection_pool.py:112-156](../backend/app/services/connection_pool.py)：
 
 ```python
 class ConnectionPoolManager:
@@ -5967,7 +5967,7 @@ class ConnectionPoolManager:
         return engine
 ```
 
-**健康检查** — [`connection_pool.py:268-288](../backend/app/services/connection_pool.py#L119-L126)：
+**健康检查** — [`connection_pool.py:268-288](../backend/app/services/connection_pool.py)：
 
 ```python
 async def health_check(self, ds_id: str, ds: DataSource) -> dict:
@@ -6068,7 +6068,7 @@ print(result)  # {'healthy': True, 'error': None}
 
 #### 真实代码
 
-**复杂度估算** — [`query_complexity.py:22-93](../backend/app/services/query_complexity.py#L22-L93)：
+**复杂度估算** — [`query_complexity.py:22-93](../backend/app/services/query_complexity.py)：
 
 ```python
 _SIMPLE_METRICS = {"数量", "总数", "合计", "总和", "平均", "最大", "最小", "列表", "明细"}
@@ -6103,7 +6103,7 @@ def estimate_query_complexity(question: str) -> dict:
     return {"level": level, "score": score, "reasons": reasons}
 ```
 
-**简单查询执行** — [`simple_query_executor.py:68-199](../backend/app/services/simple_query_executor.py#L68-L199)：
+**简单查询执行** — [`simple_query_executor.py:68-199](../backend/app/services/simple_query_executor.py)：
 
 ```python
 async def execute_simple_query(question: str, datasource_id: str, tenant_id: str) -> dict:
@@ -6232,7 +6232,7 @@ print(estimate_query_complexity("各城市同比环比分析"))  # {'level': 'co
 
 #### 真实代码
 
-**脱敏规则** — [`data_masking.py:11-18](../backend/app/services/data_masking.py#L11-L18)：
+**脱敏规则** — [`data_masking.py:11-18](../backend/app/services/data_masking.py)：
 
 ```python
 MASKING_RULES = [
@@ -6245,7 +6245,7 @@ MASKING_RULES = [
 ]
 ```
 
-**敏感列名模式** — [`data_masking.py:21-27](../backend/app/services/data_masking.py#L21-L27)：
+**敏感列名模式** — [`data_masking.py:21-27](../backend/app/services/data_masking.py)：
 
 ```python
 SENSITIVE_COLUMN_PATTERNS = [
@@ -6257,7 +6257,7 @@ SENSITIVE_COLUMN_PATTERNS = [
 ]
 ```
 
-**主函数** — [`data_masking.py:43-72](../backend/app/services/data_masking.py#L43-L72)：
+**主函数** — [`data_masking.py:43-72](../backend/app/services/data_masking.py)：
 
 ```python
 def mask_sensitive_data(columns: list[str], rows: list[dict]) -> tuple[list[str], list[dict]]:
@@ -6457,7 +6457,7 @@ print(masked)  # [{'name': '张三', 'phone': '138****5678', 'id_card': '*******
 
 #### 真实代码
 
-**密码哈希** — [`security.py:53-83](../backend/app/core/security.py#L53-L83)：
+**密码哈希** — [`security.py:53-83](../backend/app/core/security.py)：
 
 ```python
 def hash_password(password: str) -> str:
@@ -6470,7 +6470,7 @@ def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
 ```
 
-**JWT 签发** — [`security.py:100-135](../backend/app/core/security.py#L100-L135)：
+**JWT 签发** — [`security.py:100-135](../backend/app/core/security.py)：
 
 ```python
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -6484,7 +6484,7 @@ def create_refresh_token(data: dict) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 ```
 
-**JWT 验证** — [`security.py:138-180](../backend/app/core/security.py#L138-L180)：
+**JWT 验证** — [`security.py:138-180](../backend/app/core/security.py)：
 
 ```python
 def verify_access_token(token: str) -> Optional[dict]:
@@ -6500,7 +6500,7 @@ def _verify_token(token: str, expected_type: str) -> Optional[dict]:
         return None
 ```
 
-**FastAPI 鉴权依赖** — [`security.py:285-314](../backend/app/core/security.py#L285-L314)：
+**FastAPI 鉴权依赖** — [`security.py:285-314](../backend/app/core/security.py)：
 
 ```python
 async def get_current_user(request: Request) -> dict:
@@ -6514,7 +6514,7 @@ async def get_current_user(request: Request) -> dict:
     return payload
 ```
 
-**角色权限检查** — [`security.py:317-345](../backend/app/core/security.py#L317-L345)：
+**角色权限检查** — [`security.py:317-345](../backend/app/core/security.py)：
 
 ```python
 def require_role(*allowed_roles: str):
@@ -6526,7 +6526,7 @@ def require_role(*allowed_roles: str):
     return _check
 ```
 
-**邮箱验证令牌** — [`security.py:237-260](../backend/app/core/security.py#L237-L260)：
+**邮箱验证令牌** — [`security.py:237-260](../backend/app/core/security.py)：
 
 ```python
 def generate_email_verification_token(email: str) -> str:
@@ -6599,7 +6599,7 @@ ChatBI 有两套互补的追踪系统：
 
 #### 真实代码
 
-**审计日志记录** — [`audit_service.py:14-54](../backend/app/services/audit_service.py#L14-L54)：
+**审计日志记录** — [`audit_service.py:14-54](../backend/app/services/audit_service.py)：
 
 ```python
 async def log_action(
@@ -6619,7 +6619,7 @@ async def log_action(
                        execution_time_ms, sql_execution_time_ms or "N/A", action, user_id, (sql_text or "")[:200])
 ```
 
-**慢查询列表** — [`audit_service.py:57-110](../backend/app/services/audit_service.py#L57-L110)：
+**慢查询列表** — [`audit_service.py:57-110](../backend/app/services/audit_service.py)：
 
 ```python
 async def get_slow_queries(db: AsyncSession, tenant_id: str, limit: int = 50, hours: int = 24) -> list[dict]:
@@ -6635,7 +6635,7 @@ async def get_slow_queries(db: AsyncSession, tenant_id: str, limit: int = 50, ho
     # ... 关联数据源名称 ...
 ```
 
-**慢查询统计** — [`audit_service.py:126-154](../backend/app/services/audit_service.py#L126-L154)：
+**慢查询统计** — [`audit_service.py:126-154](../backend/app/services/audit_service.py)：
 
 ```python
 async def get_slow_query_stats(db: AsyncSession, tenant_id: str, hours: int = 24) -> dict:
@@ -6649,7 +6649,7 @@ async def get_slow_query_stats(db: AsyncSession, tenant_id: str, hours: int = 24
     return {"total_slow_queries": row.total or 0, "avg_execution_time_ms": int(row.avg_ms or 0), ...}
 ```
 
-**分析事件追踪** — [`analytics_service.py:36-52](../backend/app/services/analytics_service.py#L36-L52)：
+**分析事件追踪** — [`analytics_service.py:36-52](../backend/app/services/analytics_service.py)：
 
 ```python
 EVENT_USER_LOGIN = "user_login"
@@ -6722,16 +6722,16 @@ print(stats)  # {'total_slow_queries': 3, 'avg_execution_time_ms': 8500, 'max_ex
 | **Python** | 3.12 | 整个后端 | 全书 |
 | **FastAPI** | - | `backend/app/main.py` — API 入口 | 第 6 章 |
 | **SQLAlchemy** | async | `backend/app/db/` — ORM + 异步会话 | 第 7 章 7.2 |
-| **aiomysql** | - | [`connection_pool.py:80](../backend/app/services/connection_pool.py#L34) — MySQL 异步驱动 | 第 7 章 7.2 |
-| **asyncpg** | - | [`connection_pool.py:67](../backend/app/services/connection_pool.py#L23) — PostgreSQL 异步驱动 | 第 7 章 7.2 |
+| **aiomysql** | - | [`connection_pool.py:80](../backend/app/services/connection_pool.py) — MySQL 异步驱动 | 第 7 章 7.2 |
+| **asyncpg** | - | [`connection_pool.py:67](../backend/app/services/connection_pool.py) — PostgreSQL 异步驱动 | 第 7 章 7.2 |
 | **LangGraph** | - | `backend/app/ai/graph.py` — 状态图编排 | 第 6 章 6.3 |
 | **LangChain** | - | `backend/app/ai/nodes/shared_utils.py` — LLM 调用封装 | 第 6 章 6.3 |
-| **ChatOpenAI** | - | [`intent.py:33](../backend/app/ai/nodes/intent.py#L33) — OpenAI 兼容 API | 第 6 章 6.3 |
-| **SQLGlot** | - | [`execution.py:38](../backend/app/ai/nodes/execution.py#L38) — SQL AST 校验 | 第 6 章 6.2 |
+| **ChatOpenAI** | - | [`intent.py:33](../backend/app/ai/nodes/intent.py) — OpenAI 兼容 API | 第 6 章 6.3 |
+| **SQLGlot** | - | [`execution.py:38](../backend/app/ai/nodes/execution.py) — SQL AST 校验 | 第 6 章 6.2 |
 | **Redis** | 7 | `backend/app/core/redis_client.py` — 缓存/限流/登录锁 | 第 7 章 7.1 |
-| **bcrypt** | - | [`security.py:27](../backend/app/core/security.py#L4) — 密码哈希 | 第 7 章 7.5 |
-| **python-jose** | - | [`security.py:30](../backend/app/core/security.py#L6) — JWT 签发/验证 | 第 7 章 7.5 |
-| **itsdangerous** | - | [`security.py:36](../backend/app/core/security.py#L7) — 时间令牌 | 第 7 章 7.5 |
+| **bcrypt** | - | [`security.py:27](../backend/app/core/security.py) — 密码哈希 | 第 7 章 7.5 |
+| **python-jose** | - | [`security.py:30](../backend/app/core/security.py) — JWT 签发/验证 | 第 7 章 7.5 |
+| **itsdangerous** | - | [`security.py:36](../backend/app/core/security.py) — 时间令牌 | 第 7 章 7.5 |
 | **Fernet** | - | `backend/app/core/encryption.py` — 数据源密码加密 | 第 7 章 7.2 |
 | **Vue 3** | - | `frontend/src/` — 整个前端 | 第 6 章 6.5 |
 | **TypeScript** | - | `frontend/src/stores/chatStore.ts` — 状态管理 | 第 6 章 6.5 |
