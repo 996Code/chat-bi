@@ -39,6 +39,10 @@ COPY --from=backend-builder /usr/local /usr/local
 
 # Backend source
 COPY backend/ /app/backend/
+
+# Documentation (learning guide for /guide page)
+COPY doc/ /app/doc/
+
 WORKDIR /app/backend
 
 # Frontend static files
