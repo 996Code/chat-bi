@@ -75,6 +75,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/SharedDashboardView.vue'),
     meta: { public: true },
   },
+  {
+    path: '/guide',
+    name: 'DocGuide',
+    component: () => import('@/views/DocGuideView.vue'),
+    meta: { public: true },
+  },
 ]
 
 const router = createRouter({

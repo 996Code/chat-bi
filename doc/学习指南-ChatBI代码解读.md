@@ -8,6 +8,7 @@
 
 ---
 
+
 ## 1.1 类型注解 — 从 config.py 的 Settings 说起
 
 Python 3.6+ 引入了**类型注解**（Type Hints），让你在变量和函数上标注期望的类型。Python 不会强制执行这些类型，但 IDE 和静态检查工具（如 mypy）会用它们来发现 bug。
@@ -39,24 +40,25 @@ bcrypt_rounds: int = 12        # bcrypt 哈希轮数
 
 **Pydantic 的威力**：`Settings` 继承自 `BaseSettings`，Pydantic 会自动做类型转换和校验。比如环境变量 `APP_PORT=8000` 是字符串，Pydantic 会自动转成 `int`。如果设了 `APP_PORT=abc`，启动时就会报错。
 
-> **Java 对照**
->
-> Python 类型注解 → Java 等价：
->
-> ```java
-> // Python: app_env: str = "development"
-> // Java 等价写法（使用 Lombok @Data 简化 getter/setter）
-> @Data
-> @ConfigurationProperties(prefix = "app")
-> public class AppProperties {
->     private String env = "development";   // 对应 Python app_env: str
->     private int port = 8000;              // 对应 Python app_port: int
->     private String secretKey;             // 对应 Python secret_key: str（必填）
->     private int bcryptRounds = 12;        // 对应 Python bcrypt_rounds: int
-> }
-> ```
->
-> 对比说明：Python 的 `name: str = "value"` 直接在类属性上注解类型和默认值，Java 则需要声明 `private` 字段并提供 getter/setter（Lombok 的 `@Data` 自动生成）。Pydantic 的 `BaseSettings` ≈ Spring Boot 的 `@ConfigurationProperties`，都能从环境变量/配置文件自动绑定值并做类型转换。
+#### Java 对照
+
+Python 类型注解 → Java 等价：
+
+```java
+// Python: app_env: str = "development"
+// Java 等价写法（使用 Lombok @Data 简化 getter/setter）
+@Data
+@ConfigurationProperties(prefix = "app")
+public class AppProperties {
+    private String env = "development";   // 对应 Python app_env: str
+    private int port = 8000;              // 对应 Python app_port: int
+    private String secretKey;             // 对应 Python secret_key: str（必填）
+    private int bcryptRounds = 12;        // 对应 Python bcrypt_rounds: int
+}
+```
+
+对比说明：Python 的 `name: str = "value"` 直接在类属性上注解类型和默认值，Java 则需要声明 `private` 字段并提供 getter/setter（Lombok 的 `@Data` 自动生成）。Pydantic 的 `BaseSettings` ≈ Spring Boot 的 `@ConfigurationProperties`，都能从环境变量/配置文件自动绑定值并做类型转换。
+
 
 逐行解读：
   第 59 行：`app_env: str = "development"` — 定义字符串类型的运行环境配置，默认值 development
@@ -154,31 +156,32 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 为什么用异步？因为 ChatBI 是 Web 服务，同时可能有几十个用户在查询。如果用同步，一个用户的数据库查询会阻塞所有其他用户。用异步后，等待数据库的时间可以用来处理其他请求。
 
-> **Java 对照**
->
-> Python async/await → Java 等价：
->
-> ```java
-> // Python: async def register(req, db): ... await db.execute(...)
-> // Java 等价写法 1：CompletableFuture（Java 8+）
-> @Async
-> public CompletableFuture<User> registerAsync(RegisterRequest req, DataSource db) {
->     return CompletableFuture.supplyAsync(() -> {
->         // 相当于 await db.execute(...)
->         return db.queryForObject("SELECT ...", new UserRowMapper());
->     });
-> }
->
-> // Java 等价写法 2：Virtual Threads（Java 21+，最接近 Python async 的体验）
-> @PostMapping("/register")
-> public ResponseEntity<?> register(@RequestBody RegisterRequest req) {
->     // Virtual Thread 下直接写同步代码，JVM 自动实现非阻塞
->     User user = db.queryForObject("SELECT ...", new UserRowMapper()); // 自动挂起/恢复
->     return ResponseEntity.ok(user);
-> }
-> ```
->
-> 对比说明：Python 的 `async def` 定义协程函数，`await` 暂停当前协程让出控制权。Java 的 `CompletableFuture` 通过回调链实现异步，但代码嵌套较深；Java 21 的 Virtual Threads 最接近 Python 的体验——写同步风格的代码，JVM 在 I/O 时自动挂起线程。Python 的 `await` ≈ Java 的 `.join()` 或 `.get()`（阻塞等待结果）。
+#### Java 对照
+
+Python async/await → Java 等价：
+
+```java
+// Python: async def register(req, db): ... await db.execute(...)
+// Java 等价写法 1：CompletableFuture（Java 8+）
+@Async
+public CompletableFuture<User> registerAsync(RegisterRequest req, DataSource db) {
+    return CompletableFuture.supplyAsync(() -> {
+        // 相当于 await db.execute(...)
+        return db.queryForObject("SELECT ...", new UserRowMapper());
+    });
+}
+
+// Java 等价写法 2：Virtual Threads（Java 21+，最接近 Python async 的体验）
+@PostMapping("/register")
+public ResponseEntity<?> register(@RequestBody RegisterRequest req) {
+    // Virtual Thread 下直接写同步代码，JVM 自动实现非阻塞
+    User user = db.queryForObject("SELECT ...", new UserRowMapper()); // 自动挂起/恢复
+    return ResponseEntity.ok(user);
+}
+```
+
+对比说明：Python 的 `async def` 定义协程函数，`await` 暂停当前协程让出控制权。Java 的 `CompletableFuture` 通过回调链实现异步，但代码嵌套较深；Java 21 的 Virtual Threads 最接近 Python 的体验——写同步风格的代码，JVM 在 I/O 时自动挂起线程。Python 的 `await` ≈ Java 的 `.join()` 或 `.get()`（阻塞等待结果）。
+
 
 ### async with 和 async for
 
@@ -290,31 +293,32 @@ def _validate_bcrypt_rounds(cls, v: int) -> int:
 - 如果值不在 4-31 之间，抛出 ValueError 阻止启动
 - `mode="after"` 表示在类型转换之后校验（先转 int，再校验范围）
 
-> **Java 对照**
->
-> Python 装饰器 → Java 等价：
->
-> ```java
-> // Python: @router.post("/register") + async def register(...)
-> // Java 等价写法（Spring MVC）
-> @RestController
-> @RequestMapping("/auth")
-> public class AuthController {
->     @PostMapping("/register")
->     @ResponseStatus(HttpStatus.CREATED)
->     public ResponseEntity<Map<String, String>> register(@RequestBody @Valid RegisterRequest req) {
->         // ...
->     }
-> }
->
-> // Python: @field_validator("bcrypt_rounds", mode="after")
-> // Java 等价写法（Bean Validation）
-> @Min(value = 4, message = "bcrypt_rounds must be at least 4")
-> @Max(value = 31, message = "bcrypt_rounds must be at most 31")
-> private int bcryptRounds = 12;
-> ```
->
-> 对比说明：Python 的 `@router.post("/register")` ≈ Java 的 `@PostMapping("/register")`，都是声明路由的装饰器/注解。Python 的 `@field_validator` ≈ Java 的 Bean Validation 注解（`@Min`、`@Max`、`@Email` 等）。Python 装饰器是"函数包装函数"的高阶函数，Java 注解则通过 AOP 或反射机制在运行时/编译时处理。Python 的 `APIRouter(prefix="/auth")` ≈ Java 的 `@RequestMapping("/auth")` 在类级别。
+#### Java 对照
+
+Python 装饰器 → Java 等价：
+
+```java
+// Python: @router.post("/register") + async def register(...)
+// Java 等价写法（Spring MVC）
+@RestController
+@RequestMapping("/auth")
+public class AuthController {
+    @PostMapping("/register")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ResponseEntity<Map<String, String>> register(@RequestBody @Valid RegisterRequest req) {
+        // ...
+    }
+}
+
+// Python: @field_validator("bcrypt_rounds", mode="after")
+// Java 等价写法（Bean Validation）
+@Min(value = 4, message = "bcrypt_rounds must be at least 4")
+@Max(value = 31, message = "bcrypt_rounds must be at most 31")
+private int bcryptRounds = 12;
+```
+
+对比说明：Python 的 `@router.post("/register")` ≈ Java 的 `@PostMapping("/register")`，都是声明路由的装饰器/注解。Python 的 `@field_validator` ≈ Java 的 Bean Validation 注解（`@Min`、`@Max`、`@Email` 等）。Python 装饰器是"函数包装函数"的高阶函数，Java 注解则通过 AOP 或反射机制在运行时/编译时处理。Python 的 `APIRouter(prefix="/auth")` ≈ Java 的 `@RequestMapping("/auth")` 在类级别。
+
 
 ### 动手练习
 
@@ -377,33 +381,34 @@ token_data = {
 
 这是手动构建字典。在更复杂的场景中，推导式更常见，比如在 [`schema_selection.py](../backend/app/ai/nodes/schema_selection.py)构建表结构上下文时。
 
-> **Java 对照**
->
-> Python 推导式 → Java 等价：
->
-> ```java
-> // Python: squares = [i ** 2 for i in range(10)]
-> // Java 等价写法（Stream API）
-> List<Integer> squares = IntStream.range(0, 10)
->     .map(i -> i * i)
->     .boxed()
->     .toList();
->
-> // Python: even_squares = [i ** 2 for i in range(10) if i % 2 == 0]
-> // Java 等价写法
-> List<Integer> evenSquares = IntStream.range(0, 10)
->     .filter(i -> i % 2 == 0)
->     .map(i -> i * i)
->     .boxed()
->     .toList();
->
-> // Python: user_dict = {k: str(v) for k, v in data.items()}
-> // Java 等价写法
-> Map<String, String> userDict = data.entrySet().stream()
->     .collect(Collectors.toMap(Map.Entry::getKey, e -> String.valueOf(e.getValue())));
-> ```
->
-> 对比说明：Python 的列表推导式 `[expr for x in iter if cond]` ≈ Java 的 `stream().filter().map().toList()`。Python 字典推导式 ≈ Java 的 `stream().collect(Collectors.toMap())`。Python 推导式更简洁（一行搞定），Java Stream API 更灵活（支持并行流 parallelStream）。
+#### Java 对照
+
+Python 推导式 → Java 等价：
+
+```java
+// Python: squares = [i ** 2 for i in range(10)]
+// Java 等价写法（Stream API）
+List<Integer> squares = IntStream.range(0, 10)
+    .map(i -> i * i)
+    .boxed()
+    .toList();
+
+// Python: even_squares = [i ** 2 for i in range(10) if i % 2 == 0]
+// Java 等价写法
+List<Integer> evenSquares = IntStream.range(0, 10)
+    .filter(i -> i % 2 == 0)
+    .map(i -> i * i)
+    .boxed()
+    .toList();
+
+// Python: user_dict = {k: str(v) for k, v in data.items()}
+// Java 等价写法
+Map<String, String> userDict = data.entrySet().stream()
+    .collect(Collectors.toMap(Map.Entry::getKey, e -> String.valueOf(e.getValue())));
+```
+
+对比说明：Python 的列表推导式 `[expr for x in iter if cond]` ≈ Java 的 `stream().filter().map().toList()`。Python 字典推导式 ≈ Java 的 `stream().collect(Collectors.toMap())`。Python 推导式更简洁（一行搞定），Java Stream API 更灵活（支持并行流 parallelStream）。
+
 
 ### 动手练习
 
@@ -456,27 +461,28 @@ tenant = Tenant(name=f"user-{uuid.uuid4().hex[:6]}")
 - `[:6]` — 取前 6 个字符
 - `f"user-{...}"` — 拼接成 `user-a3b2c1` 这样的租户名
 
-> **Java 对照**
->
-> Python f-string → Java 等价：
->
-> ```java
-> // Python: f"user-{uuid.uuid4().hex[:6]}"
-> // Java 等价写法 1：String.format()
-> String tenantName = String.format("user-%s",
->     UUID.randomUUID().toString().replace("-", "").substring(0, 6));
->
-> // Java 等价写法 2：Text Block（Java 15+，适合多行字符串）
-> String message = """
->     Hello, %s!
->     You are %d years old.
->     """.formatted(name, age);
->
-> // Java 等价写法 3：字符串拼接（简单场景）
-> String greeting = "Hello, " + name + "!";
-> ```
->
-> 对比说明：Python 的 `f"Hello {name}"` ≈ Java 的 `String.format("Hello %s", name)`。Python f-string 直接在 `{}` 里写表达式，更直观；Java 的 `String.format` 用 `%s`、`%d` 占位符。Java 15+ 的 Text Block（`"""`）适合多行字符串，类似 Python 的三引号字符串。
+#### Java 对照
+
+Python f-string → Java 等价：
+
+```java
+// Python: f"user-{uuid.uuid4().hex[:6]}"
+// Java 等价写法 1：String.format()
+String tenantName = String.format("user-%s",
+    UUID.randomUUID().toString().replace("-", "").substring(0, 6));
+
+// Java 等价写法 2：Text Block（Java 15+，适合多行字符串）
+String message = """
+    Hello, %s!
+    You are %d years old.
+    """.formatted(name, age);
+
+// Java 等价写法 3：字符串拼接（简单场景）
+String greeting = "Hello, " + name + "!";
+```
+
+对比说明：Python 的 `f"Hello {name}"` ≈ Java 的 `String.format("Hello %s", name)`。Python f-string 直接在 `{}` 里写表达式，更直观；Java 的 `String.format` 用 `%s`、`%d` 占位符。Java 15+ 的 Text Block（`"""`）适合多行字符串，类似 Python 的三引号字符串。
+
 
 ### 动手练习
 
@@ -566,15 +572,16 @@ FastAPI 用 Pydantic 做请求体验证和响应体序列化。
 | 字典结构提示 | TypedDict | 不创建新类，只标注类型 |
 | LangGraph 状态 | TypedDict | 框架要求，节点间共享 |
 
-> **Java 对照**
->
-> Python dataclass / TypedDict / Pydantic → Java 等价：
->
-> ```java
-> // Python @dataclass → Java Record（Java 16+）
-> // Python: @dataclass class Point: x: float; y: float
-> public record Point(double x, double y) {}
-> // 等价于 Lombok @Data，但 Record 是 Java 原生语法，自动生成 equals/hashCode/toString
+#### Java 对照
+
+Python dataclass / TypedDict / Pydantic → Java 等价：
+
+```java
+// Python @dataclass → Java Record（Java 16+）
+// Python: @dataclass class Point: x: float; y: float
+public record Point(double x, double y) {}
+// 等价于 Lombok @Data，但 Record 是 Java 原生语法，自动生成 equals/hashCode/toString
+
 
 // Python TypedDict → Java Map<String, Object>（无直接等价物）
 > // Python: class UserInfo(TypedDict): name: str; age: int
@@ -642,29 +649,30 @@ async def get_db():
 2. `yield session` 把会话交给路由函数使用
 3. 请求结束后，`async with` 确保会话自动关闭
 
-> **Java 对照**
->
-> Python 上下文管理器 → Java 等价：
->
-> ```java
-> // Python: async with async_session_factory() as session:
-> // Java 等价写法：try-with-resources（Java 7+）
-> try (Session session = sessionFactory.openSession()) {
->     // session 在 try 块结束后自动关闭（调用 close()）
->     User user = session.get(User.class, userId);
->     // 无论是否抛异常，session 都会被关闭
-> }
->
-> // 自定义资源类需要实现 AutoCloseable 接口
-> public class DatabaseSession implements AutoCloseable {
->     @Override
->     public void close() {
->         // 释放连接，等价于 Python 的 __aexit__
->     }
-> }
-> ```
->
-> 对比说明：Python 的 `with` / `async with` ≈ Java 的 `try-with-resources`。Python 的 `__enter__`/`__exit__` ≈ Java 的 `AutoCloseable` 接口。两者都能确保资源在使用后自动释放，即使发生异常。Python 的 `yield` 在生成器中实现依赖注入，Java 中对应的模式是 Spring 的 `@Transactional` 注解自动管理 Session 生命周期。
+#### Java 对照
+
+Python 上下文管理器 → Java 等价：
+
+```java
+// Python: async with async_session_factory() as session:
+// Java 等价写法：try-with-resources（Java 7+）
+try (Session session = sessionFactory.openSession()) {
+    // session 在 try 块结束后自动关闭（调用 close()）
+    User user = session.get(User.class, userId);
+    // 无论是否抛异常，session 都会被关闭
+}
+
+// 自定义资源类需要实现 AutoCloseable 接口
+public class DatabaseSession implements AutoCloseable {
+    @Override
+    public void close() {
+        // 释放连接，等价于 Python 的 __aexit__
+    }
+}
+```
+
+对比说明：Python 的 `with` / `async with` ≈ Java 的 `try-with-resources`。Python 的 `__enter__`/`__exit__` ≈ Java 的 `AutoCloseable` 接口。两者都能确保资源在使用后自动释放，即使发生异常。Python 的 `yield` 在生成器中实现依赖注入，Java 中对应的模式是 Spring 的 `@Transactional` 注解自动管理 Session 生命周期。
+
 
 ### 动手练习
 
@@ -736,34 +744,35 @@ from app.api._helpers import api_error               # 共享工具函数
 - `app.services.login_lock_service` → `backend/app/services/login_lock_service.py`
 - `app.api._helpers` → `backend/app/api/_helpers.py`
 
-> **Java 对照**
->
-> Python 模块与包 → Java 等价：
->
-> ```java
-> // Python: from app.ai.nodes.intent import classify_intent_node
-> // Java 等价写法：
-> import com.chatbi.ai.nodes.intent.ClassifyIntentNode;
->
-> // Python: from app.core.config import settings
-> // Java 等价写法：
-> import com.chatbi.core.config.Settings;
-> // 或 Spring 的依赖注入：
-> @Autowired
-> private Settings settings;
->
-> // Python 包（含 __init__.py 的目录）≈ Java package
-> // Python: app.ai.nodes  →  Java: com.chatbi.ai.nodes
->
-> // Maven 多模块项目的类比：
-> // backend/         → Java 项目的根目录
-> //   app/           → src/main/java/com/chatbi/
-> //     ai/          → com/chatbi/ai/（一个 Maven module 或 package）
-> //     api/         → com/chatbi/api/（另一个 module）
-> //     core/        → com/chatbi/core/
-> ```
->
-> 对比说明：Python 的 `.py` 文件 = Java 的 `.java` 文件（都是编译/解释单元）。Python 的包（含 `__init__.py` 的目录）≈ Java 的 package。Python 的 `from app.core.config import settings` ≈ Java 的 `import com.chatbi.core.config.Settings`。Python 不需要 Maven/Gradle 管理依赖（用 pip + requirements.txt），Java 用 Maven/Gradle 管理模块和依赖。
+#### Java 对照
+
+Python 模块与包 → Java 等价：
+
+```java
+// Python: from app.ai.nodes.intent import classify_intent_node
+// Java 等价写法：
+import com.chatbi.ai.nodes.intent.ClassifyIntentNode;
+
+// Python: from app.core.config import settings
+// Java 等价写法：
+import com.chatbi.core.config.Settings;
+// 或 Spring 的依赖注入：
+@Autowired
+private Settings settings;
+
+// Python 包（含 __init__.py 的目录）≈ Java package
+// Python: app.ai.nodes  →  Java: com.chatbi.ai.nodes
+
+// Maven 多模块项目的类比：
+// backend/         → Java 项目的根目录
+//   app/           → src/main/java/com/chatbi/
+//     ai/          → com/chatbi/ai/（一个 Maven module 或 package）
+//     api/         → com/chatbi/api/（另一个 module）
+//     core/        → com/chatbi/core/
+```
+
+对比说明：Python 的 `.py` 文件 = Java 的 `.java` 文件（都是编译/解释单元）。Python 的包（含 `__init__.py` 的目录）≈ Java 的 package。Python 的 `from app.core.config import settings` ≈ Java 的 `import com.chatbi.core.config.Settings`。Python 不需要 Maven/Gradle 管理依赖（用 pip + requirements.txt），Java 用 Maven/Gradle 管理模块和依赖。
+
 
 ### 动手练习
 
@@ -836,33 +845,34 @@ app.include_router(query_router, prefix=settings.api_prefix)
 - POST `/chat-bi/api/v1/auth/login`
 - POST `/chat-bi/api/v1/query`
 
-> **Java 对照**
->
-> Python FastAPI 路由 → Java Spring MVC 等价：
->
-> ```java
-> // Python: router = APIRouter(prefix="/auth", tags=["认证"])
-> //         @router.post("/register")
-> // Java 等价写法：
-> @RestController
-> @RequestMapping("/chat-bi/api/v1/auth")  // prefix + tags 合并为类级 @RequestMapping
-> @Tag(name = "认证")                       // Swagger 文档分组
-> public class AuthController {
->
->     @PostMapping("/register")
->     @ResponseStatus(HttpStatus.CREATED)    // 等价于 status_code=status.HTTP_201_CREATED
->     public Map<String, String> register(@RequestBody RegisterRequest req) {
->         // ...
->     }
->
->     @PostMapping("/login")
->     public TokenResponse login(@RequestBody LoginRequest req) {
->         // ...
->     }
-> }
-> ```
->
-> 对比说明：Python 的 `APIRouter(prefix="/auth")` ≈ Java 的 `@RequestMapping("/auth")` 在类级别。`@router.post("/register")` ≈ `@PostMapping("/register")`。`response_model=dict` ≈ 方法返回类型 `Map<String, String>`。`app.include_router(auth_router, prefix=settings.api_prefix)` ≈ Spring Boot 的组件扫描自动注册 `@RestController`。
+#### Java 对照
+
+Python FastAPI 路由 → Java Spring MVC 等价：
+
+```java
+// Python: router = APIRouter(prefix="/auth", tags=["认证"])
+//         @router.post("/register")
+// Java 等价写法：
+@RestController
+@RequestMapping("/chat-bi/api/v1/auth")  // prefix + tags 合并为类级 @RequestMapping
+@Tag(name = "认证")                       // Swagger 文档分组
+public class AuthController {
+
+    @PostMapping("/register")
+    @ResponseStatus(HttpStatus.CREATED)    // 等价于 status_code=status.HTTP_201_CREATED
+    public Map<String, String> register(@RequestBody RegisterRequest req) {
+        // ...
+    }
+
+    @PostMapping("/login")
+    public TokenResponse login(@RequestBody LoginRequest req) {
+        // ...
+    }
+}
+```
+
+对比说明：Python 的 `APIRouter(prefix="/auth")` ≈ Java 的 `@RequestMapping("/auth")` 在类级别。`@router.post("/register")` ≈ `@PostMapping("/register")`。`response_model=dict` ≈ 方法返回类型 `Map<String, String>`。`app.include_router(auth_router, prefix=settings.api_prefix)` ≈ Spring Boot 的组件扫描自动注册 `@RestController`。
+
 
 ### 动手练习
 
@@ -889,36 +899,37 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 `Depends(get_db)` 告诉 FastAPI："调用 register 时，先调用 get_db() 获取数据库会话，传给 db 参数。"
 
-> **Java 对照**
->
-> Python FastAPI Depends → Java Spring 等价：
->
-> ```java
-> // Python: db: AsyncSession = Depends(get_db)
-> // Java 等价写法 1：字段注入
-> @RestController
-> public class AuthController {
->     @Autowired                    // Spring 自动注入 DataSource
->     private DataSource dataSource; // ≈ Depends(get_db)
->
->     @PostMapping("/register")
->     public ResponseEntity<?> register(@RequestBody RegisterRequest req) {
->         try (Connection conn = dataSource.getConnection()) { ... }
->     }
-> }
->
-> // Java 等价写法 2：构造器注入（推荐）
-> @RestController
-> public class AuthController {
->     private final DataSource dataSource;
->
->     public AuthController(DataSource dataSource) {  // 构造器注入 ≈ Depends
->         this.dataSource = dataSource;
->     }
-> }
-> ```
->
-> 对比说明：Python 的 `Depends(get_db)` ≈ Java Spring 的 `@Autowired` 或构造器注入。FastAPI 的依赖注入是"函数级"的——每个参数可以声明自己的依赖；Spring 的依赖注入是"类级"的——字段或构造器参数上标注 `@Autowired`。FastAPI 的 `get_db()` 使用生成器（yield）管理请求级别的 Session 生命周期，Spring 中对应的是 `@Transactional` 注解或 `OpenSessionInViewFilter`。
+#### Java 对照
+
+Python FastAPI Depends → Java Spring 等价：
+
+```java
+// Python: db: AsyncSession = Depends(get_db)
+// Java 等价写法 1：字段注入
+@RestController
+public class AuthController {
+    @Autowired                    // Spring 自动注入 DataSource
+    private DataSource dataSource; // ≈ Depends(get_db)
+
+    @PostMapping("/register")
+    public ResponseEntity<?> register(@RequestBody RegisterRequest req) {
+        try (Connection conn = dataSource.getConnection()) { ... }
+    }
+}
+
+// Java 等价写法 2：构造器注入（推荐）
+@RestController
+public class AuthController {
+    private final DataSource dataSource;
+
+    public AuthController(DataSource dataSource) {  // 构造器注入 ≈ Depends
+        this.dataSource = dataSource;
+    }
+}
+```
+
+对比说明：Python 的 `Depends(get_db)` ≈ Java Spring 的 `@Autowired` 或构造器注入。FastAPI 的依赖注入是"函数级"的——每个参数可以声明自己的依赖；Spring 的依赖注入是"类级"的——字段或构造器参数上标注 `@Autowired`。FastAPI 的 `get_db()` 使用生成器（yield）管理请求级别的 Session 生命周期，Spring 中对应的是 `@Transactional` 注解或 `OpenSessionInViewFilter`。
+
 
 ### 在我们的项目里
 
@@ -967,35 +978,36 @@ class TokenResponse(BaseModel):
 
 当 FastAPI 看到 `response_model=TokenResponse`，会自动把返回值序列化为 JSON，只包含 TokenResponse 定义的字段。
 
-> **Java 对照**
->
-> Python Pydantic Schema → Java 等价：
->
-> ```java
-> // Python: class RegisterRequest(BaseModel): email: EmailStr; password: str
-> // Java 等价写法：DTO + Bean Validation
-> public class RegisterRequest {
->     @Email(message = "邮箱格式不正确")        // ≈ EmailStr
->     @NotBlank(message = "邮箱不能为空")
->     private String email;
->
->     @NotBlank(message = "密码不能为空")
->     @Size(min = 8, max = 128, message = "密码长度 8-128")
->     private String password;
->     // getter/setter 省略（Lombok @Data 自动生成）
-> }
->
-> // Python: class TokenResponse(BaseModel): access_token: str; refresh_token: str
-> // Java 等价写法：
-> public class TokenResponse {
->     private String accessToken;
->     private String refreshToken;
->     private boolean emailVerified;
->     // Jackson 自动序列化为 JSON，等价于 Pydantic 的序列化
-> }
-> ```
->
-> 对比说明：Python 的 `Pydantic BaseModel` ≈ Java 的 DTO + Bean Validation 注解。`EmailStr` ≈ `@Email`，`min_length` ≈ `@Size(min=...)`。Pydantic 在反序列化时自动校验，Java 需要在 Controller 参数上加 `@Valid` 注解触发校验。`response_model=TokenResponse` 的过滤效果 ≈ Java 中 Jackson 的 `@JsonView` 或 DTO 只暴露需要的字段。
+#### Java 对照
+
+Python Pydantic Schema → Java 等价：
+
+```java
+// Python: class RegisterRequest(BaseModel): email: EmailStr; password: str
+// Java 等价写法：DTO + Bean Validation
+public class RegisterRequest {
+    @Email(message = "邮箱格式不正确")        // ≈ EmailStr
+    @NotBlank(message = "邮箱不能为空")
+    private String email;
+
+    @NotBlank(message = "密码不能为空")
+    @Size(min = 8, max = 128, message = "密码长度 8-128")
+    private String password;
+    // getter/setter 省略（Lombok @Data 自动生成）
+}
+
+// Python: class TokenResponse(BaseModel): access_token: str; refresh_token: str
+// Java 等价写法：
+public class TokenResponse {
+    private String accessToken;
+    private String refreshToken;
+    private boolean emailVerified;
+    // Jackson 自动序列化为 JSON，等价于 Pydantic 的序列化
+}
+```
+
+对比说明：Python 的 `Pydantic BaseModel` ≈ Java 的 DTO + Bean Validation 注解。`EmailStr` ≈ `@Email`，`min_length` ≈ `@Size(min=...)`。Pydantic 在反序列化时自动校验，Java 需要在 Controller 参数上加 `@Valid` 注解触发校验。`response_model=TokenResponse` 的过滤效果 ≈ Java 中 Jackson 的 `@JsonView` 或 DTO 只暴露需要的字段。
+
 
 ### 动手练习
 
@@ -1087,38 +1099,39 @@ app.add_middleware(ASGIMiddleware, middleware=rate_limit_middleware)
               安全头中间件添加 headers → CORS 添加 headers → 返回客户端
 ```
 
-> **Java 对照**
->
-> Python FastAPI 中间件 → Java Spring 等价：
->
-> ```java
-> // Python: app.add_middleware(CORSMiddleware, ...)
-> // Java 等价写法：Spring HandlerInterceptor / Servlet Filter
->
-> // 方式 1：HandlerInterceptor（Spring MVC 层）
-> @Component
-> public class SecurityHeadersInterceptor implements HandlerInterceptor {
->     @Override
->     public void postHandle(HttpServletRequest req, HttpServletResponse resp,
->                            Object handler, ModelAndView modelAndView) {
->         resp.setHeader("X-Content-Type-Options", "nosniff");
->         resp.setHeader("X-Frame-Options", "DENY");
->     }
-> }
->
-> // 方式 2：OncePerRequestFilter（Servlet 层，更通用）
-> @Component
-> public class RateLimitFilter extends OncePerRequestFilter {
->     @Override
->     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse resp,
->                                    FilterChain chain) throws ServletException, IOException {
->         // 限流逻辑...
->         chain.doFilter(req, resp); // 继续执行下一个中间件/路由
->     }
-> }
-> ```
->
-> 对比说明：Python FastAPI 的中间件 ≈ Java Spring 的 `HandlerInterceptor` 或 Servlet `Filter`。执行顺序都是"洋葱模型"——请求从外层穿到内层（路由），响应从内层返回外层。`CORSMiddleware` ≈ Spring 的 `@CrossOrigin` 注解或 `CorsFilter`。安全头中间件 ≈ Spring Security 的 `HeaderWriterFilter`。限流中间件 ≈ Bucket4j 或自定义 `RateLimitFilter`。
+#### Java 对照
+
+Python FastAPI 中间件 → Java Spring 等价：
+
+```java
+// Python: app.add_middleware(CORSMiddleware, ...)
+// Java 等价写法：Spring HandlerInterceptor / Servlet Filter
+
+// 方式 1：HandlerInterceptor（Spring MVC 层）
+@Component
+public class SecurityHeadersInterceptor implements HandlerInterceptor {
+    @Override
+    public void postHandle(HttpServletRequest req, HttpServletResponse resp,
+                           Object handler, ModelAndView modelAndView) {
+        resp.setHeader("X-Content-Type-Options", "nosniff");
+        resp.setHeader("X-Frame-Options", "DENY");
+    }
+}
+
+// 方式 2：OncePerRequestFilter（Servlet 层，更通用）
+@Component
+public class RateLimitFilter extends OncePerRequestFilter {
+    @Override
+    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse resp,
+                                   FilterChain chain) throws ServletException, IOException {
+        // 限流逻辑...
+        chain.doFilter(req, resp); // 继续执行下一个中间件/路由
+    }
+}
+```
+
+对比说明：Python FastAPI 的中间件 ≈ Java Spring 的 `HandlerInterceptor` 或 Servlet `Filter`。执行顺序都是"洋葱模型"——请求从外层穿到内层（路由），响应从内层返回外层。`CORSMiddleware` ≈ Spring 的 `@CrossOrigin` 注解或 `CorsFilter`。安全头中间件 ≈ Spring Security 的 `HeaderWriterFilter`。限流中间件 ≈ Bucket4j 或自定义 `RateLimitFilter`。
+
 
 ### 动手练习
 
@@ -1166,40 +1179,41 @@ return StreamingResponse(
 
 `execute_query_pipeline()` 是一个 async generator，每完成一个 AI 步骤就 yield 一个事件。
 
-> **Java 对照**
->
-> Python FastAPI SSE → Java Spring 等价：
->
-> ```java
-> // Python: return StreamingResponse(event_generator(), media_type="text/event-stream")
-> // Java 等价写法 1：SseEmitter（Spring MVC，阻塞式）
-> @PostMapping("/query")
-> public SseEmitter query(@RequestBody QueryRequest req) {
->     SseEmitter emitter = new SseEmitter(90_000L); // 超时 90 秒
->     executorService.submit(() -> {
->         try {
->             emitter.send(SseEmitter.event().data("{\"step\": \"intent\"}"));
->             emitter.send(SseEmitter.event().data("{\"step\": \"schema\"}"));
->             emitter.send(SseEmitter.event().data("{\"step\": \"result\"}"));
->             emitter.complete();
->         } catch (IOException e) {
->             emitter.completeWithError(e);
->         }
->     });
->     return emitter;
-> }
->
-> // Java 等价写法 2：WebFlux Flux<ServerSentEvent>（响应式）
-> @PostMapping(value = "/query", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-> public Flux<ServerSentEvent<String>> query(@RequestBody QueryRequest req) {
->     return Flux.just(
->         ServerSentEvent.builder("{\"step\":\"intent\"}").build(),
->         ServerSentEvent.builder("{\"step\":\"result\"}").build()
->     );
-> }
-> ```
->
-> 对比说明：Python 的 `StreamingResponse` + async generator ≈ Java 的 `SseEmitter`（Spring MVC）或 `Flux<ServerSentEvent>`（WebFlux）。Python 的 `yield` 每次推送一条消息 ≈ Java 的 `emitter.send()`。WebFlux 的 `Flux` 更接近 Python async generator 的流式语义。
+#### Java 对照
+
+Python FastAPI SSE → Java Spring 等价：
+
+```java
+// Python: return StreamingResponse(event_generator(), media_type="text/event-stream")
+// Java 等价写法 1：SseEmitter（Spring MVC，阻塞式）
+@PostMapping("/query")
+public SseEmitter query(@RequestBody QueryRequest req) {
+    SseEmitter emitter = new SseEmitter(90_000L); // 超时 90 秒
+    executorService.submit(() -> {
+        try {
+            emitter.send(SseEmitter.event().data("{\"step\": \"intent\"}"));
+            emitter.send(SseEmitter.event().data("{\"step\": \"schema\"}"));
+            emitter.send(SseEmitter.event().data("{\"step\": \"result\"}"));
+            emitter.complete();
+        } catch (IOException e) {
+            emitter.completeWithError(e);
+        }
+    });
+    return emitter;
+}
+
+// Java 等价写法 2：WebFlux Flux<ServerSentEvent>（响应式）
+@PostMapping(value = "/query", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> query(@RequestBody QueryRequest req) {
+    return Flux.just(
+        ServerSentEvent.builder("{\"step\":\"intent\"}").build(),
+        ServerSentEvent.builder("{\"step\":\"result\"}").build()
+    );
+}
+```
+
+对比说明：Python 的 `StreamingResponse` + async generator ≈ Java 的 `SseEmitter`（Spring MVC）或 `Flux<ServerSentEvent>`（WebFlux）。Python 的 `yield` 每次推送一条消息 ≈ Java 的 `emitter.send()`。WebFlux 的 `Flux` 更接近 Python async generator 的流式语义。
+
 
 ### 动手练习
 
@@ -1220,36 +1234,37 @@ async def sync(background_tasks: BackgroundTasks):
     return {"status": "started"}  # 立即返回，sync 在后台执行
 ```
 
-> **Java 对照**
->
-> Python FastAPI BackgroundTasks → Java Spring 等价：
->
-> ```java
-> // Python: background_tasks.add_task(run_sync_job, datasource_id)
-> // Java 等价写法 1：@Async + ThreadPoolTaskExecutor
-> @Service
-> public class SyncService {
->     @Async  // 在独立线程中执行，不阻塞调用方
->     public void runSyncJob(UUID datasourceId) {
->         // 耗时的同步操作...
->     }
-> }
->
-> @PostMapping("/sync")
-> public ResponseEntity<?> sync(@RequestParam UUID datasourceId) {
->     syncService.runSyncJob(datasourceId); // @Async 使其异步执行
->     return ResponseEntity.ok(Map.of("status", "started"));
-> }
->
-> // Java 等价写法 2：CompletableFuture
-> @PostMapping("/sync")
-> public ResponseEntity<?> sync(@RequestParam UUID datasourceId) {
->     CompletableFuture.runAsync(() -> runSyncJob(datasourceId), taskExecutor);
->     return ResponseEntity.ok(Map.of("status", "started"));
-> }
-> ```
->
-> 对比说明：Python 的 `BackgroundTasks.add_task()` ≈ Java Spring 的 `@Async` 注解。两者都是"提交任务后立即返回，后台执行"。Python 版本更轻量（直接传函数引用），Java 版本需要配合 `@EnableAsync` 配置和线程池。`CompletableFuture.runAsync()` 是 Java 8+ 的通用异步方案。
+#### Java 对照
+
+Python FastAPI BackgroundTasks → Java Spring 等价：
+
+```java
+// Python: background_tasks.add_task(run_sync_job, datasource_id)
+// Java 等价写法 1：@Async + ThreadPoolTaskExecutor
+@Service
+public class SyncService {
+    @Async  // 在独立线程中执行，不阻塞调用方
+    public void runSyncJob(UUID datasourceId) {
+        // 耗时的同步操作...
+    }
+}
+
+@PostMapping("/sync")
+public ResponseEntity<?> sync(@RequestParam UUID datasourceId) {
+    syncService.runSyncJob(datasourceId); // @Async 使其异步执行
+    return ResponseEntity.ok(Map.of("status", "started"));
+}
+
+// Java 等价写法 2：CompletableFuture
+@PostMapping("/sync")
+public ResponseEntity<?> sync(@RequestParam UUID datasourceId) {
+    CompletableFuture.runAsync(() -> runSyncJob(datasourceId), taskExecutor);
+    return ResponseEntity.ok(Map.of("status", "started"));
+}
+```
+
+对比说明：Python 的 `BackgroundTasks.add_task()` ≈ Java Spring 的 `@Async` 注解。两者都是"提交任务后立即返回，后台执行"。Python 版本更轻量（直接传函数引用），Java 版本需要配合 `@EnableAsync` 配置和线程池。`CompletableFuture.runAsync()` 是 Java 8+ 的通用异步方案。
+
 
 ### 动手练习
 
@@ -1290,41 +1305,42 @@ async def lifespan(app: FastAPI):
 
 `yield` 是分界线：之前是启动逻辑，之后是关闭逻辑。这和 `get_db()` 的 `yield session` 是同一个模式。
 
-> **Java 对照**
->
-> Python FastAPI lifespan → Java Spring 等价：
->
-> ```java
-> // Python: @asynccontextmanager + async def lifespan(app): ... yield ... ...
-> // Java 等价写法 1：@PostConstruct + @PreDestroy
-> @Component
-> public class AppLifecycle {
->     @PostConstruct  // ≈ lifespan 中 yield 之前（启动阶段）
->     public void onStartup() {
->         databaseMigrationService.createTables();  // 建表
->         cacheService.clearAll();                   // 清缓存
->         schedulerService.start();                   // 启动定时任务
->     }
->
->     @PreDestroy   // ≈ lifespan 中 yield 之后（关闭阶段）
->     public void onShutdown() {
->         schedulerService.stop();               // 停止定时任务
->         connectionPool.closeAll();              // 释放连接池
->         redisClient.close();                    // 释放 Redis
->     }
-> }
->
-> // Java 等价写法 2：ApplicationRunner / CommandLineRunner（更灵活）
-> @Component
-> public class AppStartupRunner implements ApplicationRunner {
->     @Override
->     public void run(ApplicationArguments args) {
->         // 应用启动后执行初始化逻辑
->     }
-> }
-> ```
->
-> 对比说明：Python 的 `lifespan` 用一个函数同时管理启动和关闭（yield 分隔），Java Spring 则拆分为 `@PostConstruct`（启动）和 `@PreDestroy`（关闭）。`ApplicationRunner` ≈ lifespan 的启动阶段，`@PreDestroy` 或 `DisposableBean` ≈ lifespan 的关闭阶段。Spring Boot 的 `SmartLifecycle` 接口也提供了类似的启动/停止控制。
+#### Java 对照
+
+Python FastAPI lifespan → Java Spring 等价：
+
+```java
+// Python: @asynccontextmanager + async def lifespan(app): ... yield ... ...
+// Java 等价写法 1：@PostConstruct + @PreDestroy
+@Component
+public class AppLifecycle {
+    @PostConstruct  // ≈ lifespan 中 yield 之前（启动阶段）
+    public void onStartup() {
+        databaseMigrationService.createTables();  // 建表
+        cacheService.clearAll();                   // 清缓存
+        schedulerService.start();                   // 启动定时任务
+    }
+
+    @PreDestroy   // ≈ lifespan 中 yield 之后（关闭阶段）
+    public void onShutdown() {
+        schedulerService.stop();               // 停止定时任务
+        connectionPool.closeAll();              // 释放连接池
+        redisClient.close();                    // 释放 Redis
+    }
+}
+
+// Java 等价写法 2：ApplicationRunner / CommandLineRunner（更灵活）
+@Component
+public class AppStartupRunner implements ApplicationRunner {
+    @Override
+    public void run(ApplicationArguments args) {
+        // 应用启动后执行初始化逻辑
+    }
+}
+```
+
+对比说明：Python 的 `lifespan` 用一个函数同时管理启动和关闭（yield 分隔），Java Spring 则拆分为 `@PostConstruct`（启动）和 `@PreDestroy`（关闭）。`ApplicationRunner` ≈ lifespan 的启动阶段，`@PreDestroy` 或 `DisposableBean` ≈ lifespan 的关闭阶段。Spring Boot 的 `SmartLifecycle` 接口也提供了类似的启动/停止控制。
+
 
 ### 动手练习
 
@@ -1495,35 +1511,36 @@ class Tenant(Base):
 
 ORM 的好处：Python 代码和数据库自动同步，不用维护两套定义。
 
-> **Java 对照**
->
-> Python SQLAlchemy 声明式模型 → Java JPA/Hibernate 等价：
->
-> ```java
-> // Python: class Tenant(Base): __tablename__ = "tenants"
-> // Java 等价写法（JPA + Hibernate）
-> @Entity
-> @Table(name = "tenants")
-> public class Tenant {
->     @Id
->     @GeneratedValue(strategy = GenerationType.AUTO)
->     @Column(columnDefinition = "CHAR(36)")
->     private UUID id;
->
->     @Column(name = "name", nullable = false, length = 200)
->     private String name;
->
->     @Column(name = "created_at", updatable = false)
->     @CreationTimestamp
->     private LocalDateTime createdAt;
->
->     @Column(name = "updated_at")
->     @UpdateTimestamp
->     private LocalDateTime updatedAt;
-> }
-> ```
->
-> 对比说明：Python 的 `class Tenant(Base)` ≈ Java 的 `@Entity public class Tenant`。`__tablename__ = "tenants"` ≈ `@Table(name = "tenants")`。`Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True)` ≈ `@Id @Column UUID id`。`mapped_column(String(200), nullable=False)` ≈ `@Column(nullable = false, length = 200)`。SQLAlchemy 的 `server_default=func.now()` ≈ Hibernate 的 `@CreationTimestamp`。两者都是 ORM 框架，用类描述表，自动生成 DDL。
+#### Java 对照
+
+Python SQLAlchemy 声明式模型 → Java JPA/Hibernate 等价：
+
+```java
+// Python: class Tenant(Base): __tablename__ = "tenants"
+// Java 等价写法（JPA + Hibernate）
+@Entity
+@Table(name = "tenants")
+public class Tenant {
+    @Id
+    @GeneratedValue(strategy = GenerationType.AUTO)
+    @Column(columnDefinition = "CHAR(36)")
+    private UUID id;
+
+    @Column(name = "name", nullable = false, length = 200)
+    private String name;
+
+    @Column(name = "created_at", updatable = false)
+    @CreationTimestamp
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at")
+    @UpdateTimestamp
+    private LocalDateTime updatedAt;
+}
+```
+
+对比说明：Python 的 `class Tenant(Base)` ≈ Java 的 `@Entity public class Tenant`。`__tablename__ = "tenants"` ≈ `@Table(name = "tenants")`。`Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True)` ≈ `@Id @Column UUID id`。`mapped_column(String(200), nullable=False)` ≈ `@Column(nullable = false, length = 200)`。SQLAlchemy 的 `server_default=func.now()` ≈ Hibernate 的 `@CreationTimestamp`。两者都是 ORM 框架，用类描述表，自动生成 DDL。
+
 
 ### 动手练习
 
@@ -1572,32 +1589,33 @@ password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 - `index=True` — 创建索引，加速查询
 - `unique=True` — 唯一约束，不能重复
 
-> **Java 对照**
->
-> Python Mapped 类型 → Java JPA 等价：
->
-> ```java
-> // Python: id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
-> // Java 等价写法：
-> @Id
-> @GeneratedValue(generator = "UUID")
-> @Column(columnDefinition = "CHAR(36)")
-> private UUID id;
->
-> // Python: email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
-> // Java 等价写法：
-> @Column(name = "email", nullable = false, unique = true, length = 255)
-> @Index(name = "idx_users_email")   // 在 @Table 中定义
-> private String email;
->
-> // Python: tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
-> // Java 等价写法：
-> @Column(name = "tenant_id", nullable = false)
-> @Index(name = "idx_users_tenant_id")
-> private UUID tenantId;
-> ```
->
-> 对比说明：Python 的 `Mapped[uuid.UUID]` 同时声明了 Python 类型和数据库列，Java 的 `@Column` 注解只声明数据库约束，类型由字段声明决定。`primary_key=True` ≈ `@Id`。`default=uuid.uuid4` ≈ `@GeneratedValue`。`index=True` ≈ `@Index`。`unique=True` ≈ `@Column(unique = true)`。SQLAlchemy 的 `Mapped` 是 2.0 新语法，比旧版 `Column()` 更类型安全。
+#### Java 对照
+
+Python Mapped 类型 → Java JPA 等价：
+
+```java
+// Python: id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+// Java 等价写法：
+@Id
+@GeneratedValue(generator = "UUID")
+@Column(columnDefinition = "CHAR(36)")
+private UUID id;
+
+// Python: email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+// Java 等价写法：
+@Column(name = "email", nullable = false, unique = true, length = 255)
+@Index(name = "idx_users_email")   // 在 @Table 中定义
+private String email;
+
+// Python: tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+// Java 等价写法：
+@Column(name = "tenant_id", nullable = false)
+@Index(name = "idx_users_tenant_id")
+private UUID tenantId;
+```
+
+对比说明：Python 的 `Mapped[uuid.UUID]` 同时声明了 Python 类型和数据库列，Java 的 `@Column` 注解只声明数据库约束，类型由字段声明决定。`primary_key=True` ≈ `@Id`。`default=uuid.uuid4` ≈ `@GeneratedValue`。`index=True` ≈ `@Index`。`unique=True` ≈ `@Column(unique = true)`。SQLAlchemy 的 `Mapped` 是 2.0 新语法，比旧版 `Column()` 更类型安全。
+
 
 ### 动手练习
 
@@ -1628,34 +1646,35 @@ result = await db.execute(
 )
 ```
 
-> **Java 对照**
->
-> Python SQLAlchemy 关系与外键 → Java JPA 等价：
->
-> ```java
-> // Python: tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
-> // Java 等价写法：@ManyToOne + @JoinColumn
-> @Entity
-> @Table(name = "users")
-> public class User {
->     @ManyToOne(fetch = FetchType.LAZY)
->     @JoinColumn(name = "tenant_id", nullable = false)
->     private Tenant tenant;  // 对象引用（ORM 自动加载关联对象）
->
->     // 或者只存 ID（ChatBI 的做法——不声明 JPA 关系，用应用层保证一致性）
->     @Column(name = "tenant_id", nullable = false)
->     private UUID tenantId;
-> }
->
-> // Python: select(User).where(User.tenant_id == tenant_id)
-> // Java 等价写法：JPA Repository / JPQL
-> @Repository
-> public interface UserRepository extends JpaRepository<User, UUID> {
->     List<User> findByTenantId(UUID tenantId);  // Spring Data 自动生成 SQL
-> }
-> ```
->
-> 对比说明：Python 的 `mapped_column(GUID, nullable=False, index=True)` 声明逻辑外键 ≈ Java 的 `@ManyToOne @JoinColumn`。ChatBI 没有使用 `ForeignKey` 约束，和 Java 中只用 `@Column` 不用 `@ManyToOne` 类似——通过应用层保证一致性，避免外键对写入性能的影响。`select(User).where(...)` ≈ JPA 的 `findByTenantId()` 或 JPQL `SELECT u FROM User u WHERE u.tenantId = :id`。
+#### Java 对照
+
+Python SQLAlchemy 关系与外键 → Java JPA 等价：
+
+```java
+// Python: tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+// Java 等价写法：@ManyToOne + @JoinColumn
+@Entity
+@Table(name = "users")
+public class User {
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "tenant_id", nullable = false)
+    private Tenant tenant;  // 对象引用（ORM 自动加载关联对象）
+
+    // 或者只存 ID（ChatBI 的做法——不声明 JPA 关系，用应用层保证一致性）
+    @Column(name = "tenant_id", nullable = false)
+    private UUID tenantId;
+}
+
+// Python: select(User).where(User.tenant_id == tenant_id)
+// Java 等价写法：JPA Repository / JPQL
+@Repository
+public interface UserRepository extends JpaRepository<User, UUID> {
+    List<User> findByTenantId(UUID tenantId);  // Spring Data 自动生成 SQL
+}
+```
+
+对比说明：Python 的 `mapped_column(GUID, nullable=False, index=True)` 声明逻辑外键 ≈ Java 的 `@ManyToOne @JoinColumn`。ChatBI 没有使用 `ForeignKey` 约束，和 Java 中只用 `@Column` 不用 `@ManyToOne` 类似——通过应用层保证一致性，避免外键对写入性能的影响。`select(User).where(...)` ≈ JPA 的 `findByTenantId()` 或 JPQL `SELECT u FROM User u WHERE u.tenantId = :id`。
+
 
 ### 动手练习
 
@@ -1718,45 +1737,46 @@ async def get_db():
 请求进来 → FastAPI 调用 get_db() → 创建 Session → 传给路由函数 → 路由执行完毕 → Session 自动关闭
 ```
 
-> **Java 对照**
->
-> Python SQLAlchemy 异步 Session → Java JPA 等价：
->
-> ```java
-> // Python: engine = create_async_engine(settings.database_url, ...)
-> // Java 等价：EntityManagerFactory（JPA）或 HikariCP DataSource
-> @Configuration
-> public class DatabaseConfig {
->     @Bean
->     public DataSource dataSource() {
->         HikariConfig config = new HikariConfig();
->         config.setJdbcUrl("jdbc:mysql://localhost:3306/chatbi");
->         config.setMaximumPoolSize(10);      // ≈ pool_max_size
->         config.setMinimumIdle(5);           // ≈ pool_min_size
->         config.setIdleTimeout(30000);       // ≈ pool_timeout
->         config.setMaxLifetime(3600000);     // ≈ pool_recycle
->         config.setConnectionTimeout(30000); // 获取连接超时
->         return new HikariDataSource(config);
->     }
->
->     @Bean
->     public EntityManagerFactory entityManagerFactory(DataSource ds) {
->         // ≈ async_session_factory
->         return Persistence.createEntityManagerFactory("chatbi", properties);
->     }
-> }
->
-> // Python: async with async_session_factory() as session: ...
-> // Java 等价：@Transactional 或 EntityManager
-> @Transactional  // Spring 自动管理 Session 的打开和关闭
-> public User getUserByEmail(String email) {
->     return entityManager.createQuery("SELECT u FROM User u WHERE u.email = :email", User.class)
->         .setParameter("email", email)
->         .getSingleResult();
-> }
-> ```
->
-> 对比说明：Python 的 `create_async_engine` ≈ Java 的 `HikariCP DataSource`（连接池）。`async_sessionmaker` ≈ JPA 的 `EntityManagerFactory`。`async_session_factory()` 产生的 Session ≈ JPA 的 `EntityManager`。Python 的 `get_db()` 用 yield 管理请求级 Session ≈ Spring 的 `@Transactional` 注解（自动管理 EntityManager 生命周期）。Python 用异步驱动 `aiomysql`，Java 用 JDBC（同步但可配合 Virtual Threads）。
+#### Java 对照
+
+Python SQLAlchemy 异步 Session → Java JPA 等价：
+
+```java
+// Python: engine = create_async_engine(settings.database_url, ...)
+// Java 等价：EntityManagerFactory（JPA）或 HikariCP DataSource
+@Configuration
+public class DatabaseConfig {
+    @Bean
+    public DataSource dataSource() {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl("jdbc:mysql://localhost:3306/chatbi");
+        config.setMaximumPoolSize(10);      // ≈ pool_max_size
+        config.setMinimumIdle(5);           // ≈ pool_min_size
+        config.setIdleTimeout(30000);       // ≈ pool_timeout
+        config.setMaxLifetime(3600000);     // ≈ pool_recycle
+        config.setConnectionTimeout(30000); // 获取连接超时
+        return new HikariDataSource(config);
+    }
+
+    @Bean
+    public EntityManagerFactory entityManagerFactory(DataSource ds) {
+        // ≈ async_session_factory
+        return Persistence.createEntityManagerFactory("chatbi", properties);
+    }
+}
+
+// Python: async with async_session_factory() as session: ...
+// Java 等价：@Transactional 或 EntityManager
+@Transactional  // Spring 自动管理 Session 的打开和关闭
+public User getUserByEmail(String email) {
+    return entityManager.createQuery("SELECT u FROM User u WHERE u.email = :email", User.class)
+        .setParameter("email", email)
+        .getSingleResult();
+}
+```
+
+对比说明：Python 的 `create_async_engine` ≈ Java 的 `HikariCP DataSource`（连接池）。`async_sessionmaker` ≈ JPA 的 `EntityManagerFactory`。`async_session_factory()` 产生的 Session ≈ JPA 的 `EntityManager`。Python 的 `get_db()` 用 yield 管理请求级 Session ≈ Spring 的 `@Transactional` 注解（自动管理 EntityManager 生命周期）。Python 用异步驱动 `aiomysql`，Java 用 JDBC（同步但可配合 Virtual Threads）。
+
 
 ### 动手练习
 
@@ -1795,44 +1815,45 @@ class GUID(TypeDecorator):
 
 这样写的好处：同一套模型代码，在 MySQL 和 PostgreSQL 上都能用，不需要改模型定义。
 
-> **Java 对照**
->
-> Python SQLAlchemy GUID 自定义类型 → Java JPA 等价：
->
-> ```java
-> // Python: class GUID(TypeDecorator): impl = String
-> // Java 等价写法：JPA AttributeConverter（类型转换器）
-> @Converter(autoApply = true)
-> public class UUIDConverter implements AttributeConverter<UUID, String> {
->     @Override
->     public String convertToDatabaseColumn(UUID uuid) {
->         // ≈ process_bind_param — 写入数据库时 UUID → String
->         return uuid == null ? null : uuid.toString();
->     }
->
->     @Override
->     public UUID convertToEntityAttribute(String value) {
->         // ≈ process_result_value — 从数据库读取时 String → UUID
->         return value == null ? null : UUID.fromString(value);
->     }
-> }
->
-> // 使用方式（实体类中自动转换）
-> @Entity
-> public class User {
->     @Id
->     @Column(columnDefinition = "CHAR(36)")
->     private UUID id;  // Java 中是 UUID 对象，数据库中是 CHAR(36) 字符串
-> }
->
-> // 或者使用 Hibernate 的 @Type 注解
-> @Id
-> @Type(type = "uuid-char")
-> @Column(columnDefinition = "CHAR(36)")
-> private UUID id;
-> ```
->
-> 对比说明：Python 的 `TypeDecorator` ≈ Java 的 `AttributeConverter`，都是自定义类型转换器。`process_bind_param`（Python → DB）≈ `convertToDatabaseColumn`，`process_result_value`（DB → Python）≈ `convertToEntityAttribute`。`load_dialect_impl` 根据数据库方言选择不同类型，Java 中通常直接统一用 `CHAR(36)` 存储UUID字符串。`cache_ok = True` ≈ JPA 的 `@Converter(autoApply = true)` 自动应用到所有 UUID 字段。
+#### Java 对照
+
+Python SQLAlchemy GUID 自定义类型 → Java JPA 等价：
+
+```java
+// Python: class GUID(TypeDecorator): impl = String
+// Java 等价写法：JPA AttributeConverter（类型转换器）
+@Converter(autoApply = true)
+public class UUIDConverter implements AttributeConverter<UUID, String> {
+    @Override
+    public String convertToDatabaseColumn(UUID uuid) {
+        // ≈ process_bind_param — 写入数据库时 UUID → String
+        return uuid == null ? null : uuid.toString();
+    }
+
+    @Override
+    public UUID convertToEntityAttribute(String value) {
+        // ≈ process_result_value — 从数据库读取时 String → UUID
+        return value == null ? null : UUID.fromString(value);
+    }
+}
+
+// 使用方式（实体类中自动转换）
+@Entity
+public class User {
+    @Id
+    @Column(columnDefinition = "CHAR(36)")
+    private UUID id;  // Java 中是 UUID 对象，数据库中是 CHAR(36) 字符串
+}
+
+// 或者使用 Hibernate 的 @Type 注解
+@Id
+@Type(type = "uuid-char")
+@Column(columnDefinition = "CHAR(36)")
+private UUID id;
+```
+
+对比说明：Python 的 `TypeDecorator` ≈ Java 的 `AttributeConverter`，都是自定义类型转换器。`process_bind_param`（Python → DB）≈ `convertToDatabaseColumn`，`process_result_value`（DB → Python）≈ `convertToEntityAttribute`。`load_dialect_impl` 根据数据库方言选择不同类型，Java 中通常直接统一用 `CHAR(36)` 存储UUID字符串。`cache_ok = True` ≈ JPA 的 `@Converter(autoApply = true)` 自动应用到所有 UUID 字段。
+
 
 ### 动手练习
 
@@ -1897,51 +1918,52 @@ classify_intent ──→ (DataQuery?) ──→ resolve_context ──→ schem
 
 2. 在 `graph.py` 的 `build_graph()` 末尾加一行 `print(graph.nodes)`，观察注册了哪些节点。
 
-> **Java 对照**
->
-> Python LangGraph 有向图 → Java Spring Statemachine / 状态机模式：
->
-> ```java
-> // Python: LangGraph 的 StateGraph 把 AI 工作流建模为有向图
-> // Java 等价：Spring Statemachine 把业务流程建模为状态机
-> @Configuration
-> @EnableStateMachineFactory
-> public class QueryStateMachineConfig extends EnumStateMachineConfigurerAdapter<QueryState, QueryEvent> {
->
->     @Override
->     public void configure(StateMachineStateConfigurer<QueryState, QueryEvent> states) throws Exception {
->         // ≈ graph.add_node() — 定义图中的节点/状态
->         states
->             .withStates()
->             .initial(QueryState.CLASSIFY_INTENT)  // ≈ set_entry_point
->             .states(EnumSet.allOf(QueryState.class));
->     }
->
->     @Override
->     public void configure(StateMachineTransitionConfigurer<QueryState, QueryEvent> transitions) throws Exception {
->         // ≈ graph.add_edge() — 定义边/转移
->         transitions
->             .withExternal()
->                 .source(QueryState.CLASSIFY_INTENT).target(QueryState.RESOLVE_CONTEXT)
->                 .event(QueryEvent.DATA_QUERY)      // ≈ 条件边：intent == DataQuery
->                 .and()
->             .withExternal()
->                 .source(QueryState.CLASSIFY_INTENT).target(QueryState.MISLEADING)
->                 .event(QueryEvent.OTHER)            // ≈ 条件边：intent != DataQuery
->                 .and()
->             .withExternal()
->                 .source(QueryState.RESOLVE_CONTEXT).target(QueryState.SCHEMA_SELECTION)
->                 .and()
->             .withExternal()
->                 .source(QueryState.SCHEMA_SELECTION).target(QueryState.GENERATE_SQL)
->                 .and()
->             .withExternal()
->                 .source(QueryState.GENERATE_SQL).target(QueryState.EXECUTE_SQL);
->     }
-> }
-> ```
->
-> 对比说明：LangGraph 的 `StateGraph` ≈ Spring Statemachine 的 `StateMachineConfigurerAdapter`。`add_node()` ≈ `states.withStates()`。`add_edge()` ≈ `transitions.withExternal().source().target()`。`add_conditional_edges()` ≈ `transitions` 中根据不同 `event`（事件）决定转移到哪个目标状态。LangGraph 的图是声明式定义的，运行时按图自动路由；Spring Statemachine 也是声明式配置，由事件驱动状态转移。核心区别：LangGraph 节点是函数（接收 state，返回增量），Spring Statemachine 的状态转换通过 `Action` 和 `Guard` 实现。
+#### Java 对照
+
+Python LangGraph 有向图 → Java Spring Statemachine / 状态机模式：
+
+```java
+// Python: LangGraph 的 StateGraph 把 AI 工作流建模为有向图
+// Java 等价：Spring Statemachine 把业务流程建模为状态机
+@Configuration
+@EnableStateMachineFactory
+public class QueryStateMachineConfig extends EnumStateMachineConfigurerAdapter<QueryState, QueryEvent> {
+
+    @Override
+    public void configure(StateMachineStateConfigurer<QueryState, QueryEvent> states) throws Exception {
+        // ≈ graph.add_node() — 定义图中的节点/状态
+        states
+            .withStates()
+            .initial(QueryState.CLASSIFY_INTENT)  // ≈ set_entry_point
+            .states(EnumSet.allOf(QueryState.class));
+    }
+
+    @Override
+    public void configure(StateMachineTransitionConfigurer<QueryState, QueryEvent> transitions) throws Exception {
+        // ≈ graph.add_edge() — 定义边/转移
+        transitions
+            .withExternal()
+                .source(QueryState.CLASSIFY_INTENT).target(QueryState.RESOLVE_CONTEXT)
+                .event(QueryEvent.DATA_QUERY)      // ≈ 条件边：intent == DataQuery
+                .and()
+            .withExternal()
+                .source(QueryState.CLASSIFY_INTENT).target(QueryState.MISLEADING)
+                .event(QueryEvent.OTHER)            // ≈ 条件边：intent != DataQuery
+                .and()
+            .withExternal()
+                .source(QueryState.RESOLVE_CONTEXT).target(QueryState.SCHEMA_SELECTION)
+                .and()
+            .withExternal()
+                .source(QueryState.SCHEMA_SELECTION).target(QueryState.GENERATE_SQL)
+                .and()
+            .withExternal()
+                .source(QueryState.GENERATE_SQL).target(QueryState.EXECUTE_SQL);
+    }
+}
+```
+
+对比说明：LangGraph 的 `StateGraph` ≈ Spring Statemachine 的 `StateMachineConfigurerAdapter`。`add_node()` ≈ `states.withStates()`。`add_edge()` ≈ `transitions.withExternal().source().target()`。`add_conditional_edges()` ≈ `transitions` 中根据不同 `event`（事件）决定转移到哪个目标状态。LangGraph 的图是声明式定义的，运行时按图自动路由；Spring Statemachine 也是声明式配置，由事件驱动状态转移。核心区别：LangGraph 节点是函数（接收 state，返回增量），Spring Statemachine 的状态转换通过 `Action` 和 `Guard` 实现。
+
 
 ---
 
@@ -1998,44 +2020,45 @@ g = StateGraph(MyState)
 print(g)  # <langgraph.graph.state.StateGraph object at ...>
 ```
 
-> **Java 对照**
->
-> Python `StateGraph(QueryState)` → Java StateMachineBuilder / Builder 模式：
->
-> ```java
-> // Python: graph = StateGraph(QueryState)
-> // Java 等价：StateMachineBuilder（Spring Statemachine 的构建器）
-> @Configuration
-> @EnableStateMachineFactory
-> public class QueryStateMachineConfig extends EnumStateMachineConfigurerAdapter<States, Events> {
->
->     @Override
->     public void configure(StateMachineStateConfigurer<States, Events> states) throws Exception {
->         // ≈ StateGraph(QueryState) — 规定了图上流动的数据类型
->         states
->             .withStates()
->             .initial(States.CLASSIFY_INTENT)  // ≈ graph.set_entry_point("classify_intent")
->             .end(States.FINISHED)
->             .states(EnumSet.allOf(States.class));
->     }
-> }
->
-> // 或者使用 Builder 模式手动构建（更接近 LangGraph 的链式风格）
-> StateMachine<States, Events> stateMachine = StateMachineBuilder.builder()
->     .configureStates()
->         .withStates()
->             .initial(States.CLASSIFY_INTENT)
->             .states(EnumSet.allOf(States.class))
->         .and()
->     .configureTransitions()
->         .withExternal()
->             .source(States.CLASSIFY_INTENT).target(States.RESOLVE_CONTEXT)
->             .event(Events.DATA_QUERY)
->         .and()
->     .build();  // ≈ graph.compile()
-> ```
->
-> 对比说明：Python 的 `StateGraph(QueryState)` ≈ Java 的 `StateMachineBuilder.builder()`，都是创建一个空白的状态图/状态机构建器。`QueryState` 泛型参数指定了节点间传递的数据格式，Java 中通过泛型 `StateMachine<States, Events>` 指定状态和事件的枚举类型。Python 的链式调用 `graph.add_node().add_edge()` ≈ Java Builder 模式的 `.configureStates().withStates()` 链式配置。核心区别：LangGraph 的节点是函数，状态图本身不关心"状态"是什么——它只关心数据的流动；Spring Statemachine 则是经典有限状态机，强调"状态"和"事件"驱动转移。
+#### Java 对照
+
+Python `StateGraph(QueryState)` → Java StateMachineBuilder / Builder 模式：
+
+```java
+// Python: graph = StateGraph(QueryState)
+// Java 等价：StateMachineBuilder（Spring Statemachine 的构建器）
+@Configuration
+@EnableStateMachineFactory
+public class QueryStateMachineConfig extends EnumStateMachineConfigurerAdapter<States, Events> {
+
+    @Override
+    public void configure(StateMachineStateConfigurer<States, Events> states) throws Exception {
+        // ≈ StateGraph(QueryState) — 规定了图上流动的数据类型
+        states
+            .withStates()
+            .initial(States.CLASSIFY_INTENT)  // ≈ graph.set_entry_point("classify_intent")
+            .end(States.FINISHED)
+            .states(EnumSet.allOf(States.class));
+    }
+}
+
+// 或者使用 Builder 模式手动构建（更接近 LangGraph 的链式风格）
+StateMachine<States, Events> stateMachine = StateMachineBuilder.builder()
+    .configureStates()
+        .withStates()
+            .initial(States.CLASSIFY_INTENT)
+            .states(EnumSet.allOf(States.class))
+        .and()
+    .configureTransitions()
+        .withExternal()
+            .source(States.CLASSIFY_INTENT).target(States.RESOLVE_CONTEXT)
+            .event(Events.DATA_QUERY)
+        .and()
+    .build();  // ≈ graph.compile()
+```
+
+对比说明：Python 的 `StateGraph(QueryState)` ≈ Java 的 `StateMachineBuilder.builder()`，都是创建一个空白的状态图/状态机构建器。`QueryState` 泛型参数指定了节点间传递的数据格式，Java 中通过泛型 `StateMachine<States, Events>` 指定状态和事件的枚举类型。Python 的链式调用 `graph.add_node().add_edge()` ≈ Java Builder 模式的 `.configureStates().withStates()` 链式配置。核心区别：LangGraph 的节点是函数，状态图本身不关心"状态"是什么——它只关心数据的流动；Spring Statemachine 则是经典有限状态机，强调"状态"和"事件"驱动转移。
+
 
 ---
 
@@ -2160,55 +2183,56 @@ state.update(increment)  # LangGraph 内部做的合并操作
 print(state)  # {'question': '上个月销售额', 'datasource_id': 'ds-001', 'intent': 'DataQuery'}
 ```
 
-> **Java 对照**
->
-> Python `QueryState(TypedDict)` → Java StateObject / Context object（Spring Statemachine 的 MessageHeaders）：
->
-> ```java
-> // Python: class QueryState(TypedDict, total=False): question: str; intent: str; sql: str; ...
-> // Java 等价：Spring Statemachine 的 MessageHeaders 或自定义 Context 对象
->
-> // 方式一：使用 MessageHeaders（轻量，运行时是 Map）
-> Message<QueryPayload> message = MessageBuilder
->     .withPayload(new QueryPayload("上个月销售额是多少？", "ds-001"))
->     .setHeader("intent", "DataQuery")         // ≈ state["intent"] = "DataQuery"
->     .setHeader("sql", "SELECT SUM(amount) ...") // ≈ state["sql"] = "SELECT ..."
->     .setHeader("success", true)                 // ≈ state["success"] = True
->     .build();
-> // 后续节点通过 message.getHeaders().get("intent") 读取
-> // ≈ Python 的 state.get("intent")
->
-> // 方式二：自定义 Context 对象（类型更安全）
-> public class QueryContext {
->     // ── 输入组 ──
->     private String question;
->     private String datasourceId;
->     private String tenantId;
->     private List<Map<String, Object>> conversationHistory;
->
->     // ── 理解组 ──
->     private String intent;
->     private String schemaContext;
->     private String rawMetadata;
->
->     // ── 生成组 ──
->     private String sql;
->     private List<String> tableFixes;
->     private List<String> columnFixes;
->
->     // ── 结果组 ──
->     private Boolean success;
->     private String error;
->     private List<String> columns;
->     private List<Map<String, Object>> rows;
->     // ... 省略 getter/setter
-> }
->
-> // 节点之间通过 StateMachineContext 传递这个对象
-> // ≈ LangGraph 的 state 在节点间自动传递和合并
-> ```
->
-> 对比说明：Python 的 `QueryState(TypedDict, total=False)` ≈ Java 的 `MessageHeaders`（轻量 Map）或自定义 `Context` POJO。`total=False` 让所有字段可选 ≈ Java 中所有字段为 `null` 时使用默认值。LangGraph 的"节点只返回增量，自动合并"机制 ≈ Spring Statemachine 的 `MessageBuilder.setHeader()` 只设置变化的 header，底层合并到现有 headers 中。核心区别：Python 的 TypedDict 运行时就是 `dict`，零开销；Java 的 POJO 或 MessageHeaders 有对象创建开销，但类型安全。
+#### Java 对照
+
+Python `QueryState(TypedDict)` → Java StateObject / Context object（Spring Statemachine 的 MessageHeaders）：
+
+```java
+// Python: class QueryState(TypedDict, total=False): question: str; intent: str; sql: str; ...
+// Java 等价：Spring Statemachine 的 MessageHeaders 或自定义 Context 对象
+
+// 方式一：使用 MessageHeaders（轻量，运行时是 Map）
+Message<QueryPayload> message = MessageBuilder
+    .withPayload(new QueryPayload("上个月销售额是多少？", "ds-001"))
+    .setHeader("intent", "DataQuery")         // ≈ state["intent"] = "DataQuery"
+    .setHeader("sql", "SELECT SUM(amount) ...") // ≈ state["sql"] = "SELECT ..."
+    .setHeader("success", true)                 // ≈ state["success"] = True
+    .build();
+// 后续节点通过 message.getHeaders().get("intent") 读取
+// ≈ Python 的 state.get("intent")
+
+// 方式二：自定义 Context 对象（类型更安全）
+public class QueryContext {
+    // ── 输入组 ──
+    private String question;
+    private String datasourceId;
+    private String tenantId;
+    private List<Map<String, Object>> conversationHistory;
+
+    // ── 理解组 ──
+    private String intent;
+    private String schemaContext;
+    private String rawMetadata;
+
+    // ── 生成组 ──
+    private String sql;
+    private List<String> tableFixes;
+    private List<String> columnFixes;
+
+    // ── 结果组 ──
+    private Boolean success;
+    private String error;
+    private List<String> columns;
+    private List<Map<String, Object>> rows;
+    // ... 省略 getter/setter
+}
+
+// 节点之间通过 StateMachineContext 传递这个对象
+// ≈ LangGraph 的 state 在节点间自动传递和合并
+```
+
+对比说明：Python 的 `QueryState(TypedDict, total=False)` ≈ Java 的 `MessageHeaders`（轻量 Map）或自定义 `Context` POJO。`total=False` 让所有字段可选 ≈ Java 中所有字段为 `null` 时使用默认值。LangGraph 的"节点只返回增量，自动合并"机制 ≈ Spring Statemachine 的 `MessageBuilder.setHeader()` 只设置变化的 header，底层合并到现有 headers 中。核心区别：Python 的 TypedDict 运行时就是 `dict`，零开销；Java 的 POJO 或 MessageHeaders 有对象创建开销，但类型安全。
+
 
 ---
 
@@ -2380,61 +2404,62 @@ result = asyncio.run(graph.ainvoke({"value": 21}))
 print(result)  # {'value': 21, 'doubled': 42}
 ```
 
-> **Java 对照**
->
-> Python LangGraph Node → Java @Bean Action / StateMachineInterceptor / Step：
->
-> ```java
-> // Python: async def intent_node(state: QueryState) -> dict: ...
-> // Java 等价：Spring Statemachine 的 Action<States, Events>
->
-> @Bean
-> public Action<States, Events> intentNode() {
->     // ≈ async def intent_node(state: QueryState) -> dict:
->     return context -> {
->         String question = context.getMessageHeader("question"); // ≈ state["question"]
->         String intent = classifyIntentService.classify(question); // ≈ await classify_intent(state["question"])
->         context.getExtendedState().getVariables().put("intent", intent); // ≈ return {"intent": intent}
->     };
-> }
->
-> @Bean
-> public Action<States, Events> executionNode() {
->     // ≈ async def execution_node(state: QueryState) -> dict:
->     return context -> {
->         String sql = context.getExtendedState().get("sql", String.class); // ≈ state["sql"]
->         String datasourceId = context.getExtendedState().get("datasource_id", String.class);
->
->         QueryResult result = sqlExecutor.execute(sql, datasourceId); // ≈ await execute_sql(...)
->         String finalSql = sql;
->
->         // 自愈逻辑
->         if (!result.isSuccess() && context.getExtendedState().get("schema_context") != null) {
->             HealResult healResult = selfHealService.heal(sql, result.getError(), ...);
->             if (healResult.isSuccess()) {
->                 finalSql = healResult.getSql();
->                 result = sqlExecutor.execute(finalSql, datasourceId); // 重新执行
->             }
->         }
->
->         // 推断图表类型
->         String chartType = rows.isEmpty() ? "none" : chartInferrer.infer(result.getColumns(), result.getRows());
->
->         // 将结果写入上下文（≈ return dict 增量）
->         context.getExtendedState().getVariables().put("sql", finalSql);
->         context.getExtendedState().getVariables().put("success", result.isSuccess());
->         context.getExtendedState().getVariables().put("chart_type", chartType);
->     };
-> }
->
-> // 注册节点到状态机（≈ graph.add_node("classify_intent", intent_node)）
-> transitions
->     .withExternal()
->         .source(States.CLASSIFY_INTENT).target(States.RESOLVE_CONTEXT)
->         .action(intentNode())   // ≈ 把 intent_node 函数绑定到这个转移
-> ```
->
-> 对比说明：Python 的 `async def node(state) -> dict` ≈ Java 的 `Action<States, Events>`（Spring Statemachine 的动作接口）。`state["question"]` 读取状态 ≈ `context.getMessageHeader("question")` 或 `context.getExtendedState().get("question")`。`return {"intent": intent}` 返回增量 ≈ `context.getExtendedState().getVariables().put("intent", intent)`。`graph.add_node()` ≈ 在 `transitions.withExternal().action()` 中注册 Action。核心区别：LangGraph 节点是纯函数（接收 state，返回 dict 增量），无副作用；Spring Statemachine 的 Action 通过修改 `context` 来更新状态，是有副作用的。
+#### Java 对照
+
+Python LangGraph Node → Java @Bean Action / StateMachineInterceptor / Step：
+
+```java
+// Python: async def intent_node(state: QueryState) -> dict: ...
+// Java 等价：Spring Statemachine 的 Action<States, Events>
+
+@Bean
+public Action<States, Events> intentNode() {
+    // ≈ async def intent_node(state: QueryState) -> dict:
+    return context -> {
+        String question = context.getMessageHeader("question"); // ≈ state["question"]
+        String intent = classifyIntentService.classify(question); // ≈ await classify_intent(state["question"])
+        context.getExtendedState().getVariables().put("intent", intent); // ≈ return {"intent": intent}
+    };
+}
+
+@Bean
+public Action<States, Events> executionNode() {
+    // ≈ async def execution_node(state: QueryState) -> dict:
+    return context -> {
+        String sql = context.getExtendedState().get("sql", String.class); // ≈ state["sql"]
+        String datasourceId = context.getExtendedState().get("datasource_id", String.class);
+
+        QueryResult result = sqlExecutor.execute(sql, datasourceId); // ≈ await execute_sql(...)
+        String finalSql = sql;
+
+        // 自愈逻辑
+        if (!result.isSuccess() && context.getExtendedState().get("schema_context") != null) {
+            HealResult healResult = selfHealService.heal(sql, result.getError(), ...);
+            if (healResult.isSuccess()) {
+                finalSql = healResult.getSql();
+                result = sqlExecutor.execute(finalSql, datasourceId); // 重新执行
+            }
+        }
+
+        // 推断图表类型
+        String chartType = rows.isEmpty() ? "none" : chartInferrer.infer(result.getColumns(), result.getRows());
+
+        // 将结果写入上下文（≈ return dict 增量）
+        context.getExtendedState().getVariables().put("sql", finalSql);
+        context.getExtendedState().getVariables().put("success", result.isSuccess());
+        context.getExtendedState().getVariables().put("chart_type", chartType);
+    };
+}
+
+// 注册节点到状态机（≈ graph.add_node("classify_intent", intent_node)）
+transitions
+    .withExternal()
+        .source(States.CLASSIFY_INTENT).target(States.RESOLVE_CONTEXT)
+        .action(intentNode())   // ≈ 把 intent_node 函数绑定到这个转移
+```
+
+对比说明：Python 的 `async def node(state) -> dict` ≈ Java 的 `Action<States, Events>`（Spring Statemachine 的动作接口）。`state["question"]` 读取状态 ≈ `context.getMessageHeader("question")` 或 `context.getExtendedState().get("question")`。`return {"intent": intent}` 返回增量 ≈ `context.getExtendedState().getVariables().put("intent", intent)`。`graph.add_node()` ≈ 在 `transitions.withExternal().action()` 中注册 Action。核心区别：LangGraph 节点是纯函数（接收 state，返回 dict 增量），无副作用；Spring Statemachine 的 Action 通过修改 `context` 来更新状态，是有副作用的。
+
 
 ---
 
@@ -2592,56 +2617,57 @@ graph.add_edge("execute_sql", END)
 
 2. 在 `build_graph()` 中把 `add_edge("resolve_context", "schema_selection")` 注释掉，运行测试观察 LangGraph 报什么错（孤立节点）。
 
-> **Java 对照**
->
-> Python LangGraph Edge → Java Transition / Guard（条件转移）：
->
-> ```java
-> // Python: graph.add_edge("resolve_context", "schema_selection")
-> // Java 等价：Spring Statemachine 的 Transition（无条件转移）
-> transitions
->     .withExternal()
->         .source(States.RESOLVE_CONTEXT)    // ≈ from
->         .target(States.SCHEMA_SELECTION)    // ≈ to
->     .and()
->     .withExternal()
->         .source(States.SCHEMA_SELECTION)
->         .target(States.GENERATE_SQL)
->     .and()
->     .withExternal()
->         .source(States.GENERATE_SQL)
->         .target(States.EXECUTE_SQL);
->
-> // Python: graph.add_conditional_edges("classify_intent", route_by_intent, {...})
-> // Java 等价：Guard（条件守卫）决定走哪条转移
-> transitions
->     .withExternal()
->         .source(States.CLASSIFY_INTENT)
->         .target(States.RESOLVE_CONTEXT)     // ≈ intent == "DataQuery" 分支
->         .event(Events.DATA_QUERY)           // ≈ route_by_intent 返回 "schema_selection"
->         .guard(context -> {
->             // ≈ if state.get("intent") == "DataQuery"
->             String intent = context.getExtendedState().get("intent", String.class);
->             return "DataQuery".equals(intent);
->         })
->     .and()
->     .withExternal()
->         .source(States.CLASSIFY_INTENT)
->         .target(States.MISLEADING)          // ≈ intent != "DataQuery" 分支
->         .event(Events.OTHER)
->         .guard(context -> {
->             String intent = context.getExtendedState().get("intent", String.class);
->             return !"DataQuery".equals(intent); // ≈ return "misleading"
->         });
->
-> // Python: graph.set_entry_point("classify_intent")
-> // Java 等价：states.withStates().initial(States.CLASSIFY_INTENT)
->
-> // Python: graph.add_edge("misleading", END)
-> // Java 等价：states.withStates().end(States.FINISHED) + transition to FINISHED
-> ```
->
-> 对比说明：Python 的 `add_edge(A, B)` ≈ Java 的 `transitions.withExternal().source(A).target(B)`（无条件转移）。`add_conditional_edges(A, router, map)` ≈ Java 的多个 `Transition` + `Guard` 守卫条件，Guard 返回 `true` 时该转移生效。`set_entry_point` ≈ `states.withStates().initial()`。`END` ≈ `states.withStates().end()`。核心区别：LangGraph 的条件边用一个路由函数 + 映射表实现分支，非常灵活（函数返回字符串即可）；Spring Statemachine 需要为每条分支定义独立的 Transition + Guard，配置更冗长但更结构化。
+#### Java 对照
+
+Python LangGraph Edge → Java Transition / Guard（条件转移）：
+
+```java
+// Python: graph.add_edge("resolve_context", "schema_selection")
+// Java 等价：Spring Statemachine 的 Transition（无条件转移）
+transitions
+    .withExternal()
+        .source(States.RESOLVE_CONTEXT)    // ≈ from
+        .target(States.SCHEMA_SELECTION)    // ≈ to
+    .and()
+    .withExternal()
+        .source(States.SCHEMA_SELECTION)
+        .target(States.GENERATE_SQL)
+    .and()
+    .withExternal()
+        .source(States.GENERATE_SQL)
+        .target(States.EXECUTE_SQL);
+
+// Python: graph.add_conditional_edges("classify_intent", route_by_intent, {...})
+// Java 等价：Guard（条件守卫）决定走哪条转移
+transitions
+    .withExternal()
+        .source(States.CLASSIFY_INTENT)
+        .target(States.RESOLVE_CONTEXT)     // ≈ intent == "DataQuery" 分支
+        .event(Events.DATA_QUERY)           // ≈ route_by_intent 返回 "schema_selection"
+        .guard(context -> {
+            // ≈ if state.get("intent") == "DataQuery"
+            String intent = context.getExtendedState().get("intent", String.class);
+            return "DataQuery".equals(intent);
+        })
+    .and()
+    .withExternal()
+        .source(States.CLASSIFY_INTENT)
+        .target(States.MISLEADING)          // ≈ intent != "DataQuery" 分支
+        .event(Events.OTHER)
+        .guard(context -> {
+            String intent = context.getExtendedState().get("intent", String.class);
+            return !"DataQuery".equals(intent); // ≈ return "misleading"
+        });
+
+// Python: graph.set_entry_point("classify_intent")
+// Java 等价：states.withStates().initial(States.CLASSIFY_INTENT)
+
+// Python: graph.add_edge("misleading", END)
+// Java 等价：states.withStates().end(States.FINISHED) + transition to FINISHED
+```
+
+对比说明：Python 的 `add_edge(A, B)` ≈ Java 的 `transitions.withExternal().source(A).target(B)`（无条件转移）。`add_conditional_edges(A, router, map)` ≈ Java 的多个 `Transition` + `Guard` 守卫条件，Guard 返回 `true` 时该转移生效。`set_entry_point` ≈ `states.withStates().initial()`。`END` ≈ `states.withStates().end()`。核心区别：LangGraph 的条件边用一个路由函数 + 映射表实现分支，非常灵活（函数返回字符串即可）；Spring Statemachine 需要为每条分支定义独立的 Transition + Guard，配置更冗长但更结构化。
+
 
 ---
 
@@ -2706,54 +2732,55 @@ g.add_edge("a", END)
 # g.compile()  # 取消注释观察报错
 ```
 
-> **Java 对照**
->
-> Python `graph.compile()` → Java `build()` / `configure()` / `afterPropertiesSet()`：
->
-> ```java
-> // Python: return graph.compile()
-> // Java 等价一：StateMachineBuilder.build()
-> StateMachine<States, Events> sm = StateMachineBuilder.builder()
->     .configureStates()
->         .withStates().initial(States.CLASSIFY_INTENT).states(EnumSet.allOf(States.class))
->     .and()
->     .configureTransitions()
->         .withExternal().source(States.CLASSIFY_INTENT).target(States.RESOLVE_CONTEXT)
->     .and()
->     .build();  // ≈ graph.compile() — 校验 + 构建 + 返回可执行对象
->
-> // Java 等价二：Spring @Bean 工厂方法（在 Configuration 类中）
-> @Configuration
-> @EnableStateMachineFactory
-> public class StateMachineConfig extends EnumStateMachineConfigurerAdapter<States, Events> {
->
->     @Bean
->     public StateMachineFactory<States, Events> stateMachineFactory() throws Exception {
->         // 配置 states 和 transitions ...
->         // ≈ add_node + add_edge 的声明式定义
->         return factory;  // ≈ return graph.compile() — 返回可创建状态机的工厂
->     }
-> }
->
-> // 使用时从工厂获取状态机实例
-> StateMachine<States, Events> sm = factory.getStateMachine("query-sm");
-> sm.start();  // ≈ 准备执行（但还没传入初始 state）
->
-> // Java 等价三：InitializingBean.afterPropertiesSet()（Spring Bean 生命周期）
-> public class QueryPipeline implements InitializingBean {
->     private StateMachine<States, Events> stateMachine;
->
->     @Override
->     public void afterPropertiesSet() throws Exception {
->         // ≈ graph.compile() — 在所有属性注入完成后校验和构建
->         this.stateMachine = buildStateMachine();
->         // 校验：是否有未连接的状态、是否有死循环等
->         assert stateMachine != null : "State machine build failed";
->     }
-> }
-> ```
->
-> 对比说明：Python 的 `graph.compile()` ≈ Java 的 `StateMachineBuilder.build()` 或 Spring 的 `@Bean` 工厂方法 + `afterPropertiesSet()`。`compile()` 做了校验（孤立节点、路由映射完整性）+ 构建（生成执行计划）+ 返回可执行对象，Java 中这通常分散在 `build()` 方法（构建）和 `afterPropertiesSet()`（校验）中。`compile()` 返回的 `CompiledGraph` 可以多次调用 `.ainvoke()` ≈ Java 的 `StateMachineFactory.getStateMachine()` 每次返回新实例。
+#### Java 对照
+
+Python `graph.compile()` → Java `build()` / `configure()` / `afterPropertiesSet()`：
+
+```java
+// Python: return graph.compile()
+// Java 等价一：StateMachineBuilder.build()
+StateMachine<States, Events> sm = StateMachineBuilder.builder()
+    .configureStates()
+        .withStates().initial(States.CLASSIFY_INTENT).states(EnumSet.allOf(States.class))
+    .and()
+    .configureTransitions()
+        .withExternal().source(States.CLASSIFY_INTENT).target(States.RESOLVE_CONTEXT)
+    .and()
+    .build();  // ≈ graph.compile() — 校验 + 构建 + 返回可执行对象
+
+// Java 等价二：Spring @Bean 工厂方法（在 Configuration 类中）
+@Configuration
+@EnableStateMachineFactory
+public class StateMachineConfig extends EnumStateMachineConfigurerAdapter<States, Events> {
+
+    @Bean
+    public StateMachineFactory<States, Events> stateMachineFactory() throws Exception {
+        // 配置 states 和 transitions ...
+        // ≈ add_node + add_edge 的声明式定义
+        return factory;  // ≈ return graph.compile() — 返回可创建状态机的工厂
+    }
+}
+
+// 使用时从工厂获取状态机实例
+StateMachine<States, Events> sm = factory.getStateMachine("query-sm");
+sm.start();  // ≈ 准备执行（但还没传入初始 state）
+
+// Java 等价三：InitializingBean.afterPropertiesSet()（Spring Bean 生命周期）
+public class QueryPipeline implements InitializingBean {
+    private StateMachine<States, Events> stateMachine;
+
+    @Override
+    public void afterPropertiesSet() throws Exception {
+        // ≈ graph.compile() — 在所有属性注入完成后校验和构建
+        this.stateMachine = buildStateMachine();
+        // 校验：是否有未连接的状态、是否有死循环等
+        assert stateMachine != null : "State machine build failed";
+    }
+}
+```
+
+对比说明：Python 的 `graph.compile()` ≈ Java 的 `StateMachineBuilder.build()` 或 Spring 的 `@Bean` 工厂方法 + `afterPropertiesSet()`。`compile()` 做了校验（孤立节点、路由映射完整性）+ 构建（生成执行计划）+ 返回可执行对象，Java 中这通常分散在 `build()` 方法（构建）和 `afterPropertiesSet()`（校验）中。`compile()` 返回的 `CompiledGraph` 可以多次调用 `.ainvoke()` ≈ Java 的 `StateMachineFactory.getStateMachine()` 每次返回新实例。
+
 
 ---
 
@@ -2847,48 +2874,49 @@ result = await graph.ainvoke({"question": "你好", "datasource_id": "ds-001", "
 print(result["error"])  # "抱歉，我无法理解您的问题。请尝试提出与数据查询相关的问题..."
 ```
 
-> **Java 对照**
->
-> Python `await graph.ainvoke({...})` → Java `stateMachine.sendEvent(Message)` / `stateMachine.start()`：
->
-> ```java
-> // Python: graph = build_graph()
-> // Java 等价：从工厂获取状态机实例
-> StateMachine<States, Events> stateMachine = factory.getStateMachine("query-" + requestId);
->
-> // Python: result = await graph.ainvoke({"question": "...", "datasource_id": "...", ...})
-> // Java 等价：启动状态机 + 发送初始事件（携带数据）
-> stateMachine.start();  // 启动状态机，进入 initial state
->
-> // 通过 Message 携带初始数据（≈ ainvoke 传入的初始 state dict）
-> Message<QueryPayload> message = MessageBuilder
->     .withPayload(new QueryPayload())
->     .setHeader("question", "上个月销售额是多少？")      // ≈ "question": "..."
->     .setHeader("datasource_id", "ds-001")                // ≈ "datasource_id": "ds-001"
->     .setHeader("tenant_id", "t-001")                     // ≈ "tenant_id": "t-001"
->     .setHeader("conversation_history", List.of())        // ≈ "conversation_history": []
->     .build();
->
-> // 发送事件触发状态转移（≈ ainvoke 开始执行管线）
-> stateMachine.sendEvent(message);  // 触发 classify_intent → resolve_context → ...
->
-> // 等待执行完成，读取最终状态（≈ ainvoke 返回 result）
-> // Spring Statemachine 是事件驱动的，需要通过 Listener 监听完成
-> stateMachine.addStateListener(new StateMachineListenerAdapter<>() {
->     @Override
->     public void stateChanged(State<States, Events> from, State<States, Events> to) {
->         if (to.getId() == States.FINISHED) {  // ≈ END
->             String sql = stateMachine.getExtendedState().get("sql", String.class);      // ≈ result["sql"]
->             String chartType = stateMachine.getExtendedState().get("chart_type", String.class); // ≈ result["chart_type"]
->             List<Map<String, Object>> rows = stateMachine.getExtendedState().get("rows", List.class); // ≈ result["rows"]
->             System.out.println("SQL: " + sql);
->             System.out.println("Chart: " + chartType);
->         }
->     }
-> });
-> ```
->
-> 对比说明：Python 的 `await graph.ainvoke(state)` ≈ Java 的 `stateMachine.start()` + `stateMachine.sendEvent(Message)`。`ainvoke` 传入的初始 state dict ≈ `MessageBuilder` 设置的 headers。`ainvoke` 返回的最终 state ≈ 通过 `stateMachine.getExtendedState()` 读取最终结果。核心区别：Python 的 `ainvoke` 是同步等待（`await`），一行代码传入初始 state 并拿回最终 state；Java 的 `StateMachine` 是事件驱动、异步的，需要通过 `Listener` 监听状态变化来获取最终结果。LangGraph 的模型更简洁（一次调用完成全部流程），Spring Statemachine 的模型更灵活（可以中途发事件改变流程）。
+#### Java 对照
+
+Python `await graph.ainvoke({...})` → Java `stateMachine.sendEvent(Message)` / `stateMachine.start()`：
+
+```java
+// Python: graph = build_graph()
+// Java 等价：从工厂获取状态机实例
+StateMachine<States, Events> stateMachine = factory.getStateMachine("query-" + requestId);
+
+// Python: result = await graph.ainvoke({"question": "...", "datasource_id": "...", ...})
+// Java 等价：启动状态机 + 发送初始事件（携带数据）
+stateMachine.start();  // 启动状态机，进入 initial state
+
+// 通过 Message 携带初始数据（≈ ainvoke 传入的初始 state dict）
+Message<QueryPayload> message = MessageBuilder
+    .withPayload(new QueryPayload())
+    .setHeader("question", "上个月销售额是多少？")      // ≈ "question": "..."
+    .setHeader("datasource_id", "ds-001")                // ≈ "datasource_id": "ds-001"
+    .setHeader("tenant_id", "t-001")                     // ≈ "tenant_id": "t-001"
+    .setHeader("conversation_history", List.of())        // ≈ "conversation_history": []
+    .build();
+
+// 发送事件触发状态转移（≈ ainvoke 开始执行管线）
+stateMachine.sendEvent(message);  // 触发 classify_intent → resolve_context → ...
+
+// 等待执行完成，读取最终状态（≈ ainvoke 返回 result）
+// Spring Statemachine 是事件驱动的，需要通过 Listener 监听完成
+stateMachine.addStateListener(new StateMachineListenerAdapter<>() {
+    @Override
+    public void stateChanged(State<States, Events> from, State<States, Events> to) {
+        if (to.getId() == States.FINISHED) {  // ≈ END
+            String sql = stateMachine.getExtendedState().get("sql", String.class);      // ≈ result["sql"]
+            String chartType = stateMachine.getExtendedState().get("chart_type", String.class); // ≈ result["chart_type"]
+            List<Map<String, Object>> rows = stateMachine.getExtendedState().get("rows", List.class); // ≈ result["rows"]
+            System.out.println("SQL: " + sql);
+            System.out.println("Chart: " + chartType);
+        }
+    }
+});
+```
+
+对比说明：Python 的 `await graph.ainvoke(state)` ≈ Java 的 `stateMachine.start()` + `stateMachine.sendEvent(Message)`。`ainvoke` 传入的初始 state dict ≈ `MessageBuilder` 设置的 headers。`ainvoke` 返回的最终 state ≈ 通过 `stateMachine.getExtendedState()` 读取最终结果。核心区别：Python 的 `ainvoke` 是同步等待（`await`），一行代码传入初始 state 并拿回最终 state；Java 的 `StateMachine` 是事件驱动、异步的，需要通过 `Listener` 监听状态变化来获取最终结果。LangGraph 的模型更简洁（一次调用完成全部流程），Spring Statemachine 的模型更灵活（可以中途发事件改变流程）。
+
 
 ---
 
@@ -3027,50 +3055,51 @@ async def classify_intent(question: str) -> str:
     return intent
 ```
 
-> **Java 对照**
->
-> Python 三层意图分类 → Java 等价：规则引擎 / Drools / 决策树
->
-> ```java
-> // Java 实现意图分类的典型方式：责任链模式 + 规则引擎
-> public class IntentClassifier {
->     private final RedisTemplate<String, String> redis;
->     private final ChatClient llmClient;
->
->     // 三层分类，对应 Python 的 classify_intent()
->     public String classify(String question) {
->         // 第 1 层：Redis 缓存（与 Python 版本一致）
->         String cacheKey = "intent:" + DigestUtils.sha256Hex(question);
->         String cached = redis.opsForValue().get(cacheKey);
->         if (cached != null) return parseIntent(cached);
->
->         // 第 2 层：关键词匹配（等价于 Python 的 _keyword_classify）
->         Set<String> words = new HashSet<>(Arrays.asList(question.split(" ")));
->         if (!Collections.disjoint(words, OTHER_KEYWORDS)) {
->             return "Other";
->         }
->
->         // 第 3 层：LLM 语义分类（等价于 Python 的 llm.ainvoke()）
->         String result = llmClient.prompt()
->             .system(INTENT_SYSTEM_PROMPT)
->             .user(question)
->             .call()
->             .content();
->         return parseIntent(result);
->     }
-> }
->
-> // Python frozenset → Java Collections.unmodifiableSet()
-> private static final Set<String> OTHER_KEYWORDS = Collections.unmodifiableSet(
->     new HashSet<>(Arrays.asList("你好", "hello", "hi", "谢谢"))
-> );
-> ```
->
-> 对比说明：
-> - Python 的 `frozenset & set` 集合交集运算 → Java 的 `Collections.disjoint()` 或 `Set.retainAll()`
-> - Python 的 `asyncio.timeout(5)` → Java 的 `CompletableFuture.get(5, TimeUnit.SECONDS)`
-> - Python 的 `json.loads()` → Java 的 `ObjectMapper.readValue()`（Jackson）或 `JSONObject`（Gson）
-> - Python 的 `await redis.setex()` → Java 的 `redis.opsForValue().set(key, value, 300, TimeUnit.SECONDS)`
+#### Java 对照
+
+Python 三层意图分类 → Java 等价：规则引擎 / Drools / 决策树
+
+```java
+// Java 实现意图分类的典型方式：责任链模式 + 规则引擎
+public class IntentClassifier {
+    private final RedisTemplate<String, String> redis;
+    private final ChatClient llmClient;
+
+    // 三层分类，对应 Python 的 classify_intent()
+    public String classify(String question) {
+        // 第 1 层：Redis 缓存（与 Python 版本一致）
+        String cacheKey = "intent:" + DigestUtils.sha256Hex(question);
+        String cached = redis.opsForValue().get(cacheKey);
+        if (cached != null) return parseIntent(cached);
+
+        // 第 2 层：关键词匹配（等价于 Python 的 _keyword_classify）
+        Set<String> words = new HashSet<>(Arrays.asList(question.split(" ")));
+        if (!Collections.disjoint(words, OTHER_KEYWORDS)) {
+            return "Other";
+        }
+
+        // 第 3 层：LLM 语义分类（等价于 Python 的 llm.ainvoke()）
+        String result = llmClient.prompt()
+            .system(INTENT_SYSTEM_PROMPT)
+            .user(question)
+            .call()
+            .content();
+        return parseIntent(result);
+    }
+}
+
+// Python frozenset → Java Collections.unmodifiableSet()
+private static final Set<String> OTHER_KEYWORDS = Collections.unmodifiableSet(
+    new HashSet<>(Arrays.asList("你好", "hello", "hi", "谢谢"))
+);
+```
+
+对比说明：
+- Python 的 `frozenset & set` 集合交集运算 → Java 的 `Collections.disjoint()` 或 `Set.retainAll()`
+- Python 的 `asyncio.timeout(5)` → Java 的 `CompletableFuture.get(5, TimeUnit.SECONDS)`
+- Python 的 `json.loads()` → Java 的 `ObjectMapper.readValue()`（Jackson）或 `JSONObject`（Gson）
+- Python 的 `await redis.setex()` → Java 的 `redis.opsForValue().set(key, value, 300, TimeUnit.SECONDS)`
+
 
 **关键词分类** — [`intent.py:87-130](../backend/app/ai/nodes/intent.py)：
 
@@ -3205,61 +3234,62 @@ def resolve_context(question: str, history: list[dict]) -> str:
     return f"{prev_question}，{resolved}"
 ```
 
-> **Java 对照**
->
-> Python 对话上下文管理 → Java 等价：Session Attribute / 对话状态管理器
->
-> ```java
-> // Java 实现多轮对话上下文补全
-> public class ContextResolver {
->     // Python dict → Java Map（不可变映射）
->     private static final Map<String, String> RELATIVE_TIME = Map.of(
->         "上个月", "上一个月", "这个月", "当前月",
->         "上周", "上一周", "昨天", "前一天"
->     );
->
->     // Python list → Java List（不可变列表）
->     private static final List<Pattern> FOLLOW_UP_PATTERNS = List.of(
->         Pattern.compile("^(那|然后|接着|再|呢|又|还|也)"),
->         Pattern.compile("^(换个|换一个|另外|除了)"),
->         Pattern.compile("(呢|吧|吗|啊|哦)$")
->     );
->
->     // 对应 Python 的 resolve_context()
->     public String resolve(String question, List<Map<String, String>> history) {
->         if (history.isEmpty()) return question;
->
->         // Python any() + 生成器 → Java stream().anyMatch()
->         boolean isFollowUp = FOLLOW_UP_PATTERNS.stream()
->             .anyMatch(p -> p.matcher(question.toLowerCase()).find());
->
->         if (!isFollowUp && question.length() < 5) isFollowUp = true;
->         if (!isFollowUp) return question;
->
->         // 从历史记录倒序查找
->         String prevQuestion = "";
->         for (int i = history.size() - 1; i >= 0; i--) {
->             String q = history.get(i).get("question");
->             if (q != null && !q.equalsIgnoreCase(question)) {
->                 prevQuestion = q;
->                 break;
->             }
->         }
->
->         if (question.matches("^(按|根据).*")) {
->             return prevQuestion + "，" + question;
->         }
->         return prevQuestion + "，" + question;
->     }
-> }
-> ```
->
-> 对比说明：
-> - Python 的 `frozenset` → Java 的 `Set.of()`（Java 9+，不可变集合）
-> - Python 的 `any()` + 生成器表达式 → Java 的 `stream().anyMatch()`
-> - Python 的 `re.search()` → Java 的 `Pattern.matcher().find()`
-> - Python 的 `re.match()`（只匹配开头）→ Java 的 `Pattern.matcher().lookingAt()`
-> - Python 的 `dict.items()` → Java 的 `Map.entrySet()` 遍历
+#### Java 对照
+
+Python 对话上下文管理 → Java 等价：Session Attribute / 对话状态管理器
+
+```java
+// Java 实现多轮对话上下文补全
+public class ContextResolver {
+    // Python dict → Java Map（不可变映射）
+    private static final Map<String, String> RELATIVE_TIME = Map.of(
+        "上个月", "上一个月", "这个月", "当前月",
+        "上周", "上一周", "昨天", "前一天"
+    );
+
+    // Python list → Java List（不可变列表）
+    private static final List<Pattern> FOLLOW_UP_PATTERNS = List.of(
+        Pattern.compile("^(那|然后|接着|再|呢|又|还|也)"),
+        Pattern.compile("^(换个|换一个|另外|除了)"),
+        Pattern.compile("(呢|吧|吗|啊|哦)$")
+    );
+
+    // 对应 Python 的 resolve_context()
+    public String resolve(String question, List<Map<String, String>> history) {
+        if (history.isEmpty()) return question;
+
+        // Python any() + 生成器 → Java stream().anyMatch()
+        boolean isFollowUp = FOLLOW_UP_PATTERNS.stream()
+            .anyMatch(p -> p.matcher(question.toLowerCase()).find());
+
+        if (!isFollowUp && question.length() < 5) isFollowUp = true;
+        if (!isFollowUp) return question;
+
+        // 从历史记录倒序查找
+        String prevQuestion = "";
+        for (int i = history.size() - 1; i >= 0; i--) {
+            String q = history.get(i).get("question");
+            if (q != null && !q.equalsIgnoreCase(question)) {
+                prevQuestion = q;
+                break;
+            }
+        }
+
+        if (question.matches("^(按|根据).*")) {
+            return prevQuestion + "，" + question;
+        }
+        return prevQuestion + "，" + question;
+    }
+}
+```
+
+对比说明：
+- Python 的 `frozenset` → Java 的 `Set.of()`（Java 9+，不可变集合）
+- Python 的 `any()` + 生成器表达式 → Java 的 `stream().anyMatch()`
+- Python 的 `re.search()` → Java 的 `Pattern.matcher().find()`
+- Python 的 `re.match()`（只匹配开头）→ Java 的 `Pattern.matcher().lookingAt()`
+- Python 的 `dict.items()` → Java 的 `Map.entrySet()` 遍历
+
 
 **相对时间解析** — [`context_resolver.py:78-118](../backend/app/ai/nodes/context_resolver.py)：
 
@@ -3382,50 +3412,51 @@ async def schema_selection_node(state: dict) -> dict:
     }
 ```
 
-> **Java 对照**
->
-> Python 两步 LLM Schema 选择 → Java 等价：检索服务 / Elasticsearch query builder
->
-> ```java
-> // Java 实现两步 Schema 选择
-> public class SchemaSelectionService {
->     private final ChatClient llmClient;
->     private final MetadataRepository metadataRepo;
->
->     // 对应 Python 的 schema_selection_node()
->     public SchemaContext selectSchema(String question, String datasourceId, String tenantId) {
->         // 从数据库获取元数据 — 等价于 Python 的 async_session_factory()
->         String rawMetadata = metadataRepo.findByDatasourceId(datasourceId, tenantId);
->         Metadata metadata = objectMapper.readValue(rawMetadata, Metadata.class);
->
->         // Step 1: 选表 — 等价于 Python 的 _select_tables()
->         List<String> selectedTables = selectTables(question, metadata);
->
->         // 兜底逻辑 — 与 Python 版本一致
->         if (selectedTables.isEmpty()) {
->             selectedTables = metadata.getModels().stream()
->                 .filter(m -> !m.isDeleted())
->                 .limit(5)
->                 .map(Model::getName)
->                 .collect(Collectors.toList());
->         }
->
->         // Step 2: 选列 — 等价于 Python 的 _select_columns()
->         Map<String, List<String>> selectedColumns = selectColumns(question, selectedTables, metadata);
->
->         // 构建 schema context — 等价于 Python 的 _build_schema_context()
->         String schemaContext = buildSchemaContext(selectedTables, selectedColumns, metadata);
->         return new SchemaContext(schemaContext, rawMetadata, selectedTables, selectedColumns);
->     }
-> }
-> ```
->
-> 对比说明：
-> - Python 的 `json.loads(raw_metadata)` → Java 的 `objectMapper.readValue(json, cls)`
-> - Python 的列表推导 `[m["name"] for m in models[:5]]` → Java 的 `stream().limit(5).map().collect()`
-> - Python 的 `dict[str, list[str]]` → Java 的 `Map<String, List<String>>`
-> - Python 的 `frozenset` 做成员检查 → Java 的 `Set.contains()`
-> - Python 的 `chr(10).join(lines)` → Java 的 `String.join("\n", lines)`
+#### Java 对照
+
+Python 两步 LLM Schema 选择 → Java 等价：检索服务 / Elasticsearch query builder
+
+```java
+// Java 实现两步 Schema 选择
+public class SchemaSelectionService {
+    private final ChatClient llmClient;
+    private final MetadataRepository metadataRepo;
+
+    // 对应 Python 的 schema_selection_node()
+    public SchemaContext selectSchema(String question, String datasourceId, String tenantId) {
+        // 从数据库获取元数据 — 等价于 Python 的 async_session_factory()
+        String rawMetadata = metadataRepo.findByDatasourceId(datasourceId, tenantId);
+        Metadata metadata = objectMapper.readValue(rawMetadata, Metadata.class);
+
+        // Step 1: 选表 — 等价于 Python 的 _select_tables()
+        List<String> selectedTables = selectTables(question, metadata);
+
+        // 兜底逻辑 — 与 Python 版本一致
+        if (selectedTables.isEmpty()) {
+            selectedTables = metadata.getModels().stream()
+                .filter(m -> !m.isDeleted())
+                .limit(5)
+                .map(Model::getName)
+                .collect(Collectors.toList());
+        }
+
+        // Step 2: 选列 — 等价于 Python 的 _select_columns()
+        Map<String, List<String>> selectedColumns = selectColumns(question, selectedTables, metadata);
+
+        // 构建 schema context — 等价于 Python 的 _build_schema_context()
+        String schemaContext = buildSchemaContext(selectedTables, selectedColumns, metadata);
+        return new SchemaContext(schemaContext, rawMetadata, selectedTables, selectedColumns);
+    }
+}
+```
+
+对比说明：
+- Python 的 `json.loads(raw_metadata)` → Java 的 `objectMapper.readValue(json, cls)`
+- Python 的列表推导 `[m["name"] for m in models[:5]]` → Java 的 `stream().limit(5).map().collect()`
+- Python 的 `dict[str, list[str]]` → Java 的 `Map<String, List<String>>`
+- Python 的 `frozenset` 做成员检查 → Java 的 `Set.contains()`
+- Python 的 `chr(10).join(lines)` → Java 的 `String.join("\n", lines)`
+
 
 **Step 1: 选表** — [`schema_selection.py:85-186](../backend/app/ai/nodes/schema_selection.py)：
 
@@ -3641,54 +3672,55 @@ async def generate_sql(
     return {"sql": sql, "attempt": attempt, "table_fixes": table_fixes, "column_fixes": column_fixes}
 ```
 
-> **Java 对照**
->
-> Python 三次降级 SQL 生成 → Java 等价：模板引擎 / SQL Builder（MyBatis 动态 SQL）
->
-> ```java
-> // Java 实现三次降级 SQL 生成
-> public class SqlGenerator {
->     private final ChatClient defaultLlm;    // temperature=0，对应 Python 的 get_llm()
->     private final ChatClient fallbackLlm;   // temperature=0.7，对应 Python 的 get_fallback_llm()
->
->     // 对应 Python 的 generate_sql()
->     public SqlResult generate(String question, String schemaContext, String rawMetadata, List<History> history) {
->         String historyCtx = buildHistoryContext(history);
->         int attempt = 1;
->
->         // Attempt 1: 精选 schema + 对话历史
->         String sql = callLlm(SYSTEM_PROMPT, buildUserPrompt(question, schemaContext) + historyCtx, defaultLlm);
->
->         // Attempt 2: 完整 schema 重试
->         if (sql == null && rawMetadata != null) {
->             attempt = 2;
->             String fullSchema = buildFullSchemaContext(rawMetadata);
->             sql = callLlm(SYSTEM_PROMPT, buildUserPrompt(question, fullSchema), defaultLlm);
->         }
->
->         // Attempt 3: 高温度 LLM + 简化提示词
->         if (sql == null) {
->             attempt = 3;
->             String simplePrompt = "Based on the question: " + question + "\n..."
->                 + "Generate a valid MySQL SELECT query.";
->             sql = callLlm("You are a SQL expert.", simplePrompt, fallbackLlm);
->         }
->
->         if (sql == null) return new SqlResult("", attempt, List.of(), List.of());
->
->         // 后处理：校验并修复表名和列名
->         // Python difflib.SequenceMatcher → Java StringUtils.getLevenshteinDistance()
->         return validateAndFix(sql, schemaContext, rawMetadata, attempt);
->     }
-> }
-> ```
->
-> 对比说明：
-> - Python 的 `difflib.SequenceMatcher(None, a, b).ratio()` → Java 的 Apache Commons `StringUtils.getJaroWinklerDistance()` 或自定义相似度算法
-> - Python 的 `re.sub(r'\b' + re.escape(bad) + r'\b', best, sql)` → Java 的 `sql.replaceAll("\\b" + Pattern.quote(bad) + "\\b", best)`
-> - Python 的 `asyncio.timeout(30)` → Java 的 `CompletableFuture.get(30, TimeUnit.SECONDS)`
-> - Python 的 `dict[str, list[str]]` 返回值 → Java 的 record/DTO 对象 `SqlResult`
-> - Python 的 `frozenset` 幻觉列名集合 → Java 的 `Set.of("created_at", "updated_at", ...)`
+#### Java 对照
+
+Python 三次降级 SQL 生成 → Java 等价：模板引擎 / SQL Builder（MyBatis 动态 SQL）
+
+```java
+// Java 实现三次降级 SQL 生成
+public class SqlGenerator {
+    private final ChatClient defaultLlm;    // temperature=0，对应 Python 的 get_llm()
+    private final ChatClient fallbackLlm;   // temperature=0.7，对应 Python 的 get_fallback_llm()
+
+    // 对应 Python 的 generate_sql()
+    public SqlResult generate(String question, String schemaContext, String rawMetadata, List<History> history) {
+        String historyCtx = buildHistoryContext(history);
+        int attempt = 1;
+
+        // Attempt 1: 精选 schema + 对话历史
+        String sql = callLlm(SYSTEM_PROMPT, buildUserPrompt(question, schemaContext) + historyCtx, defaultLlm);
+
+        // Attempt 2: 完整 schema 重试
+        if (sql == null && rawMetadata != null) {
+            attempt = 2;
+            String fullSchema = buildFullSchemaContext(rawMetadata);
+            sql = callLlm(SYSTEM_PROMPT, buildUserPrompt(question, fullSchema), defaultLlm);
+        }
+
+        // Attempt 3: 高温度 LLM + 简化提示词
+        if (sql == null) {
+            attempt = 3;
+            String simplePrompt = "Based on the question: " + question + "\n..."
+                + "Generate a valid MySQL SELECT query.";
+            sql = callLlm("You are a SQL expert.", simplePrompt, fallbackLlm);
+        }
+
+        if (sql == null) return new SqlResult("", attempt, List.of(), List.of());
+
+        // 后处理：校验并修复表名和列名
+        // Python difflib.SequenceMatcher → Java StringUtils.getLevenshteinDistance()
+        return validateAndFix(sql, schemaContext, rawMetadata, attempt);
+    }
+}
+```
+
+对比说明：
+- Python 的 `difflib.SequenceMatcher(None, a, b).ratio()` → Java 的 Apache Commons `StringUtils.getJaroWinklerDistance()` 或自定义相似度算法
+- Python 的 `re.sub(r'\b' + re.escape(bad) + r'\b', best, sql)` → Java 的 `sql.replaceAll("\\b" + Pattern.quote(bad) + "\\b", best)`
+- Python 的 `asyncio.timeout(30)` → Java 的 `CompletableFuture.get(30, TimeUnit.SECONDS)`
+- Python 的 `dict[str, list[str]]` 返回值 → Java 的 record/DTO 对象 `SqlResult`
+- Python 的 `frozenset` 幻觉列名集合 → Java 的 `Set.of("created_at", "updated_at", ...)`
+
 
 **表名模糊匹配修复** — [`generation.py:173-208](../backend/app/ai/nodes/generation.py)：
 
@@ -3844,68 +3876,69 @@ def validate_sql(sql: str, dialect: str = "mysql") -> tuple[bool, str]:
     return True, ""
 ```
 
-> **Java 对照**
->
-> Python SQL 执行节点 → Java 等价：JdbcTemplate / PreparedStatement
->
-> ```java
-> // Java 实现安全的 SQL 执行
-> @Service
-> public class SqlExecutionService {
->     private final PoolManager poolManager;
->
->     // 对应 Python 的 validate_sql() — AST 校验 + 关键字扫描
->     public ValidationResult validateSql(String sql) {
->         // SQLGlot AST 解析 → Java 中可用 JSqlParser 或 AlgrimmJSqlParser
->         try {
->             Statement stmt = CCJSqlParserUtil.parse(sql);
->             if (!(stmt instanceof Select)) {
->                 return ValidationResult.fail("仅支持 SELECT 查询");
->             }
->         } catch (JSQLParserException e) {
->             return ValidationResult.fail("SQL 语法错误: " + e.getMessage());
->         }
->
->         // 正则扫描危险关键字 — 与 Python 版本一致
->         List<String> dangerous = List.of("DROP", "DELETE", "TRUNCATE", "ALTER", "CREATE", "INSERT", "UPDATE");
->         Pattern pattern = Pattern.compile("\\b(" + String.join("|", dangerous) + ")\\b", Pattern.CASE_INSENSITIVE);
->         Matcher matcher = pattern.matcher(sql);
->         if (matcher.find()) {
->             return ValidationResult.fail("禁止使用 " + matcher.group(1) + " 语句");
->         }
->         return ValidationResult.ok();
->     }
->
->     // 对应 Python 的 execute_sql() — 带超时和只读保护
->     public ExecutionResult execute(String sql, String datasourceId) {
->         ValidationResult valid = validateSql(sql);
->         if (!valid.isOk()) return ExecutionResult.fail(valid.getError());
->
->         DataSource ds = dataSourceRepo.findById(datasourceId);
->         // Python engine.connect() → Java JdbcTemplate / HikariDataSource
->         try (Connection conn = dataSourcePool.getConnection(ds)) {
->             conn.setReadOnly(true); // 第二道防线：数据库层面只读
->             // Python asyncio.timeout(30) → Java Statement.setQueryTimeout(30)
->             Statement stmt = conn.createStatement();
->             stmt.setQueryTimeout(30);
->             ResultSet rs = stmt.executeQuery(sql);
->             return mapResult(rs);
->         } catch (SQLTimeoutException e) {
->             return ExecutionResult.fail("查询超时（30秒限制）");
->         } catch (SQLException e) {
->             return ExecutionResult.fail("SQL 执行失败: " + e.getMessage());
->         }
->     }
-> }
-> ```
->
-> 对比说明：
-> - Python 的 `sqlglot.parse_one()` → Java 的 `CCJSqlParserUtil.parse()`（JSqlParser 库）
-> - Python 的 `engine.connect()` → Java 的 `DataSource.getConnection()`（JDBC）
-> - Python 的 `asyncio.timeout()` → Java 的 `Statement.setQueryTimeout()` 或 `ExecutorService + Future.get(timeout)`
-> - Python 的 `SET SESSION TRANSACTION READ ONLY` → Java 的 `Connection.setReadOnly(true)`
-> - Python 的 `dict(row._mapping)` → Java 的 `ResultSetMetaData + ResultSet` 遍历
-> - Python 的 `isinstance(v, (datetime, date))` 类型检查 → Java 的 `ResultSetMetaData.getColumnType()`
+#### Java 对照
+
+Python SQL 执行节点 → Java 等价：JdbcTemplate / PreparedStatement
+
+```java
+// Java 实现安全的 SQL 执行
+@Service
+public class SqlExecutionService {
+    private final PoolManager poolManager;
+
+    // 对应 Python 的 validate_sql() — AST 校验 + 关键字扫描
+    public ValidationResult validateSql(String sql) {
+        // SQLGlot AST 解析 → Java 中可用 JSqlParser 或 AlgrimmJSqlParser
+        try {
+            Statement stmt = CCJSqlParserUtil.parse(sql);
+            if (!(stmt instanceof Select)) {
+                return ValidationResult.fail("仅支持 SELECT 查询");
+            }
+        } catch (JSQLParserException e) {
+            return ValidationResult.fail("SQL 语法错误: " + e.getMessage());
+        }
+
+        // 正则扫描危险关键字 — 与 Python 版本一致
+        List<String> dangerous = List.of("DROP", "DELETE", "TRUNCATE", "ALTER", "CREATE", "INSERT", "UPDATE");
+        Pattern pattern = Pattern.compile("\\b(" + String.join("|", dangerous) + ")\\b", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(sql);
+        if (matcher.find()) {
+            return ValidationResult.fail("禁止使用 " + matcher.group(1) + " 语句");
+        }
+        return ValidationResult.ok();
+    }
+
+    // 对应 Python 的 execute_sql() — 带超时和只读保护
+    public ExecutionResult execute(String sql, String datasourceId) {
+        ValidationResult valid = validateSql(sql);
+        if (!valid.isOk()) return ExecutionResult.fail(valid.getError());
+
+        DataSource ds = dataSourceRepo.findById(datasourceId);
+        // Python engine.connect() → Java JdbcTemplate / HikariDataSource
+        try (Connection conn = dataSourcePool.getConnection(ds)) {
+            conn.setReadOnly(true); // 第二道防线：数据库层面只读
+            // Python asyncio.timeout(30) → Java Statement.setQueryTimeout(30)
+            Statement stmt = conn.createStatement();
+            stmt.setQueryTimeout(30);
+            ResultSet rs = stmt.executeQuery(sql);
+            return mapResult(rs);
+        } catch (SQLTimeoutException e) {
+            return ExecutionResult.fail("查询超时（30秒限制）");
+        } catch (SQLException e) {
+            return ExecutionResult.fail("SQL 执行失败: " + e.getMessage());
+        }
+    }
+}
+```
+
+对比说明：
+- Python 的 `sqlglot.parse_one()` → Java 的 `CCJSqlParserUtil.parse()`（JSqlParser 库）
+- Python 的 `engine.connect()` → Java 的 `DataSource.getConnection()`（JDBC）
+- Python 的 `asyncio.timeout()` → Java 的 `Statement.setQueryTimeout()` 或 `ExecutorService + Future.get(timeout)`
+- Python 的 `SET SESSION TRANSACTION READ ONLY` → Java 的 `Connection.setReadOnly(true)`
+- Python 的 `dict(row._mapping)` → Java 的 `ResultSetMetaData + ResultSet` 遍历
+- Python 的 `isinstance(v, (datetime, date))` 类型检查 → Java 的 `ResultSetMetaData.getColumnType()`
+
 
 **SQL 执行主函数** — [`execution.py:102-236](../backend/app/ai/nodes/execution.py)：
 
@@ -4096,65 +4129,66 @@ async def self_heal_sql(
     return {"success": False, "error": f"SQL 修复失败（已重试 {settings.llm_self_heal_max_retries} 次）"}
 ```
 
-> **Java 对照**
->
-> Python 自愈修复循环 → Java 等价：RetryTemplate / Spring Retry @Retryable
->
-> ```java
-> // Java 实现自愈修复 — 使用 Spring Retry
-> @Service
-> public class SelfHealService {
->     private final ChatClient llmClient;
->     private final SqlExecutionService executionService;
->
->     // MySQL 错误码映射 — 等价于 Python 的 AUTO_FIX_RULES
->     private static final Map<String, String> AUTO_FIX_RULES = Map.of(
->         "1146", "表不存在",
->         "1054", "列不存在",
->         "1064", "SQL 语法错误",
->         "1049", "数据库不存在"
->     );
->
->     // 对应 Python 的 self_heal_sql() — while 循环重试
->     // Java 方式 1：手动 while 循环（与 Python 最接近）
->     public SelfHealResult selfHeal(String question, String sql, String error,
->                                    String datasourceId, String schemaContext) {
->         int retryCount = 1;
->         int maxRetries = 2; // 对应 settings.llm_self_heal_max_retries
->
->         while (retryCount <= maxRetries) {
->             String prompt = buildFixPrompt(question, sql, error, retryCount, schemaContext);
->             try {
->                 String fixedSql = llmClient.prompt()
->                     .system("你只生成 SQL，不解释。")
->                     .user(prompt)
->                     .call()
->                     .content();
->                 fixedSql = stripMarkdown(fixedSql);
->
->                 if (fixedSql.isEmpty()) { retryCount++; continue; }
->
->                 ExecutionResult result = executionService.execute(fixedSql, datasourceId);
->                 if (result.isSuccess()) {
->                     return SelfHealResult.success(fixedSql, result);
->                 }
->                 error = result.getError(); // 闭环：更新 error 进入下一轮
->             } catch (Exception e) {
->                 // LLM 调用失败 → Python 的 except Exception
->             }
->             retryCount++;
->         }
->         return SelfHealResult.fail("SQL 修复失败（已重试 " + maxRetries + " 次）");
->     }
-> }
-> ```
->
-> 对比说明：
-> - Python 的 `while retry_count <= max_retries` → Java 的 `while (retryCount <= maxRetries)`（逻辑一致）
-> - Python 的 `{**result}` 字典解包 → Java 的 `new SelfHealResult(fixedSql, result)` 对象组合
-> - Python 的延迟导入 `from app.ai.nodes.execution import execute_sql` → Java 中通过 `@Autowired` 注入解决循环依赖
-> - Python 的 `_strip_markdown()` → Java 的 `response.content().replaceAll("^```.*?\\n", "").replaceAll("\\n```$", "")`
-> - Python 的 `settings.llm_self_heal_max_retries` → Java 的 `@Value("${llm.self-heal.max-retries:2}")`
+#### Java 对照
+
+Python 自愈修复循环 → Java 等价：RetryTemplate / Spring Retry @Retryable
+
+```java
+// Java 实现自愈修复 — 使用 Spring Retry
+@Service
+public class SelfHealService {
+    private final ChatClient llmClient;
+    private final SqlExecutionService executionService;
+
+    // MySQL 错误码映射 — 等价于 Python 的 AUTO_FIX_RULES
+    private static final Map<String, String> AUTO_FIX_RULES = Map.of(
+        "1146", "表不存在",
+        "1054", "列不存在",
+        "1064", "SQL 语法错误",
+        "1049", "数据库不存在"
+    );
+
+    // 对应 Python 的 self_heal_sql() — while 循环重试
+    // Java 方式 1：手动 while 循环（与 Python 最接近）
+    public SelfHealResult selfHeal(String question, String sql, String error,
+                                   String datasourceId, String schemaContext) {
+        int retryCount = 1;
+        int maxRetries = 2; // 对应 settings.llm_self_heal_max_retries
+
+        while (retryCount <= maxRetries) {
+            String prompt = buildFixPrompt(question, sql, error, retryCount, schemaContext);
+            try {
+                String fixedSql = llmClient.prompt()
+                    .system("你只生成 SQL，不解释。")
+                    .user(prompt)
+                    .call()
+                    .content();
+                fixedSql = stripMarkdown(fixedSql);
+
+                if (fixedSql.isEmpty()) { retryCount++; continue; }
+
+                ExecutionResult result = executionService.execute(fixedSql, datasourceId);
+                if (result.isSuccess()) {
+                    return SelfHealResult.success(fixedSql, result);
+                }
+                error = result.getError(); // 闭环：更新 error 进入下一轮
+            } catch (Exception e) {
+                // LLM 调用失败 → Python 的 except Exception
+            }
+            retryCount++;
+        }
+        return SelfHealResult.fail("SQL 修复失败（已重试 " + maxRetries + " 次）");
+    }
+}
+```
+
+对比说明：
+- Python 的 `while retry_count <= max_retries` → Java 的 `while (retryCount <= maxRetries)`（逻辑一致）
+- Python 的 `{**result}` 字典解包 → Java 的 `new SelfHealResult(fixedSql, result)` 对象组合
+- Python 的延迟导入 `from app.ai.nodes.execution import execute_sql` → Java 中通过 `@Autowired` 注入解决循环依赖
+- Python 的 `_strip_markdown()` → Java 的 `response.content().replaceAll("^```.*?\\n", "").replaceAll("\\n```$", "")`
+- Python 的 `settings.llm_self_heal_max_retries` → Java 的 `@Value("${llm.self-heal.max-retries:2}")`
+
 
 **修复 prompt 构建** — [`self_heal.py:100-142](../backend/app/ai/nodes/self_heal.py)：
 
@@ -4322,70 +4356,71 @@ def infer_chart_type(columns: list[str], rows: list[dict]) -> ChartType:
     return "table"
 ```
 
-> **Java 对照**
->
-> Python 规则引擎图表推断 → Java 等价：策略模式 / Strategy Pattern
->
-> ```java
-> // Java 实现图表类型推断 — 策略模式
-> public class ChartTypeInferrer {
->
->     // 策略接口
->     private interface ChartRule {
->         Optional<String> match(List<String> columns, List<Map<String, Object>> rows);
->     }
->
->     // 规则链 — 按优先级排列，命中即返回
->     private final List<ChartRule> rules = List.of(
->         // 1列1行 → metric
->         (cols, rows) -> cols.size() == 1 && rows.size() == 1
->             ? Optional.of("metric") : Optional.empty(),
->
->         // 2列 + 时间列 → line
->         (cols, rows) -> cols.size() == 2
->             && (looksLikeTime(sampleValue(rows, cols.get(0)))
->                 || looksLikeTime(sampleValue(rows, cols.get(1))))
->             ? Optional.of("line") : Optional.empty(),
->
->         // 2列 + <=5行 + 数值 → pie
->         (cols, rows) -> cols.size() == 2 && rows.size() <= 5
->             && isNumeric(sampleValue(rows, cols.get(1)))
->             ? Optional.of("pie") : Optional.empty(),
->
->         // 2列 + 数值 → bar
->         (cols, rows) -> cols.size() == 2
->             && isNumeric(sampleValue(rows, cols.get(1)))
->             ? Optional.of("bar") : Optional.empty(),
->
->         // 3列 + 第3列数值 → grouped_bar
->         (cols, rows) -> cols.size() == 3
->             && isNumeric(sampleValue(rows, cols.get(2)))
->             ? Optional.of("grouped_bar") : Optional.empty(),
->
->         // >=2列 + >=10行 + 2个数值列 → scatter
->         (cols, rows) -> cols.size() >= 2 && rows.size() >= 10
->             && countNumericColumns(cols, rows) >= 2
->             ? Optional.of("scatter") : Optional.empty()
->     );
->
->     // 对应 Python 的 infer_chart_type()
->     public String infer(List<String> columns, List<Map<String, Object>> rows) {
->         if (columns.isEmpty() || rows.isEmpty()) return "table";
->         return rules.stream()
->             .map(rule -> rule.match(columns, rows))
->             .filter(Optional::isPresent)
->             .map(Optional::get)
->             .findFirst()
->             .orElse("table"); // 兜底：table
->     }
-> }
-> ```
->
-> 对比说明：
-> - Python 的 `if/elif` 线性规则链 → Java 的策略模式 + Stream 链
-> - Python 的 `isinstance(v, (int, float))` → Java 的 `value instanceof Number`
-> - Python 的 `_is_numeric()` 支持 `float("1,234.56".replace(",", ""))` → Java 的 `NumberFormat.parse()`
-> - Python 的 `any(ind in s for ind in time_indicators)` → Java 的 `timeIndicators.stream().anyMatch(s::contains)`
+#### Java 对照
+
+Python 规则引擎图表推断 → Java 等价：策略模式 / Strategy Pattern
+
+```java
+// Java 实现图表类型推断 — 策略模式
+public class ChartTypeInferrer {
+
+    // 策略接口
+    private interface ChartRule {
+        Optional<String> match(List<String> columns, List<Map<String, Object>> rows);
+    }
+
+    // 规则链 — 按优先级排列，命中即返回
+    private final List<ChartRule> rules = List.of(
+        // 1列1行 → metric
+        (cols, rows) -> cols.size() == 1 && rows.size() == 1
+            ? Optional.of("metric") : Optional.empty(),
+
+        // 2列 + 时间列 → line
+        (cols, rows) -> cols.size() == 2
+            && (looksLikeTime(sampleValue(rows, cols.get(0)))
+                || looksLikeTime(sampleValue(rows, cols.get(1))))
+            ? Optional.of("line") : Optional.empty(),
+
+        // 2列 + <=5行 + 数值 → pie
+        (cols, rows) -> cols.size() == 2 && rows.size() <= 5
+            && isNumeric(sampleValue(rows, cols.get(1)))
+            ? Optional.of("pie") : Optional.empty(),
+
+        // 2列 + 数值 → bar
+        (cols, rows) -> cols.size() == 2
+            && isNumeric(sampleValue(rows, cols.get(1)))
+            ? Optional.of("bar") : Optional.empty(),
+
+        // 3列 + 第3列数值 → grouped_bar
+        (cols, rows) -> cols.size() == 3
+            && isNumeric(sampleValue(rows, cols.get(2)))
+            ? Optional.of("grouped_bar") : Optional.empty(),
+
+        // >=2列 + >=10行 + 2个数值列 → scatter
+        (cols, rows) -> cols.size() >= 2 && rows.size() >= 10
+            && countNumericColumns(cols, rows) >= 2
+            ? Optional.of("scatter") : Optional.empty()
+    );
+
+    // 对应 Python 的 infer_chart_type()
+    public String infer(List<String> columns, List<Map<String, Object>> rows) {
+        if (columns.isEmpty() || rows.isEmpty()) return "table";
+        return rules.stream()
+            .map(rule -> rule.match(columns, rows))
+            .filter(Optional::isPresent)
+            .map(Optional::get)
+            .findFirst()
+            .orElse("table"); // 兜底：table
+    }
+}
+```
+
+对比说明：
+- Python 的 `if/elif` 线性规则链 → Java 的策略模式 + Stream 链
+- Python 的 `isinstance(v, (int, float))` → Java 的 `value instanceof Number`
+- Python 的 `_is_numeric()` 支持 `float("1,234.56".replace(",", ""))` → Java 的 `NumberFormat.parse()`
+- Python 的 `any(ind in s for ind in time_indicators)` → Java 的 `timeIndicators.stream().anyMatch(s::contains)`
+
 
 **时间列检测** — [`chart_type.py:163-185](../backend/app/ai/chart_type.py)：
 
@@ -4497,69 +4532,70 @@ SYSTEM_PROMPT = """你是一个专业的 SQL 生成助手。你的任务根据�
 仅输出一条 SQL 语句，以分号结尾。"""
 ```
 
-> **Java 对照**
->
-> Python Prompt 模板 → Java 等价：模板文件 / FreeMarker / Thymeleaf
->
-> ```java
-> // Java 实现提示词模板管理 — 使用 FreeMarker 模板引擎
-> @Service
-> public class PromptTemplateService {
->     private final Configuration freemarkerConfig;
->
->     // 对应 Python 的 SYSTEM_PROMPT（常量字符串）
->     // Python 直接用三引号多行字符串，Java 用模板文件
->     public static final String SYSTEM_PROMPT = """
->         你是一个专业的 SQL 生成助手。
->         ## 规则
->         1. 只生成 SELECT 语句，禁止任何修改操作
->         ...
->         """;
->
->     // 对应 Python 的 build_user_prompt()
->     // Python 用 f-string 拼接，Java 用 FreeMarker 模板
->     // 模板文件: prompts/user_prompt.ftl
->     //   数据库结构：
->     //   ${schemaContext}
->     //   问题：${question}
->     //   请生成对应的 SQL 查询语句。
->     public String buildUserPrompt(String question, String schemaContext) {
->         Map<String, Object> model = Map.of(
->             "question", question,
->             "schemaContext", schemaContext
->         );
->         try {
->             Template template = freemarkerConfig.getTemplate("prompts/user_prompt.ftl");
->             return FreeMarkerTemplateUtils.processTemplateIntoString(template, model);
->         } catch (Exception e) {
->             // 降级：直接拼接（等价于 Python 的 f-string）
->             return "数据库结构：\n" + schemaContext + "\n\n问题：" + question + "\n\n请生成对应的 SQL 查询语句。";
->         }
->     }
->
->     // 对应 Python 的 build_semantic_prompt()
->     // Python 用 parts 列表 + join，Java 用 StringBuilder
->     public String buildSemanticPrompt(String question, String schemaContext, Map<String, Object> semantics) {
->         StringBuilder sb = new StringBuilder();
->         sb.append("数据库结构：\n").append(schemaContext);
->         sb.append("\n问题：").append(question);
->         if (semantics != null && !semantics.isEmpty()) {
->             sb.append("\n## 语义分析结果");
->             sb.append("\n- 查询类型: ").append(semantics.getOrDefault("intent", "DataQuery"));
->             // ... 更多语义字段
->         }
->         sb.append("\n请根据以上语义分析结果生成对应的 SQL 查询语句。");
->         return sb.toString();
->     }
-> }
-> ```
->
-> 对比说明：
-> - Python 的三引号多行字符串 `"""..."""` → Java 15+ 的 Text Block `"""..."""`
-> - Python 的 f-string `f"{variable}"` → Java 的 `String.format()` / FreeMarker `${variable}`
-> - Python 的 `parts` 列表 + `"\n".join(parts)` → Java 的 `StringBuilder.append()`
-> - Python 的 `dict.get("key", default)` → Java 的 `Map.getOrDefault(key, default)`
-> - Python 的提示词与代码分离（独立 .py 文件）→ Java 的模板文件（.ftl / .html）与代码分离
+#### Java 对照
+
+Python Prompt 模板 → Java 等价：模板文件 / FreeMarker / Thymeleaf
+
+```java
+// Java 实现提示词模板管理 — 使用 FreeMarker 模板引擎
+@Service
+public class PromptTemplateService {
+    private final Configuration freemarkerConfig;
+
+    // 对应 Python 的 SYSTEM_PROMPT（常量字符串）
+    // Python 直接用三引号多行字符串，Java 用模板文件
+    public static final String SYSTEM_PROMPT = """
+        你是一个专业的 SQL 生成助手。
+        ## 规则
+        1. 只生成 SELECT 语句，禁止任何修改操作
+        ...
+        """;
+
+    // 对应 Python 的 build_user_prompt()
+    // Python 用 f-string 拼接，Java 用 FreeMarker 模板
+    // 模板文件: prompts/user_prompt.ftl
+    //   数据库结构：
+    //   ${schemaContext}
+    //   问题：${question}
+    //   请生成对应的 SQL 查询语句。
+    public String buildUserPrompt(String question, String schemaContext) {
+        Map<String, Object> model = Map.of(
+            "question", question,
+            "schemaContext", schemaContext
+        );
+        try {
+            Template template = freemarkerConfig.getTemplate("prompts/user_prompt.ftl");
+            return FreeMarkerTemplateUtils.processTemplateIntoString(template, model);
+        } catch (Exception e) {
+            // 降级：直接拼接（等价于 Python 的 f-string）
+            return "数据库结构：\n" + schemaContext + "\n\n问题：" + question + "\n\n请生成对应的 SQL 查询语句。";
+        }
+    }
+
+    // 对应 Python 的 build_semantic_prompt()
+    // Python 用 parts 列表 + join，Java 用 StringBuilder
+    public String buildSemanticPrompt(String question, String schemaContext, Map<String, Object> semantics) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("数据库结构：\n").append(schemaContext);
+        sb.append("\n问题：").append(question);
+        if (semantics != null && !semantics.isEmpty()) {
+            sb.append("\n## 语义分析结果");
+            sb.append("\n- 查询类型: ").append(semantics.getOrDefault("intent", "DataQuery"));
+            // ... 更多语义字段
+        }
+        sb.append("\n请根据以上语义分析结果生成对应的 SQL 查询语句。");
+        return sb.toString();
+    }
+}
+```
+
+对比说明：
+- Python 的三引号多行字符串 `"""..."""` → Java 15+ 的 Text Block `"""..."""`
+- Python 的 f-string `f"{variable}"` → Java 的 `String.format()` / FreeMarker `${variable}`
+- Python 的 `parts` 列表 + `"\n".join(parts)` → Java 的 `StringBuilder.append()`
+- Python 的 `dict.get("key", default)` → Java 的 `Map.getOrDefault(key, default)`
+- Python 的提示词与代码分离（独立 .py 文件）→ Java 的模板文件（.ftl / .html）与代码分离
+
 
 **基础用户提示词** — [`query_prompt.py:82-88](../backend/app/ai/prompts/query_prompt.py)：
 
@@ -4740,71 +4776,72 @@ class QueryState(TypedDict, total=False):
 5. **结果组（success, error, columns, rows 等）** — 由 `execute_sql` 节点填充。
    `chart_type` 由 `infer_chart_type()` 推断，前端据此决定渲染方式。
 
-> **Java 对照**
->
-> Python TypedDict → Java 等价：DTO / POJO 状态对象
->
-> ```java
-> // Java 实现 LangGraph 状态对象 — POJO / Record
-> // 方式 1：可变 POJO（与 TypedDict 行为最接近）
-> public class QueryState {
->     // ── 输入组 ──
->     private String question;
->     private String datasourceId;
->     private String tenantId;
->     private List<Map<String, String>> conversationHistory = List.of();
->
->     // ── 理解组 ──
->     private String intent;              // "DataQuery" 或 "Other"
->     private String schemaContext;       // LLM 精选的表结构文本
->     private String rawMetadata;         // 完整元数据 JSON
->
->     // ── 生成组 ──
->     private String sql = "";            // 空字符串 = 生成失败
->     private List<String> tableFixes = List.of();
->     private List<String> columnFixes = List.of();
->
->     // ── 结果组 ──
->     private Boolean success;
->     private String error;
->     private List<String> columns = List.of();
->     private List<Map<String, Object>> rows = List.of();
->     private Integer rowCount;
->     private Integer executionTimeMs;
->     private String chartType;           // "metric", "line", "bar", ...
->
->     // getter/setter ...（Lombok @Data 可自动生成）
-> }
->
-> // 方式 2：Java 14+ Record（不可变，适合函数式风格）
-> public record QueryState(
->     String question, String datasourceId, String tenantId,
->     List<Map<String, String>> conversationHistory,
->     String intent, String schemaContext, String rawMetadata,
->     String sql, List<String> tableFixes, List<String> columnFixes,
->     Boolean success, String error, List<String> columns,
->     List<Map<String, Object>> rows, Integer rowCount,
->     Integer executionTimeMs, String chartType
-> ) {}
->
-> // LangGraph 节点的合并逻辑
-> // Python: LangGraph 自动 merge dict → Java 需手动实现 Builder 模式
-> public QueryState merge(QueryState delta) {
->     return QueryState.builder()
->         .question(delta.question() != null ? delta.question() : this.question)
->         .intent(delta.intent() != null ? delta.intent() : this.intent)
->         .sql(delta.sql() != null ? delta.sql() : this.sql)
->         // ... 其他字段
->         .build();
-> }
-> ```
->
-> 对比说明：
-> - Python 的 `TypedDict` → Java 的 POJO（带 getter/setter）或 Java 14+ `record`
-> - Python 的 `total=False`（所有字段可选）→ Java 中字段用引用类型（String, Integer, Boolean，允许 null）
-> - Python 的 `state.get("field", default)` → Java 的 `Optional.ofNullable(state.getIntent()).orElse("DataQuery")`
-> - Python 的 LangGraph 自动 merge → Java 需手动实现 Builder 模式的 merge 方法
-> - Python 的 `dict` 天然可序列化为 JSON → Java 需要Jackson/Gson 注解（`@JsonProperty` 等）
+#### Java 对照
+
+Python TypedDict → Java 等价：DTO / POJO 状态对象
+
+```java
+// Java 实现 LangGraph 状态对象 — POJO / Record
+// 方式 1：可变 POJO（与 TypedDict 行为最接近）
+public class QueryState {
+    // ── 输入组 ──
+    private String question;
+    private String datasourceId;
+    private String tenantId;
+    private List<Map<String, String>> conversationHistory = List.of();
+
+    // ── 理解组 ──
+    private String intent;              // "DataQuery" 或 "Other"
+    private String schemaContext;       // LLM 精选的表结构文本
+    private String rawMetadata;         // 完整元数据 JSON
+
+    // ── 生成组 ──
+    private String sql = "";            // 空字符串 = 生成失败
+    private List<String> tableFixes = List.of();
+    private List<String> columnFixes = List.of();
+
+    // ── 结果组 ──
+    private Boolean success;
+    private String error;
+    private List<String> columns = List.of();
+    private List<Map<String, Object>> rows = List.of();
+    private Integer rowCount;
+    private Integer executionTimeMs;
+    private String chartType;           // "metric", "line", "bar", ...
+
+    // getter/setter ...（Lombok @Data 可自动生成）
+}
+
+// 方式 2：Java 14+ Record（不可变，适合函数式风格）
+public record QueryState(
+    String question, String datasourceId, String tenantId,
+    List<Map<String, String>> conversationHistory,
+    String intent, String schemaContext, String rawMetadata,
+    String sql, List<String> tableFixes, List<String> columnFixes,
+    Boolean success, String error, List<String> columns,
+    List<Map<String, Object>> rows, Integer rowCount,
+    Integer executionTimeMs, String chartType
+) {}
+
+// LangGraph 节点的合并逻辑
+// Python: LangGraph 自动 merge dict → Java 需手动实现 Builder 模式
+public QueryState merge(QueryState delta) {
+    return QueryState.builder()
+        .question(delta.question() != null ? delta.question() : this.question)
+        .intent(delta.intent() != null ? delta.intent() : this.intent)
+        .sql(delta.sql() != null ? delta.sql() : this.sql)
+        // ... 其他字段
+        .build();
+}
+```
+
+对比说明：
+- Python 的 `TypedDict` → Java 的 POJO（带 getter/setter）或 Java 14+ `record`
+- Python 的 `total=False`（所有字段可选）→ Java 中字段用引用类型（String, Integer, Boolean，允许 null）
+- Python 的 `state.get("field", default)` → Java 的 `Optional.ofNullable(state.getIntent()).orElse("DataQuery")`
+- Python 的 LangGraph 自动 merge → Java 需手动实现 Builder 模式的 merge 方法
+- Python 的 `dict` 天然可序列化为 JSON → Java 需要Jackson/Gson 注解（`@JsonProperty` 等）
+
 
 #### 状态流转过程
 
@@ -4871,39 +4908,40 @@ yield {"event": "intent", "data": {"intent": intent, "detail": f"识别为{inten
 4. **`history: list[dict] | None = None`** — 对话历史参数，用于上下文补全。`| None` 是 Python 3.10+ 的联合类型写法。
 5. **函数内部没有 `return` 值** — 生成器函数的传统 return 值是 None，但调用方通过 `async for` 收集所有 yield 产出的事件。
 
-> **Java 对照**
->
-> Python async generator → Java 等价：
->
-> ```java
-> // Python: async def execute_query_pipeline(): ... yield event
-> // Java 等价写法 1：Spring SseEmitter（最接近）
-> @GetMapping(value = "/query/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-> public SseEmitter streamQuery(@RequestBody QueryRequest req) {
->     SseEmitter emitter = new SseEmitter(60_000L); // 60s 超时
->     CompletableFuture.runAsync(() -> {
->         // 第一步
->         emitter.send(SseEmitter.event().name("intent").data(step1Result));
->         // 第二步
->         emitter.send(SseEmitter.event().name("schema").data(step2Result));
->         // 完成
->         emitter.complete();
->     });
->     return emitter;
-> }
->
-> // Java 等价写法 2：WebFlux Flux（响应式流）
-> @GetMapping(value = "/query/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-> public Flux<ServerSentEvent<PipelineEvent>> streamQuery(@RequestBody QueryRequest req) {
->     return Flux.create(sink -> {
->         sink.next(ServerSentEvent.<PipelineEvent>builder().event("intent").data(step1).build());
->         sink.next(ServerSentEvent.<PipelineEvent>builder().event("schema").data(step2).build());
->         sink.complete();
->     });
-> }
-> ```
->
-> 对比说明：Python 的 `async def` + `yield` 是语言级的异步生成器，Java 没有直接等价物。Spring 的 `SseEmitter` 最接近——手动 `send()` 事件并 `complete()`，相当于 yield 的效果。WebFlux 的 `Flux` 是响应式流，功能更强但学习曲线陡峭。Python 的 `async for event in gen()` ≈ Java 的 `Flux.subscribe(event -> ...)`
+#### Java 对照
+
+Python async generator → Java 等价：
+
+```java
+// Python: async def execute_query_pipeline(): ... yield event
+// Java 等价写法 1：Spring SseEmitter（最接近）
+@GetMapping(value = "/query/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public SseEmitter streamQuery(@RequestBody QueryRequest req) {
+    SseEmitter emitter = new SseEmitter(60_000L); // 60s 超时
+    CompletableFuture.runAsync(() -> {
+        // 第一步
+        emitter.send(SseEmitter.event().name("intent").data(step1Result));
+        // 第二步
+        emitter.send(SseEmitter.event().name("schema").data(step2Result));
+        // 完成
+        emitter.complete();
+    });
+    return emitter;
+}
+
+// Java 等价写法 2：WebFlux Flux（响应式流）
+@GetMapping(value = "/query/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<PipelineEvent>> streamQuery(@RequestBody QueryRequest req) {
+    return Flux.create(sink -> {
+        sink.next(ServerSentEvent.<PipelineEvent>builder().event("intent").data(step1).build());
+        sink.next(ServerSentEvent.<PipelineEvent>builder().event("schema").data(step2).build());
+        sink.complete();
+    });
+}
+```
+
+对比说明：Python 的 `async def` + `yield` 是语言级的异步生成器，Java 没有直接等价物。Spring 的 `SseEmitter` 最接近——手动 `send()` 事件并 `complete()`，相当于 yield 的效果。WebFlux 的 `Flux` 是响应式流，功能更强但学习曲线陡峭。Python 的 `async for event in gen()` ≈ Java 的 `Flux.subscribe(event -> ...)`
+
 
 #### 调用方式
 
@@ -5047,39 +5085,40 @@ redis-cli set "query:test" '{"sql":"DROP TABLE users","success":true,"rows":[]}'
 
 这是最慢的路径（通常 5-15 秒），但也是最有价值的路径——它真正体现了 AI 的能力。
 
-> **Java 对照**
->
-> Python 管线执行器 → Java 等价：
->
-> ```java
-> // Python: 意图识别 → Schema → SQL生成 → 执行 → 自愈 → 图表推断
-> // Java 等价写法：责任链模式 (Chain of Responsibility)
->
-> public class QueryPipeline {
->     private final List<PipelineStep> steps = List.of(
->         new IntentStep(),       // 对应 intent.py
->         new SchemaStep(),       // 对应 schema_selection.py
->         new SqlGenStep(),       // 对应 generation.py
->         new ExecutionStep(),    // 对应 execution.py
->         new SelfHealStep(),     // 对应 self_heal.py（条件执行）
->         new ChartInferStep()    // 对应 chart_type.py
->     );
->
->     public Flux<PipelineEvent> execute(QueryRequest req) {
->         return Flux.create(sink -> {
->             PipelineContext ctx = new PipelineContext(req);
->             for (PipelineStep step : steps) {
->                 if (ctx.shouldSkip(step)) continue;
->                 step.execute(ctx);
->                 sink.next(ctx.toEvent());  // ≈ yield {"event": ..., "data": ...}
->             }
->             sink.complete();
->         });
->     }
-> }
-> ```
->
-> 对比说明：Python 的 yield 生成器是天然的"流式处理"——每完成一步就推送结果。Java 中通常用责任链模式（`List<PipelineStep>`）+ `Flux.create()` 实现相同效果。Python 的 `yield` ≈ Java 的 `sink.next()`。Python 的函数结束 ≈ Java 的 `sink.complete()`。Spring Batch 的 `ItemProcessor` 链式调用也是类似的管线模式。
+#### Java 对照
+
+Python 管线执行器 → Java 等价：
+
+```java
+// Python: 意图识别 → Schema → SQL生成 → 执行 → 自愈 → 图表推断
+// Java 等价写法：责任链模式 (Chain of Responsibility)
+
+public class QueryPipeline {
+    private final List<PipelineStep> steps = List.of(
+        new IntentStep(),       // 对应 intent.py
+        new SchemaStep(),       // 对应 schema_selection.py
+        new SqlGenStep(),       // 对应 generation.py
+        new ExecutionStep(),    // 对应 execution.py
+        new SelfHealStep(),     // 对应 self_heal.py（条件执行）
+        new ChartInferStep()    // 对应 chart_type.py
+    );
+
+    public Flux<PipelineEvent> execute(QueryRequest req) {
+        return Flux.create(sink -> {
+            PipelineContext ctx = new PipelineContext(req);
+            for (PipelineStep step : steps) {
+                if (ctx.shouldSkip(step)) continue;
+                step.execute(ctx);
+                sink.next(ctx.toEvent());  // ≈ yield {"event": ..., "data": ...}
+            }
+            sink.complete();
+        });
+    }
+}
+```
+
+对比说明：Python 的 yield 生成器是天然的"流式处理"——每完成一步就推送结果。Java 中通常用责任链模式（`List<PipelineStep>`）+ `Flux.create()` 实现相同效果。Python 的 `yield` ≈ Java 的 `sink.next()`。Python 的函数结束 ≈ Java 的 `sink.complete()`。Spring Batch 的 `ItemProcessor` 链式调用也是类似的管线模式。
+
 
 #### 真实代码
 
@@ -5325,36 +5364,37 @@ ChatBI 的 SSE 对接链路：
   ReadableStream ← SSE 文本行 ← "event: xxx\ndata: {...}\n\n"
 ```
 
-> **Java 对照**
->
-> Python SSE → Java Spring 等价：
->
-> ```java
-> // Python: StreamingResponse(event_stream(), media_type="text/event-stream")
-> // Java 等价写法 1：SseEmitter（Spring MVC，阻塞式）
-> @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-> public SseEmitter streamQuery(@RequestBody QueryRequest req) {
->     SseEmitter emitter = new SseEmitter(60_000L);
->     executorService.submit(() -> {
->         emitter.send(SseEmitter.event().name("intent").data(intentResult));
->         emitter.send(SseEmitter.event().name("schema").data(schemaResult));
->         emitter.complete();
->     });
->     return emitter;
-> }
->
-> // Java 等价写法 2：WebFlux Flux（响应式，非阻塞）
-> @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-> public Flux<ServerSentEvent<String>> streamQuery(@RequestBody QueryRequest req) {
->     return pipelineExecutor.execute(req)
->         .map(event -> ServerSentEvent.<String>builder()
->             .event(event.getType())
->             .data(event.toJson())
->             .build());
-> }
-> ```
->
-> 对比说明：Python 的 `StreamingResponse` + `yield` ≈ Java Spring 的 `SseEmitter`。Python 的 `media_type="text/event-stream"` ≈ Java 的 `produces = MediaType.TEXT_EVENT_STREAM_VALUE`。`X-Accel-Buffering: no` ≈ Nginx 的 `proxy_buffering off`，都是禁止 Nginx 缓冲 SSE 流。WebFlux 的 `Flux` 更优雅但需要响应式技术栈。
+#### Java 对照
+
+Python SSE → Java Spring 等价：
+
+```java
+// Python: StreamingResponse(event_stream(), media_type="text/event-stream")
+// Java 等价写法 1：SseEmitter（Spring MVC，阻塞式）
+@GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public SseEmitter streamQuery(@RequestBody QueryRequest req) {
+    SseEmitter emitter = new SseEmitter(60_000L);
+    executorService.submit(() -> {
+        emitter.send(SseEmitter.event().name("intent").data(intentResult));
+        emitter.send(SseEmitter.event().name("schema").data(schemaResult));
+        emitter.complete();
+    });
+    return emitter;
+}
+
+// Java 等价写法 2：WebFlux Flux（响应式，非阻塞）
+@GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> streamQuery(@RequestBody QueryRequest req) {
+    return pipelineExecutor.execute(req)
+        .map(event -> ServerSentEvent.<String>builder()
+            .event(event.getType())
+            .data(event.toJson())
+            .build());
+}
+```
+
+对比说明：Python 的 `StreamingResponse` + `yield` ≈ Java Spring 的 `SseEmitter`。Python 的 `media_type="text/event-stream"` ≈ Java 的 `produces = MediaType.TEXT_EVENT_STREAM_VALUE`。`X-Accel-Buffering: no` ≈ Nginx 的 `proxy_buffering off`，都是禁止 Nginx 缓冲 SSE 流。WebFlux 的 `Flux` 更优雅但需要响应式技术栈。
+
 
 #### 后端：StreamingResponse
 
@@ -5802,36 +5842,37 @@ class CacheStats:
 
 这是一个线程安全的内存计数器（GIL 保证），记录缓存命中率，供监控面板使用。
 
-> **Java 对照**
->
-> Python cache_service → Java Spring Cache 等价：
->
-> ```java
-> // Python: await redis.setex(key, ttl, json.dumps(result))
-> // Java 等价写法（Spring Cache + Redis）
-> @Service
-> public class QueryCacheService {
->     @Autowired private RedisTemplate<String, String> redisTemplate;
->
->     // 精确缓存 — ≈ cache_get / cache_set
->     @Cacheable(value = "query", key = "#tenantId + ':' + #question + ':' + #dsId",
->                unless = "#result == null || !#result.success")
->     public QueryResult getOrCache(String question, String dsId, String tenantId) {
->         return null; // 缓存未命中时返回 null，由调用方执行查询后 @CachePut 写入
->     }
->
->     // 语义缓存 — Java 通常用 Elasticsearch 或向量数据库做语义检索
->     // Python 的 _simple_similarity（词重叠度）≈ Java 的 Jaccard Similarity
->     public double jaccardSimilarity(String a, String b) {
->         Set<String> setA = new HashSet<>(Arrays.asList(a.toLowerCase().split(" ")));
->         Set<String> setB = new HashSet<>(Arrays.asList(b.toLowerCase().split(" ")));
->         double intersection = setA.stream().filter(setB::contains).count();
->         return intersection / Math.max(setA.size(), setB.size());
->     }
-> }
-> ```
->
-> 对比说明：Python 的 `Redis.setex(key, ttl, value)` ≈ Java 的 `@Cacheable` + Redis 配置。Python 的两层缓存（精确 + 语义）在 Java 中通常用 Caffeine（本地一级）+ Redis（分布式二级）的二级缓存方案。Python 的 `CacheStats` ≈ Spring Boot Actuator 的 `CacheMetrics`。Python 的"Redis 不可用时静默降级" ≈ Java 的 `@Cacheable(sync = true)` 或 `CacheErrorHandler`。
+#### Java 对照
+
+Python cache_service → Java Spring Cache 等价：
+
+```java
+// Python: await redis.setex(key, ttl, json.dumps(result))
+// Java 等价写法（Spring Cache + Redis）
+@Service
+public class QueryCacheService {
+    @Autowired private RedisTemplate<String, String> redisTemplate;
+
+    // 精确缓存 — ≈ cache_get / cache_set
+    @Cacheable(value = "query", key = "#tenantId + ':' + #question + ':' + #dsId",
+               unless = "#result == null || !#result.success")
+    public QueryResult getOrCache(String question, String dsId, String tenantId) {
+        return null; // 缓存未命中时返回 null，由调用方执行查询后 @CachePut 写入
+    }
+
+    // 语义缓存 — Java 通常用 Elasticsearch 或向量数据库做语义检索
+    // Python 的 _simple_similarity（词重叠度）≈ Java 的 Jaccard Similarity
+    public double jaccardSimilarity(String a, String b) {
+        Set<String> setA = new HashSet<>(Arrays.asList(a.toLowerCase().split(" ")));
+        Set<String> setB = new HashSet<>(Arrays.asList(b.toLowerCase().split(" ")));
+        double intersection = setA.stream().filter(setB::contains).count();
+        return intersection / Math.max(setA.size(), setB.size());
+    }
+}
+```
+
+对比说明：Python 的 `Redis.setex(key, ttl, value)` ≈ Java 的 `@Cacheable` + Redis 配置。Python 的两层缓存（精确 + 语义）在 Java 中通常用 Caffeine（本地一级）+ Redis（分布式二级）的二级缓存方案。Python 的 `CacheStats` ≈ Spring Boot Actuator 的 `CacheMetrics`。Python 的"Redis 不可用时静默降级" ≈ Java 的 `@Cacheable(sync = true)` 或 `CacheErrorHandler`。
+
 
 #### 动手练习
 
@@ -5997,42 +6038,43 @@ async def health_check(self, ds_id: str, ds: DataSource) -> dict:
 | `postgresql` | `postgresql+asyncpg` | PostgreSQL 数据源 |
 | `sqlite` | `sqlite+aiosqlite` | 测试/轻量数据源 |
 
-> **Java 对照**
->
-> Python connection_pool → Java HikariCP 等价：
->
-> ```java
-> // Python: create_async_engine(url, pool_size=5, max_overflow=3, pool_recycle=1800)
-> // Java 等价写法（HikariCP，Spring Boot 默认连接池）
-> @Configuration
-> public class DataSourceConfig {
->     @Bean
->     @ConfigurationProperties(prefix = "spring.datasource.hikari")
->     public DataSource dataSource() {
->         return DataSourceBuilder.create().type(HikariDataSource.class).build();
->     }
->     // application.yml:
->     // spring:
->     //   datasource:
->     //     hikari:
->     //       maximum-pool-size: 5        ≈ pool_size
->     //       minimum-idle: 2
->     //       connection-timeout: 30000   ≈ pool_timeout
->     //       max-lifetime: 1800000       ≈ pool_recycle (30 min)
->     //       connection-test-query: "SELECT 1"  ≈ pool_pre_ping
-> }
->
-> // 多数据源管理 ≈ ConnectionPoolManager._pools dict
-> public class DynamicDataSource extends AbstractRoutingDataSource {
->     private final Map<String, DataSource> resolvedDataSources = new ConcurrentHashMap<>();
->
->     public DataSource getDataSource(String dsId) {
->         return resolvedDataSources.computeIfAbsent(dsId, this::createDataSource);
->     }
-> }
-> ```
->
-> 对比说明：Python 的 `create_async_engine` ≈ Java 的 `HikariDataSource`。`pool_size` ≈ `maximum-pool-size`，`pool_recycle` ≈ `max-lifetime`，`pool_pre_ping` ≈ `connection-test-query`。Python 的 `_pools: dict` ≈ Java 的 `AbstractRoutingDataSource` + `ConcurrentHashMap`。Python 的 Fernet 加密凭据 ≈ Java 的 `jasypt-spring-boot` 加密配置。
+#### Java 对照
+
+Python connection_pool → Java HikariCP 等价：
+
+```java
+// Python: create_async_engine(url, pool_size=5, max_overflow=3, pool_recycle=1800)
+// Java 等价写法（HikariCP，Spring Boot 默认连接池）
+@Configuration
+public class DataSourceConfig {
+    @Bean
+    @ConfigurationProperties(prefix = "spring.datasource.hikari")
+    public DataSource dataSource() {
+        return DataSourceBuilder.create().type(HikariDataSource.class).build();
+    }
+    // application.yml:
+    // spring:
+    //   datasource:
+    //     hikari:
+    //       maximum-pool-size: 5        ≈ pool_size
+    //       minimum-idle: 2
+    //       connection-timeout: 30000   ≈ pool_timeout
+    //       max-lifetime: 1800000       ≈ pool_recycle (30 min)
+    //       connection-test-query: "SELECT 1"  ≈ pool_pre_ping
+}
+
+// 多数据源管理 ≈ ConnectionPoolManager._pools dict
+public class DynamicDataSource extends AbstractRoutingDataSource {
+    private final Map<String, DataSource> resolvedDataSources = new ConcurrentHashMap<>();
+
+    public DataSource getDataSource(String dsId) {
+        return resolvedDataSources.computeIfAbsent(dsId, this::createDataSource);
+    }
+}
+```
+
+对比说明：Python 的 `create_async_engine` ≈ Java 的 `HikariDataSource`。`pool_size` ≈ `maximum-pool-size`，`pool_recycle` ≈ `max-lifetime`，`pool_pre_ping` ≈ `connection-test-query`。Python 的 `_pools: dict` ≈ Java 的 `AbstractRoutingDataSource` + `ConcurrentHashMap`。Python 的 Fernet 加密凭据 ≈ Java 的 `jasypt-spring-boot` 加密配置。
+
 
 #### 动手练习
 
@@ -6181,32 +6223,33 @@ estimate_query_complexity()
 
 简单路径最多 2 次 LLM 调用，完整管线最多 5 次。对于简单问题，延迟从 ~8 秒降到 ~3 秒。
 
-> **Java 对照**
->
-> Python query_complexity → Java 等价（请求分级路由）：
->
-> ```java
-> // Python: estimate_query_complexity(question) → {level, score, reasons}
-> // Java 等价写法：策略模式 + 关键词匹配
-> @Service
-> public class QueryRouter {
->     private static final Set<String> COMPLEX_KEYWORDS = Set.of(
->         "同比", "环比", "排名", "top", "转化率"
->     );
->
->     public QueryLevel estimateComplexity(String question) {
->         int score = 0;
->         for (String kw : COMPLEX_KEYWORDS) {
->             if (question.contains(kw)) score += 3;
->         }
->         if (score <= 2) return QueryLevel.SIMPLE;   // 走小模型
->         if (score <= 5) return QueryLevel.NORMAL;    // 走完整管线
->         return QueryLevel.COMPLEX;                     // 走完整管线 + 额外优化
->     }
-> }
-> ```
->
-> 对比说明：Python 的 `estimate_query_complexity` 用关键词启发式评分，Java 中可用策略模式或规则引擎（Drools）实现相同的分级路由。`_SIMPLE_METRICS`、`_COMPLEX_KEYWORDS` 等 Set ≈ Java 的 `Set.of(...)`。
+#### Java 对照
+
+Python query_complexity → Java 等价（请求分级路由）：
+
+```java
+// Python: estimate_query_complexity(question) → {level, score, reasons}
+// Java 等价写法：策略模式 + 关键词匹配
+@Service
+public class QueryRouter {
+    private static final Set<String> COMPLEX_KEYWORDS = Set.of(
+        "同比", "环比", "排名", "top", "转化率"
+    );
+
+    public QueryLevel estimateComplexity(String question) {
+        int score = 0;
+        for (String kw : COMPLEX_KEYWORDS) {
+            if (question.contains(kw)) score += 3;
+        }
+        if (score <= 2) return QueryLevel.SIMPLE;   // 走小模型
+        if (score <= 5) return QueryLevel.NORMAL;    // 走完整管线
+        return QueryLevel.COMPLEX;                     // 走完整管线 + 额外优化
+    }
+}
+```
+
+对比说明：Python 的 `estimate_query_complexity` 用关键词启发式评分，Java 中可用策略模式或规则引擎（Drools）实现相同的分级路由。`_SIMPLE_METRICS`、`_COMPLEX_KEYWORDS` 等 Set ≈ Java 的 `Set.of(...)`。
+
 
 #### 动手练习
 
@@ -6296,32 +6339,33 @@ def mask_sensitive_data(columns: list[str], rows: list[dict]) -> tuple[list[str]
 | john@example.com | email | j\*\*\*@example.com | 邮箱正则 |
 | 北京市朝阳区 | address | 北京市朝阳区 | 无匹配规则，原样返回 |
 
-> **Java 对照**
->
-> Python data_masking → Java 等价：
->
-> ```java
-> // Python: MASKING_RULES + mask_sensitive_data(columns, rows)
-> // Java 等价写法（Jackson 自定义序列化器或工具类）
-> public class DataMaskUtils {
->     private static final Pattern PHONE = Pattern.compile("^1[3-9]\\d{9}$");
->     private static final Pattern ID_CARD = Pattern.compile("^\\d{17}[\\dXx]$");
->
->     public static String maskValue(String value) {
->         if (PHONE.matcher(value).matches())
->             return value.substring(0, 3) + "****" + value.substring(7);
->         if (ID_CARD.matcher(value).matches())
->             return "***************" + value.substring(14);
->         return value;
->     }
->
->     // 或用 Jackson 注解自动脱敏：
->     @JsonSerialize(using = PhoneMaskSerializer.class)
->     private String phone;
-> }
-> ```
->
-> 对比说明：Python 的 `re.compile` + `lambda` ≈ Java 的 `Pattern.compile` + 方法引用。Python 的列表推导脱敏 ≈ Java 的 Stream API `rows.stream().map(row -> mask(row)).toList()`。Jackson 自定义序列化器可以实现字段级自动脱敏，比 Python 的显式函数调用更声明式。
+#### Java 对照
+
+Python data_masking → Java 等价：
+
+```java
+// Python: MASKING_RULES + mask_sensitive_data(columns, rows)
+// Java 等价写法（Jackson 自定义序列化器或工具类）
+public class DataMaskUtils {
+    private static final Pattern PHONE = Pattern.compile("^1[3-9]\\d{9}$");
+    private static final Pattern ID_CARD = Pattern.compile("^\\d{17}[\\dXx]$");
+
+    public static String maskValue(String value) {
+        if (PHONE.matcher(value).matches())
+            return value.substring(0, 3) + "****" + value.substring(7);
+        if (ID_CARD.matcher(value).matches())
+            return "***************" + value.substring(14);
+        return value;
+    }
+
+    // 或用 Jackson 注解自动脱敏：
+    @JsonSerialize(using = PhoneMaskSerializer.class)
+    private String phone;
+}
+```
+
+对比说明：Python 的 `re.compile` + `lambda` ≈ Java 的 `Pattern.compile` + 方法引用。Python 的列表推导脱敏 ≈ Java 的 Stream API `rows.stream().map(row -> mask(row)).toList()`。Jackson 自定义序列化器可以实现字段级自动脱敏，比 Python 的显式函数调用更声明式。
+
 
 #### 动手练习
 

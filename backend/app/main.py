@@ -42,6 +42,7 @@ from app.api.data_model import router as data_model_router  # 数据模型：表
 from app.api.analytics import router as analytics_router    # 使用统计
 from app.api.evaluation import router as eval_router        # AI 评估
 from app.api.dashboard import router as dashboard_router    # 看板：可视化仪表盘
+from app.api.docs import router as docs_router               # 文档：学习指南
 
 from app.services.connection_pool import pool_manager       # 数据源连接池管理器
 from app.core.redis_client import close_redis               # Redis 关闭函数
@@ -230,6 +231,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router, prefix=settings.api_prefix)
     app.include_router(eval_router, prefix=settings.api_prefix)
     app.include_router(dashboard_router, prefix=settings.api_prefix)
+    app.include_router(docs_router, prefix=settings.api_prefix)
 
     # 健康检查端点：用于 Docker/K8s 探活，不经过 api_prefix
     @app.get("/health")
