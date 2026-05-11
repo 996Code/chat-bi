@@ -23,7 +23,7 @@ is_active: bool = True    # 变量 is_active 是布尔值
 
 ### 在我们的项目里
 
-打开 [`config.py`](../backend/app/core/config.py)，第 59 行开始：
+打开 [`config.py:59`](../backend/app/core/config.py#L59)，第 59 行开始：
 
 ```python
 app_env: str = "development"   # 运行环境
@@ -121,7 +121,7 @@ async def get_user(email):
 
 ### 在我们的项目里
 
-打开 [`auth.py`](../backend/app/api/auth.py)，第 87 行：
+打开 [`auth.py:87`](../backend/app/api/auth.py#L87)，第 87 行None：
 
 ```python
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
@@ -143,8 +143,8 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 逐行解读：
   第 87 行：`async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):` — 异步函数定义，req 从请求体 JSON 反序列化，db 通过依赖注入自动创建
-  第 94 行：`result = await db.execute(select(User).where(User.email == req.email))` — await 异步执行 SELECT 查询，按邮箱查找用户
-  第 95 行：`if result.scalar_one_or_none():` — 如果查到了用户（邮箱已注册）
+  第 115 行：`result = await db.execute(select(User).where(User.email == req.email))` — await 异步执行 SELECT 查询，按邮箱查找用户
+  第 116 行：`if result.scalar_one_or_none():` — 如果查到了用户（邮箱已注册）
   第 125 行：`tenant = Tenant(name=f"user-{uuid.uuid4().hex[:6]}")` — 用 f-string 生成随机租户名
   第 126 行：`db.add(tenant)` — 将租户对象加入 Session 的"待写入"列表
   第 127 行：`await db.flush()` — 异步将 SQL 发送到数据库但不提交事务，这样能获取 tenant.id
@@ -241,7 +241,7 @@ add(1, 2)  # 输出: 调用函数: add → 函数返回: 3
 
 **1. @router.post — FastAPI 路由装饰器**
 
-打开 [`auth.py`](../backend/app/api/auth.py)，第 82-86 行：
+打开 [`auth.py:82-86`](../backend/app/api/auth.py#L82-L86)
 
 ```python
 @router.post(
@@ -281,9 +281,9 @@ def _validate_bcrypt_rounds(cls, v: int) -> int:
   第 241 行：`@field_validator("bcrypt_rounds", mode="after")` — Pydantic 装饰器，监听 bcrypt_rounds 字段的赋值，mode="after" 表示在类型转换（str→int）之后再校验
   第 242 行：`@classmethod` — 声明为类方法，第一个参数是类本身（cls）而非实例（self）
   第 243 行：`def _validate_bcrypt_rounds(cls, v: int) -> int:` — 校验函数，v 是待校验的值，返回校验后的值
-  第 244 行：`if not (4 <= v <= 31):` — 检查值是否在有效范围（bcrypt 轮数的合理范围）
-  第 245 行：`raise ValueError(...)` — 值不合法时抛出异常，Pydantic 会捕获并在启动时报错
-  第 246 行：`return v` — 值合法，原样返回
+  第 245 行：`if not (4 <= v <= 31):` — 检查值是否在有效范围（bcrypt 轮数的合理范围）
+  第 246 行：`raise ValueError(...)` — 值不合法时抛出异常，Pydantic 会捕获并在启动时报错
+  第 247 行：`return v` — 值合法，原样返回
 
 `@field_validator("bcrypt_rounds", mode="after")` 做了什么？
 - 在 `bcrypt_rounds` 赋值后自动触发这个函数
@@ -357,7 +357,7 @@ user_dict = {key: str(value) for key, value in user_data.items()}
 
 ### 在我们的项目里
 
-打开 [`auth.py`](../backend/app/api/auth.py)，第 252-257 行：
+打开 [`auth.py:252-257`](../backend/app/api/auth.py#L252-L257)
 
 ```python
 token_data = {
@@ -436,7 +436,7 @@ print(f"Pi is approximately {pi:.2f}")  # "Pi is approximately 3.14"
 
 ### 在我们的项目里
 
-打开 [`auth.py`](../backend/app/api/auth.py)，第 125 行：
+打开 [`auth.py:125`](../backend/app/api/auth.py#L125)，第 125 行None：
 
 ```python
 tenant = Tenant(name=f"user-{uuid.uuid4().hex[:6]}")
@@ -629,7 +629,7 @@ async with async_session_factory() as session:
 
 ### 在我们的项目里
 
-打开 [`session.py`](../backend/app/db/session.py)，第 27-29 行：
+打开 [`session.py:27-29`](../backend/app/db/session.py#L27-L29)
 
 ```python
 async def get_db():
@@ -803,7 +803,7 @@ async def login(req: LoginRequest):
 
 ### 在我们的项目里
 
-打开 [`main.py`](../backend/app/main.py)，第 33-44 行：
+打开 [`main.py:33-44`](../backend/app/main.py#L33-L44)
 
 ```python
 from app.api.auth import router as auth_router
@@ -922,7 +922,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 ### 在我们的项目里
 
-打开 [`auth.py`](../backend/app/api/auth.py)，第 87 行：
+打开 [`auth.py:87`](../backend/app/api/auth.py#L87)，第 87 行None：
 
 ```python
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
@@ -1263,7 +1263,7 @@ async def sync(background_tasks: BackgroundTasks):
 
 ### 在我们的项目里
 
-打开 [`main.py`](../backend/app/main.py)，第 63 行开始：
+打开 [`main.py:63`](../backend/app/main.py#L63)，第 63 行开始：
 
 ```python
 @asynccontextmanager
@@ -1283,10 +1283,10 @@ async def lifespan(app: FastAPI):
 逐行解读：
   第 63 行：`@asynccontextmanager` — 将函数装饰为异步上下文管理器，配合 FastAPI 的 lifespan 参数使用
   第 64 行：`async def lifespan(app: FastAPI):` — 生命周期管理函数，接收 FastAPI 应用实例
-  第 66 行：`async with engine.begin() as conn:` — 开启一个数据库连接事务
-  第 67 行：`await conn.run_sync(Base.metadata.create_all)` — 在异步上下文中执行同步的建表操作，根据所有 SQLAlchemy 模型创建表
-  第 70-73 行：`yield` — 分界线，yield 之前是启动逻辑，之后是关闭逻辑；yield 将控制权交还给 FastAPI，应用开始接收请求
-  第 75-77 行：关闭阶段代码——释放数据源连接池和 Redis 连接
+  第 70 行：`async with engine.begin() as conn:` — 开启一个数据库连接事务
+  第 71 行：`await conn.run_sync(Base.metadata.create_all)` — 在异步上下文中执行同步的建表操作，根据所有 SQLAlchemy 模型创建表
+  第 146 行：`yield` — 分界线，yield 之前是启动逻辑，之后是关闭逻辑；yield 将控制权交还给 FastAPI，应用开始接收请求
+  第 151-157 行：关闭阶段代码——释放数据源连接池和 Redis 连接
 
 `yield` 是分界线：之前是启动逻辑，之后是关闭逻辑。这和 `get_db()` 的 `yield session` 是同一个模式。
 
@@ -1451,7 +1451,7 @@ ORM 的核心思想：**一个 Python 类 = 一张数据库表**。
 
 ### 在我们的项目里
 
-打开 [`models.py`](../backend/app/db/models.py)，第 47 行：
+打开 [`models.py:47`](../backend/app/db/models.py#L47)，第 47 行None：
 
 ```python
 class Tenant(Base):
@@ -1786,8 +1786,8 @@ class GUID(TypeDecorator):
 
 逐行解读：
   第 6 行：`class GUID(TypeDecorator):` — 继承 SQLAlchemy 的 TypeDecorator，自定义数据库列类型
-  第 11 行：`impl = String` — 默认实现为 String 类型（VARCHAR），实际长度由 load_dialect_impl 决定
-  第 12 行：`cache_ok = True` — 允许 SQLAlchemy 缓存该类型的"编译"结果，提升性能
+  第 12 行：`impl = String` — 默认实现为 String 类型（VARCHAR），实际长度由 load_dialect_impl 决定
+  第 13 行：`cache_ok = True` — 允许 SQLAlchemy 缓存该类型的"编译"结果，提升性能
   第 15 行：`def load_dialect_impl(self, dialect):` — 根据数据库方言返回不同的列类型描述
   第 16 行：`if dialect.name == "postgresql":` — 检测是否为 PostgreSQL 数据库
   第 17 行：`return dialect.type_descriptor(UUID())` — PostgreSQL 使用原生 UUID 类型
@@ -2257,7 +2257,7 @@ async def resolve_context_node(state: QueryState) -> dict:
   第 236 行：`history = state.get("conversation_history", [])` — 安全读取对话历史，首轮为空列表
   第 237 行：`resolved = resolve_context(state["question"], history)` — 调用 resolve_context 解析代词和相对时间
   第 238-239 行：`if resolved != state["question"]: return {"question": resolved}` — 只有补全结果不同时才返回增量
-  第 240 行：`return {}` — 无变化返回空字典，LangGraph 不会修改任何字段
+  第 241 行：`return {}` — 无变化返回空字典，LangGraph 不会修改任何字段
 
 **SQL 执行节点** — [`graph.py:267-306](../backend/app/ai/graph.py#L267-L306)：
 
