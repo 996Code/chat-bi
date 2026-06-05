@@ -1482,6 +1482,1562 @@ Dialog:
 
 ---
 
-*基于 claude-code-analysis 项目全部 31 个 Markdown 分析文件系统整理*
+## 17. 补充：MCP 集成深度细节
+
+### 17.1 工具描述的截断保护
+
+```
+MAX_MCP_DESCRIPTION_LENGTH = 2048
+
+注释原文: OpenAPI-generated MCP servers have been observed dumping
+15-60KB of endpoint docs into tool.description; this caps the p95 tail
+without losing the intent.
+```
+
+不是猜想，是真实线上经验——某些 OpenAPI 自动生成的 MCP 服务器会把整个端点文档（15-60KB）塞进一条工具描述。2048 字符的上限是工程数据驱动的。
+
+### 17.2 认证雪崩防护的完整实现
+
+问题：一个 Token 失效 → 100 个并发工具子调用同时发现 401 → 全部发起 Token 刷新 → 认证雪崩。
+
+```typescript
+// 缓存文件: ~/.claude/mcp-needs-auth-cache.json
+type McpAuthCacheData = Record<string, { timestamp: number }>
+
+getMcpAuthCache():
+  → authCachePromise ??= readFile(path)
+    .then(data => JSON.parse(data))
+    .catch(() => ({}))     // 首次/文件损坏 → 空对象
+  → Promise 结果 memoize（并发读不重复 fs.readFile）
+
+setMcpAuthCacheEntry(serverId):
+  → cache[serverId] = { timestamp: Date.now() }
+  → 异步写入（不阻塞调用方）
+
+isMcpAuthCached(serverId):
+  → cache[serverId] 存在 && Date.now() - timestamp < 15*60*1000
+  → 返回 true → 所有后续调用直接短路返回 needs-auth
+  → MCP_AUTH_CACHE_TTL_MS = 15 * 60 * 1000  // 15 分钟
+```
+
+### 17.3 超时控制：为什么不用 AbortSignal.timeout()
+
+```typescript
+wrapFetchWithTimeout(baseFetch):
+  → method === 'GET' → 不加超时（SSE 长连接不能被切断）
+  → 其他方法 → setTimeout + AbortController
+    → timer.unref()   // 不阻止进程退出
+
+注释原文: AbortSignal.timeout() leaks ~2.4KB per request in Bun
+           before GC collects it.
+```
+
+`timer.unref()` 也是关键——确保定时器不会阻止 Node.js 进程正常退出。这是跨运行时（Bun/Node）兼容性工程的典型案例。
+
+### 17.4 Session 过期检测与自动恢复
+
+```typescript
+isMcpSessionExpiredError(error):
+  → error.code !== 404 → false（只处理 404）
+  → error.message.includes('"code":-32001')
+    || error.message.includes('"code": -32001')
+  → MCP 协议规范：Session 过期 = HTTP 404 + JSON-RPC -32001
+
+检测到后:
+  → connectToServer.cache.clear()     // 清除连接缓存
+  → 重新 connectToServer()            // 建立新连接
+```
+
+### 17.5 IDE 工具白名单
+
+```typescript
+ALLOWED_IDE_TOOLS = [
+  'mcp__ide__getDiagnostics',
+  'mcp__ide__getOpenEditorFiles',
+  // ... 仅少数高权限工具通过白名单
+]
+
+isIncludedMcpTool(tool):
+  → !tool.name.startsWith('mcp__ide__') → true  // 非 IDE 工具全部允许
+  → ALLOWED_IDE_TOOLS.includes(tool.name) → true // IDE 工具白名单
+  → 其他 → false  // IDE 推送的其他工具被拦截
+```
+
+这意味着 IDE 可以向 Claude 推送工具，但不是所有推送都被接受——只有白名单内的能力才进入工具池。
+
+### 17.6 并发连接控制
+
+```typescript
+getMcpServerConnectionBatchSize():
+  → 本地: parseInt(env.MCP_SERVER_CONNECTION_BATCH_SIZE) || 3
+  → 远程: parseInt(env.MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE) || 20
+
+pMap(servers, connectToServer, { concurrency: batchSize })
+```
+
+本地只并发 3 个连接（stdio 进程启动有开销），远程 20 个（网络 IO 并发价值高）。
+
+### 17.7 claude.ai 代理的 OAuth 自动刷新
+
+```typescript
+createClaudeAiProxyFetch(innerFetch):
+  return async (url, init) => {
+    const response = await innerFetch(url, init)
+    if (response.status === 401):
+      → await refreshOAuthToken()         // 静默刷新
+      → return innerFetch(url, {           // 用新 token 重试
+          ...init,
+          headers: getUpdatedAuthHeaders()
+        })
+    return response
+  }
+```
+
+用户完全无感知——401 了自动刷新 token 然后重试。
+
+### 17.8 MCP 设置 UI 的状态机
+
+```
+MCPSettings 状态机:
+
+list
+  → server-menu
+     → server-tools
+        → tool-detail → 返回 server-tools
+     → 返回 list
+
+list
+  → agent-server-menu
+     → server-tools
+        → tool-detail → 返回 server-tools
+     → 返回 list
+
+每个 server 在列表中展示的不仅仅是名称，而是:
+  - transport 类型（sse/http/stdio/claudeai-proxy）
+  - 认证状态（通过 ClaudeAuthProvider.tokens() 检测）
+  - 工具数量
+  - 连接状态（connected / pending / reconnecting / needs-auth / failed）
+```
+
+---
+
+## 18. 补充：竞品对比（Claude Code vs Codex vs Gemini CLI vs Aider vs Cursor）
+
+### 18.1 与 Codex (OpenAI) 的差异
+
+- Codex：CLI + IDE + web + app + SDK + Slack，覆盖所有入口，强调统一产品线与企业治理
+- Claude Code：更强调本地运行时、权限上下文、teammate/swarm 协作、memory 文件化
+
+> Codex 更像"覆盖本地与云端的通用 coding agent 平台"
+> Claude Code 更像"把长期会话、权限、memory 和多 agent 运行时压到本地内核里"
+
+### 18.2 与 Gemini CLI (Google) 的差异
+
+- Gemini CLI 已是成熟的 CLI agent：built-in tools、MCP、checkpointing、sandboxing、trusted folders、telemetry
+- Claude Code 在此基础上继续深化：memory 分层更深、agent runtime 更重（teammate/snapshot/team memory/swarm backends）
+
+> Gemini CLI 是高标准的通用 CLI agent 基线
+> Claude Code 在此基础上继续向长期记忆和多 agent 协作深化
+
+### 18.3 与 Aider 的差异
+
+- Aider：终端 pair programming，轻量、repo map、git 集成、lint/test 闭环
+- Claude Code：状态管理更复杂（终端工作台）、memory 分层、平台化能力（MCP/bridge/swarm）
+
+> Aider 是强编辑代理
+> Claude Code 是通用多角色 agent 平台
+
+### 18.4 与 Cursor 的差异
+
+- Cursor：IDE 主导、background agent 强、远程隔离执行环境
+- Claude Code：本地终端内核主导、memory 分层、permission 主干化、swarm 后端
+
+> Cursor 更像"IDE 驱动的远程代理平台"
+> Claude Code 更像"本地 agent 操作系统，远程只是扩展层"
+
+### 18.5 真正的差异化
+
+Claude Code 与同类产品拉开差距的不是"功能多"，而是三点同时成立：
+1. 统一的 query / agent / tool / permission 内核
+2. 文件化、可审计、分层的 memory 系统
+3. local-first，但能平滑扩展到 remote / bridge / swarm
+
+很多产品能做到其中一两点，但很少三点同时成立。
+
+---
+
+## 19. 补充：Feature Flags 编译裁剪与内部/外部版本分流
+
+### 19.1 全仓 89 个 feature(...) 开关
+
+源码中全仓扫描到 89 个 `feature(...)` 开关，代表性分类：
+
+| 类别 | 开关示例 | 说明 |
+|------|---------|------|
+| 交互与产品 | `VOICE_MODE`, `BUDDY`, `TERMINAL_PANEL`, `QUICK_SEARCH` | 产品级功能门控 |
+| Agent/协作 | `FORK_SUBAGENT`, `COORDINATOR_MODE`, `TEAMMEM`, `AGENT_MEMORY_SNAPSHOT` | Multi-Agent 能力 |
+| Memory/Compact | `EXTRACT_MEMORIES`, `REACTIVE_COMPACT`, `CACHED_MICROCOMPACT` | 上下文管理 |
+| 平台扩展 | `WORKFLOW_SCRIPTS`, `MCP_RICH_OUTPUT`, `MCP_SKILLS`, `WEB_BROWSER_TOOL` | 外部能力接入 |
+| 内部产品 | `KAIROS`, `KAIROS_BRIEF`, `KAIROS_DREAM`, `KAIROS_GITHUB_WEBHOOKS` | 内部产品线 |
+| 实验与观测 | `PERFETTO_TRACING`, `ENHANCED_TELEMETRY_BETA`, `SLOW_OPERATION_LOGGING` | 性能与观测 |
+| 高级能力 | `ULTRAPLAN`, `TORCH`, `LODESTONE`, `CHICAGO_MCP` | 更激进或内部代号 |
+
+### 19.2 编译期分流机制
+
+```
+源码中的能力
+    |
+    +-- 编译期分流
+    |      |
+    |      +-- USER_TYPE === 'ant'
+    |      |      → 注入 INTERNAL_ONLY_COMMANDS（20+ 个内部命令）
+    |      |
+    |      +-- feature('...')
+    |             → bun:bundle 编译期开关
+    |             → 外部构建 dead-code eliminate
+    |
+    +-- 运行期分流
+           |
+           +-- isEnabled()
+           |      → 账号类型、平台、实验 gate、环境变量
+           |
+           +-- isHidden
+                  → 即使存在，也不出现在 help/typeahead
+```
+
+### 19.3 内部命令列表
+
+`INTERNAL_ONLY_COMMANDS` 包含但不限于：
+`backfillSessions`, `breakCache`, `bughunter`, `commit`, `commitPushPr`, `ctx_viz`, `goodClaude`, `issue`, `initVerifiers`, `mockLimits`, `bridgeKick`, `resetLimits`, `teleport`, `antTrace`, `perfIssue`, `env`, `oauthRefresh`, `debugToolCall`, `agentsPlatform`, `autofixPr`
+
+部分命令在当前快照中是 `stub`（`isEnabled: () => false, isHidden: true`），真实实现要么在内部仓库、要么被构建流程替换、要么已下线但接口位保留。
+
+### 19.4 Beta Headers
+
+```typescript
+// src/constants/betas.ts
+context-1m-2025-08-07
+web-search-2025-03-05
+fast-mode-2026-02-01
+token-efficient-tools-2026-03-28
+advisor-tool-2026-03-01
+afk-mode-2026-01-31
+cli-internal-2026-02-09
+```
+
+这些字符串透露出：项目和上游模型能力之间通过**显式 beta 协议头协商**，一些今天在产品表面不一定可见的能力其实已经在代码里占了稳定接口位。
+
+### 19.5 undercover 模式
+
+```typescript
+// src/utils/undercover.ts
+
+在公开/开源仓库里:
+  → 内部版默认进入 undercover 模式
+  → 自动加安全说明（避免 commit message 或 PR 泄露内部代号、版本号、项目名）
+  → 甚至明确禁止写 "Claude Code" 或暴露自己是 AI
+```
+
+这说明项目在"公开协作场景下如何伪装内部 agent 身份"这件事上有明确设计。
+
+---
+
+## 20. 补充：Prompt 工程深层细节
+
+### 20.1 max_tokens 的 Slot 预约优化
+
+```typescript
+// 真实源码注释
+// Capped default for slot-reservation optimization. BQ p99 output = 4,911
+// tokens, so 32k/64k defaults over-reserve 8-16× slot capacity. With the cap
+// enabled, <1% of requests hit the limit; those get one clean retry at 64k
+
+CAPPED_DEFAULT_MAX_TOKENS = 8_000
+ESCALATED_MAX_TOKENS = 64_000
+```
+
+什么意思：虽然 Claude 模型支持 32K 或 64K 输出，但实际 P99 只有 4911 tokens。如果每次都申请 32K 的输出 Slot，8-16 倍的 Slot 容量被浪费。默认限制 8000 tokens 后，只有 <1% 的请求会触发截断，这些请求会走一次干净的 64K 重试。
+
+**这是真正的 API 成本优化工程——不是简单的"设个上限"，而是基于生产数据的 Slot 预约策略。**
+
+### 20.2 CLAUDE.md 的分级信任模型
+
+```
+Managed   /etc/claude-code/CLAUDE.md             → 最高（系统管理员）
+User      ~/.claude/CLAUDE.md                    → 高（用户全局）
+Project   {cwd}/CLAUDE.md, {cwd}/.claude/CLAUDE.md → 中（项目约定）
+Local     .claude/rules/*.md                     → 最低（本地约定）
+```
+
+### 20.3 @include 的深度限制
+
+```typescript
+MAX_INCLUDE_DEPTH = 5  // 防御性设计
+
+processMemoryFile(filePath, type, processedPaths, includeExternal, depth=0):
+  → normalizedPath 已经在 processedPaths → 跳过（防循环引用）
+  → depth >= 5 → 静默截断（不报错）
+  → 解析 symlink 真实路径 → 双重去重（/tmp → /private/tmp）
+```
+
+### 20.4 CLAUDE.md 排除列表
+
+```typescript
+isClaudeMdExcluded(filePath, type):
+  → settings.claudeMdExcludes 配置的路径 → 跳过
+  → 让用户显式控制"哪些文件不要自动加载"
+```
+
+### 20.5 getSystemPrompt() 的 section 构造细节
+
+```typescript
+getSystemPrompt():
+  return [
+    getSimpleIntroSection(outputStyleConfig),        // "You are an interactive agent..."
+    getSimpleSystemSection(),                         // 基础规则
+    outputStyleConfig === null
+      || outputStyleConfig.keepCodingInstructions === true
+      ? getSimpleDoingTasksSection()                  // coding agent 工作规则
+      : null,
+    getActionsSection(),                              // 行为约定
+    getUsingYourToolsSection(enabledTools),           // 工具使用方式
+    getSimpleToneAndStyleSection(),                   // 语气风格
+    getOutputEfficiencySection(),                     // 输出效率
+    ...(shouldUseGlobalCacheScope()
+      ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),      // 缓存分隔
+    ...resolvedDynamicSections,                       // 动态段
+  ].filter(s => s !== null)
+```
+
+---
+
+## 21. 补充：组件性能优化的逐函数拆解
+
+### 21.1 computeSliceStart — 锚点窗口算法
+
+```typescript
+computeSliceStart(collapsed, anchorRef, cap, step):
+  → 根据 anchorRef.current.uuid 在 collapsed 中定位当前锚点
+  → uuid 丢失 → 退回到历史 index
+  → collapsed.length - start > cap + step → 推进窗口
+  → 用当前 start 对应的 message 反向刷新 anchor
+
+目的:
+  → 消息分组重排时窗口不抖动
+  → compaction 后不突然回到 0
+  → 终端 scrollback 不因前部裁切不断重置
+```
+
+### 21.2 shouldRenderStatically — 消息冻结策略
+
+```typescript
+shouldRenderStatically(message, streamingToolUseIDs, inProgressToolUseIDs,
+                       siblingToolUseIDs, screen, lookups):
+  → transcript 模式 → 全部静态（true）
+  → 普通 user/assistant/attachment:
+      - 没有 toolUseID → 可静态
+      - 在 streamingToolUseIDs 或 inProgressToolUseIDs → 保持动态
+      - 有未解决 PostToolUse hook → 保持动态
+      - 否则: sibling tool use 全部 resolved → 可静态
+  → system api_error → 保持动态
+  → grouped_tool_use → 组内全部 resolved → 可静态
+  → collapsed_read_search → prompt 模式永远动态
+```
+
+**这个函数是消息稳定渲染策略的核心**：不是简单判断"是否 streaming"，而是区分了 7 种状态场景。冻结后不再重渲染，节省终端 BLIT 开销。
+
+### 21.3 areMessagePropsEqual / areMessageRowPropsEqual — 细粒度重渲染控制
+
+```typescript
+areMessageRowPropsEqual(prev, next):
+  → 只在真正影响当前行显示时才返回 false
+  → 避免每次全局消息变化都导致整棵 transcript 行级重渲染
+
+areMessagePropsEqual(prev, next):
+  → 比较 message.uuid
+  → 只有当前消息真有 thinking 内容时，才关心 lastThinkingBlockId
+  → 仅当该消息是 latestBashOutputUUID 时关心 bash 更新
+  → 对 transcript mode / containerWidth / verbose 做细粒度比较
+```
+
+### 21.4 ClassifierCheckingSubtitle — shimmer 性能隔离
+
+源码注释写得很直白：如果 shimmer 时钟留在大体量的审批对话框里，会把整棵 `PermissionDialog + Select + children` 在 classifier 检查期间高频重渲染。所以把 shimmer 拆成独立组件，只让它自己以 20fps 重绘。
+
+### 21.5 stickyPromptText — sticky prompt 文本提取
+
+```typescript
+stickyPromptText(msg):
+  → WeakMap 缓存
+
+computeStickyPromptText(msg):
+  → 只识别两类"真实用户输入":
+      - user message 中的 text block
+      - attachment.type === 'queued_command' 的 mid-turn 用户输入
+  → stripSystemReminders(raw) — 过滤系统 reminder
+  → 文本以 < 开头或为空 → 不是用户真实输入
+```
+
+### 21.6 VirtualMessageList — 虚拟滚动的终端适配
+
+```typescript
+VirtualMessageList:
+  → keysRef: 对 append-only 消息流做增量 key 追加
+  → useVirtualScroll(scrollRef, keys, columns) 取得:
+      - range（可见范围）
+      - measureRef（高度测量）
+      - offsets（偏移量）
+      - getItemTop / getItemElement
+      - scrollToIndex
+  → useImperativeHandle 暴露光标导航接口:
+      - enterCursor / navigatePrev / navigateNext
+      - navigatePrevUser / navigateNextUser
+      - navigateTop / navigateBottom
+  → jumpState + scanRequestRef: 跳转、搜索、高亮
+  → 高度缓存与 terminal columns 联动（终端换宽导致换行变化后重新计算）
+```
+
+### 21.7 PromptInputFooterSuggestions — 轻量窗口化裁剪
+
+```typescript
+PromptInputFooterSuggestions:
+  → 根据 overlay 和终端 rows 计算 maxVisibleItems
+  → maxColumnWidth = max(allPathWidths) + 5
+  → 用 selectedSuggestion 算滚动窗口: startIndex / endIndex
+  → 只渲染 suggestions.slice(startIndex, endIndex)
+
+SuggestionItemRow:
+  → unified suggestions: 单行布局 + truncatePathMiddle
+  → 普通 suggestions: "主列 + tag + description" 三段式
+  → 根据 columns 动态算 maxPathLength / availableWidth / descriptionWidth
+```
+
+### 21.8 BackgroundTask — 状态归约器
+
+```typescript
+BackgroundTask:
+  → 按 task.type 分发:
+      local_bash → ShellProgress
+      remote_agent → RemoteSessionProgress
+      local_agent → (agent 描述)
+      in_process_teammate → describeTeammateActivity()
+      local_workflow → TaskStatusText
+      monitor_mcp → TaskStatusText
+      dream → TaskStatusText
+  → 所有路径统一: truncate(..., activityLimit, true)
+  → 把结构复杂的任务状态压缩成一行
+```
+
+### 21.9 AssistantTextMessage — 异常语义路由器
+
+```typescript
+AssistantTextMessage:
+  → isEmptyMessageText(text) → 空文本
+  → isRateLimitErrorMessage(text) → RateLimitMessage
+  → 硬编码分流 8 种特殊常量:
+      NO_RESPONSE_REQUESTED
+      PROMPT_TOO_LONG_ERROR_MESSAGE
+      CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE
+      INVALID_API_KEY_ERROR_MESSAGE
+      TOKEN_REVOKED_ERROR_MESSAGE
+      API_TIMEOUT_ERROR_MESSAGE
+      CUSTOM_OFF_SWITCH_MESSAGE
+      ERROR_MESSAGE_USER_ABORT
+  → startsWithApiErrorPrefix(text) → 通用 API 错误
+  → 不命中任何特殊分支 → 普通 Markdown 文本
+```
+
+---
+
+## 22. 补充：用户信息面全景分析
+
+### 22.1 六层信息面
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  层级          │  信息类型              │  敏感程度                  │
+├─────────────────────────────────────────────────────────────────────┤
+│  模型上下文     │  源码、命令、文件内容   │  极高（最容易忽视）        │
+│                │  对话历史、工具结果     │                           │
+│                │  Git 状态、CLAUDE.md    │                           │
+│                │  图片、MCP 返回内容     │                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  本地持久化     │  transcript JSONL       │  高（可恢复、可检索）      │
+│                │  session metadata       │                           │
+│                │  OAuth 缓存             │                           │
+│                │  memory 文件            │                           │
+│                │  agent transcript       │                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  Memory 积累    │  用户偏好、角色背景     │  高（跨 session 延续）     │
+│                │  项目事实、参考信息     │                           │
+│                │  会话摘要               │                           │
+│                │  agent 角色记忆          │                           │
+│                │  团队共享记忆           │                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  Telemetry      │  deviceId, sessionId    │  中（元数据而非内容）      │
+│                │  accountUuid, orgUuid   │                           │
+│                │  repo remote hash        │                           │
+│                │  工具使用事件            │                           │
+│                │  文件路径 hash/内容 hash  │                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  云同步         │  团队 memory pull/push   │  中~高（取决于内容）       │
+│                │  组织知识条目            │                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  主动上传       │  transcript 分享        │  高（包含完整会话）        │
+│                │  Grove 训练数据          │  极高（影响模型训练）      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 22.2 不是某一个日志事件的风险
+
+**真正的风险**：进入模型的工作上下文 + 本地长期 transcript/memory + 外部同步/遥测/分享，三者叠加后形成"长期、可恢复、可检索、可同步"的用户工作画像。这不是单点数据打点的风险。
+
+### 22.3 PII 路由保护
+
+```typescript
+// _PROTO_* 前缀的字段 → PII 标记，只进入有权限的 1P 导出渠道
+// 发送到 Datadog 前 → stripProtoFields() 删除所有 _PROTO_ 字段
+
+stripProtoFields(metadata):
+  → 删除所有 _PROTO_ 开头的字段
+  → 再发给 Datadog（通用日志流不能有 PII）
+```
+
+### 22.4 MCP 工具名脱敏
+
+```typescript
+sanitizeToolNameForAnalytics(toolName):
+  if (toolName.startsWith('mcp__')):
+    return 'mcp_tool'     // 不暴露用户的 MCP 服务器名称
+  return toolName
+```
+
+---
+
+## 23. 补充：隐藏特性与彩蛋
+
+### 23.1 Buddy 系统 — 完整的人格化子系统
+
+这不是"一个吉祥物贴图"，而是一套完整设计：
+
+**companion 的两层拆分**：
+- `bones`：确定性骨架 — `rarity`, `species`, `eye`, `hat`, `shiny`, `stats`（通过 seeded PRNG 由 userId hash 决定，不持久化）
+- `soul`：模型生成 — `name`, `personality`（持久化存储）
+
+**稀有度权重**：`common 60 / uncommon 25 / rare 10 / epic 4 / legendary 1`
+**物种**：18 种（duck/goose/blob/cat/dragon/octopus/owl/penguin/turtle/snail/ghost/axolotl/capybara/cactus/robot/rabbit/mushroom/chonk）
+**属性**：DEBUGGING / PATIENCE / CHAOS / WISDOM / SNARK（一项峰值、一项短板）
+
+**运行时交互**：
+- 宽终端：完整 ASCII sprite + 500ms tick idle/fidget/blink 动画
+- 窄终端：退化成单行 face + name/quip
+- 被 pet：2.5 秒爱心上浮动画
+- 说话：10 秒 speech bubble + 最后 3 秒 fade
+- 用户滚动 transcript：自动关掉气泡
+
+**上线节奏**：2026 年 4 月 1-7 日 teaser window → 4 月开始 `isBuddyLive()` 正式上线
+
+### 23.2 内部命令 stub 模式
+
+部分命令目录只有一个文件：
+```js
+export default { isEnabled: () => false, isHidden: true, name: 'stub' };
+```
+
+含义：外部快照不提供真实实现，但命令名和接线位保留。真正实现要么在内部仓库、要么被构建流程替换、要么已下线但接口还在。
+
+### 23.3 周边与品牌
+
+- `/stickers` → 打开 https://www.stickermule.com/claudecode（实体周边购买）
+- `guest passes` → 3 张 guest pass / 推荐 upsell
+- 这些细节对主能力不必要，但对产品气质很重要
+
+---
+
+## 24. 逐行补充：架构层代码真相
+
+### 24.1 cli.tsx 的早期分流逻辑
+
+```typescript
+// src/entrypoints/cli.tsx 结构伪代码
+async function main() {
+  const argv = parseArgs(process.argv)
+
+  // 快路径分流 —— 命中则执行并退出，不进入 main.tsx
+  if (argv['--version'])    { console.log(version); process.exit(0) }
+  if (argv['--dump-system-prompt']) { await dumpSystemPrompt(); process.exit(0) }
+  if (argv['remote-control'])      { return runRemoteControl(argv) }
+  if (argv['daemon'] || argv['bg'] || argv['runner']) { return runDaemonOrBackground(argv) }
+
+  // 兜底：进入完整主启动器（React、Ink、MCP 等全部加载）
+  await import('./main.tsx').then(m => m.main(argv))
+}
+```
+
+设计意图：普通快速命令（--version、--dump-prompt）不需要加载 React、Ink、MCP 等全部依赖。启动速度快且副作用少。
+
+### 24.2 main.tsx 的总控能力装配
+
+```typescript
+// src/main.tsx —— 关键 import 反映职责范围
+import { init, initializeTelemetryAfterTrust } from './entrypoints/init.js'
+import { launchRepl }              from './replLauncher.js'
+import { fetchBootstrapData }      from './services/api/bootstrap.js'
+import { getMcpToolsCommandsAndResources } from './services/mcp/client.js'
+import { getTools }                from './tools.js'
+import { getAgentDefinitionsWithOverrides } from './tools/AgentTool/loadAgentsDir.js'
+import { initBundledSkills }       from './skills/bundled/index.js'
+import { showSetupScreens, exitWithError } from './interactiveHelpers.js'
+import { settingsChangeDetector }  from './utils/settings/changeDetector.js'
+// ... 还有约 80 个 import
+```
+
+**6 个初始化步骤都是异步 Promise.all 并行执行的**——这是一个关键的启动性能优化。
+
+### 24.3 init.ts 与 setup.ts 的 Trust 时序
+
+```typescript
+// src/entrypoints/init.ts
+export async function init(argv) {
+  applySafeEnvironmentVariables()     // 只应用安全的 env var（trust 前）
+  initializeCertificates()            // 证书与 HTTPS 代理
+  initializeHttpAgent()               // HTTP agent 配置
+  initTelemetrySkeleton()             // 注册 telemetry sink，但不发事件
+  // Note: initializeTelemetryAfterTrust() 在 trust 建立后由 main.tsx 调用
+}
+
+export async function initializeTelemetryAfterTrust() {
+  applyFullEnvironmentVariables()     // trust 通过后才应用全部 env var
+  attachAnalyticsSink()               // 开始处理 telemetry 事件队列
+}
+```
+
+```typescript
+// src/setup.ts
+export async function setup(argv, permissionContext) {
+  setCwd(resolvedWorkingDir)          // 设置工作目录
+  startHooksWatcher()                 // 监听 hooks 配置变化
+  initWorktreeSnapshot()              // tmux/worktree 快照
+  initSessionMemory()                 // 初始化 session memory 系统
+  startTeamMemoryWatcher()            // 启动 team memory 文件监听
+}
+```
+
+### 24.4 AppState 的真实类型结构
+
+```typescript
+// src/state/AppState.ts 类型结构（简化）
+type AppState = {
+  messages:              Message[]
+  toolPermissionContext: ToolPermissionContext
+  mainLoopModel:         string
+  mcpClients:            McpClient[]
+  plugins:               Plugin[]
+  agentRegistry:         AgentDefinition[]
+  notifications:         NotificationQueue
+  remoteBridgeState:     BridgeState | null
+  tasks:                 Task[]
+  foregroundedTaskId:    string | null
+  teamContext:           TeamContext | null
+  expandedView:          string | null
+  // ...还有约 10 个字段
+}
+```
+
+`AppState` 是系统的**共享状态总线**，不是简单的 UI 状态——它包含工具权限上下文、MCP 客户端、Agent 注册表、通知队列、远程桥接状态、后台任务等。所有组件通过 `useAppState(selector)` 切片订阅。
+
+### 24.5 源码文件规模全景
+
+`src/` 目录共 1902 个源码文件。以下是核心目录的职责和文件数：
+
+| 目录 | 职责 | 说明 |
+|------|------|------|
+| `src/components/` | Ink/React 终端 UI 组件体系 | 最大目录，含 30+ 子目录 |
+| `src/services/` | 按主题划分的业务服务层 | api/compact/extractMemories/mcp/analytics 等 |
+| `src/tools/` | 模型可调用工具与工具 UI | AgentTool/BashTool/FileEditTool 等 30+ 工具 |
+| `src/commands/` | Slash/CLI 命令实现 | 100+ 命令目录 |
+| `src/hooks/` | 跨组件复用的 React Hook | 80+ 个 hooks |
+| `src/utils/` | 通用工具函数 | permissions/sessionStorage/sanitization 等 |
+| `src/ink/` | 终端渲染基础设施 | 自建 Ink 渲染引擎 |
+| `src/state/` | 全局状态仓库与选择器 | AppState/AppStateStore/selectors |
+| `src/skills/` | skills 能力与 bundled 技能入口 | loadSkillsDir/bundledSkills |
+| `src/memdir/` | memory 目录检索、召回与持久化 | memdir/paths/findRelevantMemories |
+
+---
+
+## 25. 逐行补充：getSystemPrompt() 完整构造
+
+### 25.1 主体结构（真实源码结构）
+
+```typescript
+// src/constants/prompts.ts — getSystemPrompt() 返回值
+export async function getSystemPrompt(
+  tools: Tools,
+  model: string,
+  additionalWorkingDirectories?: string[],
+  mcpClients?: MCPServerConnection[],
+): Promise<string[]> {
+  return [
+    getSimpleIntroSection(outputStyleConfig),            // 身份声明段
+    getSimpleSystemSection(),                              // 基础规则段
+    outputStyleConfig === null ||
+    outputStyleConfig.keepCodingInstructions === true
+      ? getSimpleDoingTasksSection()                      // coding agent 工作规则
+      : null,
+    getActionsSection(),                                   // 行为约定
+    getUsingYourToolsSection(enabledTools),               // 工具使用方式
+    getSimpleToneAndStyleSection(),                        // 语气与风格
+    getOutputEfficiencySection(),                          // 输出效率规则
+    ...(shouldUseGlobalCacheScope()
+      ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),           // 缓存分隔标记
+    ...resolvedDynamicSections,                            // 动态段（从 systemPromptSections 解析）
+  ].filter(s => s !== null)
+}
+```
+
+### 25.2 动态段枚举
+
+```typescript
+// 来自 src/constants/systemPromptSections.ts
+const dynamicSections = [
+  systemPromptSection('session_guidance', ...),     // 会话指引
+  systemPromptSection('memory', ...),              // MEMORY.md 内容
+  systemPromptSection('ant_model_override', ...),   // 模型覆盖
+  systemPromptSection('env_info_simple', ...),      // 环境信息
+  systemPromptSection('language', ...),            // 语言偏好
+  systemPromptSection('output_style', ...),         // 输出风格
+  DANGEROUS_uncachedSystemPromptSection('mcp_instructions', ...), // MCP 指令（显式不可缓存）
+  systemPromptSection('scratchpad', ...),           // 草稿区
+  systemPromptSection('frc', ...),                 // 功能推荐配置
+  systemPromptSection('summarize_tool_results', ...), // 工具结果摘要规则
+]
+```
+
+### 25.3 section 缓存机制的完整实现
+
+```typescript
+// src/constants/systemPromptSections.ts
+
+// 可缓存 section
+export function systemPromptSection(
+  name: string,
+  compute: ComputeFn,
+): SystemPromptSection {
+  return { name, compute, cacheBreak: false }
+}
+
+// 显式声明不可缓存（名字故意的——DANGEROUS）
+export function DANGEROUS_uncachedSystemPromptSection(
+  name: string,
+  compute: ComputeFn,
+  _reason: string,
+): SystemPromptSection {
+  return { name, compute, cacheBreak: true }
+}
+
+// 解析时：先查缓存，命中的直接返回
+export async function resolveSystemPromptSections(
+  sections: SystemPromptSection[],
+): Promise<(string | null)[]> {
+  const cache = getSystemPromptSectionCache()
+  return Promise.all(
+    sections.map(async s => {
+      if (!s.cacheBreak && cache.has(s.name)) {
+        return cache.get(s.name) ?? null  // 缓存命中
+      }
+      const value = await s.compute()      // 重新计算
+      setSystemPromptSectionCacheEntry(s.name, value)  // 更新缓存
+      return value
+    }),
+  )
+}
+```
+
+### 25.4 缓存清除触发
+
+`clearSystemPromptSections()` 在以下路径被调用：
+- `/clear` — 清空对话时
+- `/compact` — 压缩时
+- `EnterWorktree` / `ExitWorktree` — worktree 切换时
+- Resume / Restore session — 恢复会话时
+
+---
+
+## 26. 逐行补充：Session Storage 读写实现
+
+### 26.1 transcript 消息类型判断
+
+```typescript
+// src/utils/sessionStorage.ts
+export function isTranscriptMessage(entry: Entry): entry is TranscriptMessage {
+  return (
+    entry.type === 'user' ||
+    entry.type === 'assistant' ||
+    entry.type === 'attachment' ||
+    entry.type === 'system'
+  )
+}
+// progress 不是 transcript message — 不能进入 parentUuid 主链
+// 旧版本把 progress 混进 transcript 后恢复时会把真实对话链截断
+```
+
+### 26.2 写入去重逻辑（原始源码结构）
+
+```typescript
+// src/utils/sessionStorage.ts:1212
+const isAgentSidechain = entry.isSidechain && entry.agentId !== undefined
+const targetFile = isAgentSidechain
+  ? getAgentTranscriptPath(asAgentId(entry.agentId!))
+  : sessionFile
+
+const isNewUuid = !messageSet.has(entry.uuid)
+if (isAgentSidechain || isNewUuid) {
+  void this.enqueueWrite(targetFile, entry)
+
+  if (!isAgentSidechain) {
+    messageSet.add(entry.uuid)
+    if (isTranscriptMessage(entry)) {
+      await this.persistToRemote(sessionId, entry)
+    }
+  }
+}
+```
+
+### 26.3 lite reader 的实现
+
+```typescript
+// src/utils/sessionStoragePortable.ts
+export const LITE_READ_BUF_SIZE = 65536  // 只读头尾 64KB
+
+// 读取逻辑：
+// if 文件 > SKIP_PRECOMPACT_THRESHOLD:
+//   buf = readTranscriptForLoad() 仅读取 boundary 之后仍有效的部分
+//   metadataLines = scanPreBoundaryMetadata() 从 boundary 前补扫 metadata
+// else:
+//   buf = readFile(filePath)  全量读
+
+extractFirstPromptFromHead():
+  → 跳过 tool_result
+  → 跳过 isMeta 标记的消息
+  → 跳过 compact summary
+  → 跳过 <command-name> 包装
+  → 跳过系统自动注入片段
+```
+
+### 26.4 buildConversationChain 的并行工具结果恢复
+
+```typescript
+// src/utils/sessionStorage.ts:2069
+export function buildConversationChain(
+  messages: Map<string, Message>,
+  leafMessage: Message | undefined,
+): Message[] {
+  // ...沿 parentUuid 回溯...
+  transcript.reverse()
+  // 关键：恢复并行 tool 调用中丢失的兄弟结果
+  return recoverOrphanedParallelToolResults(messages, transcript, seen)
+}
+
+recoverOrphanedParallelToolResults():
+  处理场景:
+    assistant 一次输出多个并行 tool_use
+    streaming 过程中这些块被拆成多个 assistant message
+    tool_result 分别挂到不同 assistant block 上
+    单纯按单 parent 链逆推只会保留其中一支
+  → 必须补全兄弟节点 + 补全孤立 tool_result
+```
+
+---
+
+## 27. 逐行补充：compactConversation 的四种策略细节
+
+### 27.1 手动 compact 入口
+
+```typescript
+// src/commands/compact/compact.ts
+// 重新计算 cache-safe prompt：
+const defaultSysPrompt = await getSystemPrompt(...)
+const systemPrompt = buildEffectiveSystemPrompt({
+  mainThreadAgentDefinition: undefined,   // compact 不绑 agent
+  toolUseContext: context,
+  customSystemPrompt: context.options.customSystemPrompt,
+  defaultSystemPrompt: defaultSysPrompt,
+  appendSystemPrompt: context.options.appendSystemPrompt,
+})
+// → compact 本身也依赖 prompt 系统，且要拿共享 cache key 的前缀
+```
+
+### 27.2 compact prompt 的正文内容
+
+```typescript
+// src/services/compact/prompt.ts
+const NO_TOOLS_PREAMBLE = `CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
+
+- Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.
+- You already have all the context you need in the conversation above.
+- Tool calls will be REJECTED and will waste your only turn — you will fail the task.
+- Your entire response must be plain text: an <analysis> block followed by a <summary> block.`
+```
+
+### 27.3 Session Memory compact 的配置
+
+```typescript
+// src/services/compact/sessionMemoryCompact.ts
+getSessionMemoryCompactConfig():
+  → 默认保留 10K-40K tokens 原文
+  → calculateMessagesToKeepIndex() — 精确裁切保留位置
+  → adjustIndexToPreserveAPIInvariants() — 修正裁切位置
+```
+
+### 27.4 状态补偿函数
+
+```typescript
+// src/services/compact/compact.ts
+export function buildPostCompactMessages(result: CompactionResult): Message[] {
+  return [
+    ...createPostCompactFileAttachments(result),   // 恢复文件上下文
+    getDeferredToolsDeltaAttachment(result),         // 重新声明所有工具能力
+  ]
+}
+
+createPostCompactFileAttachments():
+  → 获取并重新添加通过 FileReadTool 查看且还没丢掉缓存的文件（带截断上限）
+  → 不添加已在 compact 前显式关闭的文件
+
+getDeferredToolsDeltaAttachment():
+  → 重新全量声明当前装载好的外部能力
+  → 追加回贴入新的消息队列
+```
+
+---
+
+## 28. 逐行补充：Memory 体系的文件级实现
+
+### 28.1 buildMemoryLines() 给模型注入的规则
+
+```typescript
+// src/memdir/memdir.ts:199
+export function buildMemoryLines(
+  displayName: string,
+  memoryDir: string,
+  extraGuidelines?: string[],
+  skipIndex = false,
+): string[] {
+  const lines: string[] = [
+    `# ${displayName}`,
+    '',
+    // DIR_EXISTS_GUIDANCE = "This directory already exists - write to it directly..."
+    // 避免模型浪费一轮对话去 ls/mkdir 确认目录
+    `You have a persistent, file-based memory system at ${'`'}${memoryDir}${'`'}. ${DIR_EXISTS_GUIDANCE}`,
+    '',
+    ...TYPES_SECTION_INDIVIDUAL,     // 记忆类型分类（user/feedback/project/reference）
+    ...WHAT_NOT_TO_SAVE_SECTION,     // 禁止保存的内容（可从代码推导的、重复的）
+    '',
+    ...howToSave,                    // 双步法：先写 topic 文件，再在 MEMORY.md 添加索引行
+    '',
+    ...(extraGuidelines ?? []),      // agent 专属额外规则（scope 说明等）
+  ]
+  lines.push(...buildSearchingPastContextSection(memoryDir))
+  return lines
+}
+```
+
+### 28.2 Memory 文件的前端 Matter 格式
+
+```
+文件的 frontmatter 包含：
+  ---
+  name: <short-kebab-case-slug>
+  description: <one-line summary — used to decide relevance during recall>
+  metadata:
+    type: user | feedback | project | reference
+  ---
+
+  <the fact: for feedback/project, follow with **Why:** and **How to apply:** lines>
+```
+
+### 28.3 isAutoMemoryEnabled() 的完整开关优先级
+
+```typescript
+// src/memdir/paths.ts
+export function isAutoMemoryEnabled(): boolean {
+  // 优先级从高到低:
+  // 1. CLAUDE_CODE_DISABLE_AUTO_MEMORY 环境变量
+  // 2. CLAUDE_CODE_SIMPLE (--bare 模式) → 关闭
+  // 3. 远程模式无持久存储时 → 关闭
+  // 4. settings.json 中的 autoMemoryEnabled 字段
+  // 5. 默认：开启
+
+  const envVal = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+  if (isEnvTruthy(envVal))          return false   // 显式关闭
+  if (isEnvDefinedFalsy(envVal))    return true    // 显式开启
+  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) return false
+  if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
+      !process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR)   return false
+  const settings = getInitialSettings()
+  if (settings.autoMemoryEnabled !== undefined) return settings.autoMemoryEnabled
+  return true  // 默认开启
+}
+```
+
+### 28.4 Agent Memory scope 的路径解析
+
+```typescript
+getAgentMemoryDir(agentType, scope):
+  user:    <memoryBase>/agent-memory/<agentType>/
+  project: <cwd>/.claude/agent-memory/<agentType>/
+  local:
+    默认:    <cwd>/.claude/agent-memory-local/<agentType>/
+    若设置 CLAUDE_CODE_REMOTE_MEMORY_DIR:
+      <remoteMemoryDir>/projects/<sanitized-git-root>/agent-memory-local/<agentType>/
+
+注意:
+  agentType 中 ':' 会被替换为 '-'（插件命名空间 my-plugin:my-agent → my-plugin-my-agent）
+  local scope 在 remote 环境下重定位到远端 memory mount 的 project namespace
+```
+
+### 28.5 shouldExtractMemory() 的触发阈值
+
+```typescript
+// src/services/SessionMemory/sessionMemory.ts:134
+export function shouldExtractMemory(messages: Message[]): boolean {
+  const currentTokenCount = tokenCountWithEstimation(messages)
+
+  if (!isSessionMemoryInitialized()) {
+    // 首次：会话 token 需超过初始化阈值（10K）才开启
+    if (!hasMetInitializationThreshold(currentTokenCount)) return false
+    markSessionMemoryInitialized()
+  }
+
+  const hasMetTokenThreshold = hasMetUpdateThreshold(currentTokenCount)
+    // 距上次更新需增长 5000 tokens
+
+  const hasMetToolCallThreshold =
+    countToolCallsSince(messages, lastMemoryMessageUuid) >= getToolCallsBetweenUpdates()
+    // 距上次更新需完成至少 3 次工具调用
+
+  const hasToolCallsInLastTurn = hasToolCallsInLastAssistantTurn(messages)
+
+  // token 阈值始终必要；在自然断点（无 tool_use）或双阈值都满足时才触发
+  const shouldExtract =
+    (hasMetTokenThreshold && hasMetToolCallThreshold) ||
+    (hasMetTokenThreshold && !hasToolCallsInLastTurn)
+
+  if (shouldExtract) {
+    lastMemoryMessageUuid = messages[messages.length - 1]?.uuid
+    return true
+  }
+  return false
+}
+```
+
+---
+
+## 29. 逐行补充：Multi-Agent 的权限桥接实现
+
+### 29.1 leaderPermissionBridge
+
+```typescript
+// src/utils/swarm/leaderPermissionBridge.ts
+let registeredSetter: SetToolUseConfirmQueueFn | null = null
+let registeredPermissionContextSetter: SetToolPermissionContextFn | null = null
+
+// REPL 把 leader 的权限 UI setter 暴露出来供 teammate 使用
+```
+
+### 29.2 in-process teammate 的 canUseTool 权限实现
+
+```typescript
+// src/utils/swarm/inProcessRunner.ts
+const setToolUseConfirmQueue = getLeaderToolUseConfirmQueue()
+
+if (setToolUseConfirmQueue) {
+  // in-process 路径：权限请求入 leader 的 ToolUseConfirmQueue
+  return new Promise<PermissionDecision>(resolve => {
+    setToolUseConfirmQueue(queue => [
+      ...queue,
+      {
+        ...toolRequest,
+        workerBadge: identity.color
+          ? { name: identity.agentName, color: identity.color }
+          : undefined,  // UI 上带颜色标识区分是哪个 teammate 在请求
+      },
+    ])
+  })
+} else {
+  // bridge 不可用：退回 mailbox 路径
+  // → 发 permission request 给 leader inbox
+  // → 等 leader response
+  // → 应用回 teammate 上下文
+}
+```
+
+### 29.3 强制注入的协作工具
+
+```typescript
+// src/utils/swarm/inProcessRunner.ts
+// teammate agent 的工具池会被强制注入 swarm-essential tools：
+tools: agentDefinition?.tools
+  ? [
+      ...new Set([
+        ...agentDefinition.tools,
+        SEND_MESSAGE_TOOL_NAME,
+        TEAM_CREATE_TOOL_NAME,
+        TEAM_DELETE_TOOL_NAME,
+        TASK_CREATE_TOOL_NAME,
+        TASK_GET_TOOL_NAME,
+        TASK_LIST_TOOL_NAME,
+        TASK_UPDATE_TOOL_NAME,
+      ]),
+    ]
+  : ['*']  // 自定义 agent 若 tools 为空，给全部工具
+
+// 这说明 swarm 协作能力属于 runtime contract，不完全由 agent frontmatter 决定
+```
+
+### 29.4 team 创建时的 task list 初始化
+
+```typescript
+// src/tools/TeamCreateTool/TeamCreateTool.ts
+const taskListId = sanitizeName(finalTeamName)
+await resetTaskList(taskListId)
+await ensureTasksDir(taskListId)
+setLeaderTeamName(sanitizeName(finalTeamName))
+// team 一建立就自动绑定了一套共享 task list
+```
+
+---
+
+## 30. 逐行补充：runAgent() — subagent 的真实执行链路
+
+### 30.1 完整调用链路
+
+```typescript
+// src/tools/AgentTool/runAgent.ts
+// runAgent() 是真正的 agent 执行器，不只是 "调 query()"
+// 它做了以下几步：
+
+// 1. 初始化 agent-specific MCP servers
+for await (const hookResult of executeSubagentStartHooks(...)) { ... }
+
+// 2. 构造子 agent 的 ToolUseContext（独立 abortController + 受限权限）
+const agentToolUseContext = createSubagentContext(toolUseContext, { ... })
+
+// 3. 写入 sidechain transcript
+void recordSidechainTranscript(initialMessages, agentId)
+void writeAgentMetadata(agentId, { ... })
+
+// 4. 调用核心执行引擎
+for await (const message of query({ ... })) { ... }
+
+// agent 的 system prompt 在此时由 getSystemPrompt() 组装
+// 如果 agent 定义了 memory → 自动追加 Agent Memory prompt
+// 如果 agent 定义了 tools → 工具池在此确定
+```
+
+### 30.2 forkSubagent 的特殊处理
+
+```typescript
+// src/tools/AgentTool/forkSubagent.ts
+// 关键规则：
+// - subagent_type 省略时触发 implicit fork
+// - child 继承 parent 的完整 conversation context
+// - child 继承 parent 的 rendered system prompt（原始字节，不重新生成）
+// - 所有 fork child 默认后台运行
+
+// 为什么用原始字节？
+// FORK_AGENT 注释：
+// "Reconstructing by re-calling getSystemPrompt() can diverge
+//  from the cached prefix the API used, and bust the prompt cache"
+```
+
+---
+
+## 31. 逐行补充：Swarm Teammate 的完整生命周期
+
+### 31.1 backend 检测与选择
+
+```typescript
+// src/utils/swarm/backends/registry.ts
+export async function detectAndGetBackend(): Promise<BackendDetectionResult> {
+  await ensureBackendsRegistered()
+  if (cachedDetectionResult) return cachedDetectionResult  // 缓存结果
+
+  const insideTmux = await isInsideTmux()
+  const inITerm2 = isInITerm2()
+
+  // 优先级：tmux > iTerm2 native pane > in-process
+  if (insideTmux) {
+    return { backend: createTmuxBackend(), isNative: true }
+  }
+  if (inITerm2) {
+    if (!check_it2_installed()) {
+      return { backend: null, isNative: false, needsIt2Setup: true }
+    }
+    return { backend: createITermBackend(), isNative: true }
+  }
+  // 回退到 in-process（不需要额外依赖）
+  return { backend: createInProcessBackend(), isNative: false }
+}
+```
+
+### 31.2 in-process teammate 的 spawn 完整流程
+
+```typescript
+// src/utils/swarm/spawnInProcess.ts
+// 文件头注释: Creates and registers an in-process teammate task.
+// Unlike process-based teammates (tmux/iTerm2), in-process teammates
+// run in the same Node.js process using AsyncLocalStorage for context isolation.
+
+spawnInProcessTeammate():
+  → 生成 agentId = formatAgentId(name, teamName)
+  → 生成 taskId  = generateTaskId('in_process_teammate')
+  → 创建 abortController
+  → 创建 teammate identity（含 agentName, color, teamName, agentType, model）
+  → 创建 teammateContext（AsyncLocalStorage 上下文隔离）
+  → 构造 InProcessTeammateTaskState
+  → registerTask(taskState, setAppState)  // 注册到全局调度系统
+```
+
+### 31.3 mailbox 的完整 API
+
+```typescript
+// src/utils/teammateMailbox.ts
+// 文件头注释: Teammate Mailbox - File-based messaging system for agent swarms
+// Each teammate has an inbox file at .claude/teams/{team_name}/inboxes/{agent_name}.json
+
+readMailbox(agentName, teamName)     → 读取所有消息
+readUnreadMessages(agentName, teamName) → 只读未读消息
+writeToMailbox(recipientName, message, teamName):
+  → release = await lockfile.lock(inboxPath, {
+      lockfilePath: lockFilePath,
+      ...LOCK_OPTIONS,
+    })  // 文件锁防并发写入
+  → 读取现有消息 → 追加新消息 → 写回文件
+markMessageAsReadByIndex(agentName, teamName, index) → 标记已读
+```
+
+### 31.4 useInboxPoller 的消息处理
+
+```typescript
+// src/hooks/useInboxPoller.ts
+// 周期性执行:
+const unread = await readUnreadMessages(agentName, teamName)
+
+// 按消息类型拆分处理:
+for (const msg of unread) {
+  switch (msg.type):
+    case 'permission_request'  → 入 leader 的权限队列
+    case 'permission_response' → 应用到 teammate 上下文（恢复执行）
+    case 'shutdown_request'    → 触发 shutdown 流程
+    case 'shutdown_approval'   → 确认 shutdown
+    case 'plan_approval_request'  → 入 leader 的 Plan 审批
+    case 'plan_approval_response' → 应用到 teammate
+    default → 作为普通 teammate 消息处理
+}
+// mailbox 传的不是纯文本，而是 agent 协作协议消息
+```
+
+---
+
+## 32. 逐行补充：代码级工程细节
+
+### 32.1 prompt caching 的默认 max_tokens 限制
+
+```typescript
+// src/utils/context.ts
+// Capped default for slot-reservation optimization.
+// BQ p99 output = 4,911 tokens, so 32k/64k defaults over-reserve 8-16× slot capacity.
+// With the cap enabled, <1% of requests hit the limit;
+// those get one clean retry at 64k.
+export const CAPPED_DEFAULT_MAX_TOKENS = 8_000
+export const ESCALATED_MAX_TOKENS = 64_000
+
+// 有效上下文窗口计算
+export function getEffectiveContextWindowSize(model: string): number {
+  const reservedTokensForSummary = Math.min(
+    getMaxOutputTokensForModel(model),
+    MAX_OUTPUT_TOKENS_FOR_SUMMARY,  // 20_000
+  )
+  let contextWindow = getContextWindowForModel(model)
+  // 支持环境变量硬覆盖
+  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  // ...
+  return contextWindow - reservedTokensForSummary
+}
+```
+
+### 32.2 MODEL_CONTEXT_WINDOW_DEFAULT
+
+```typescript
+// src/utils/context.ts:18
+export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
+
+// 百万级上下文检查
+export function has1mContext(model: string): boolean {
+  return /\[1m\]/i.test(model)  // 模型名含 [1m] 标记 → 1M 上下文
+}
+```
+
+### 32.3 工具池组装的真源码实现
+
+```typescript
+// src/tools.ts:345
+export function assembleToolPool(
+  permissionContext: ToolPermissionContext,
+  mcpTools: Tools,
+): Tools {
+  const builtInTools = getTools(permissionContext)
+  const allowedMcpTools = filterToolsByDenyRules(mcpTools, permissionContext)
+
+  const byName = (a: Tool, b: Tool) => a.name.localeCompare(b.name)
+  // 合并、排序、名字冲突时内建优先
+  return uniqBy(
+    [...builtInTools].sort(byName).concat(allowedMcpTools.sort(byName)),
+    'name',
+  )
+}
+```
+
+### 32.4 getAllBaseTools() — 内建工具总表
+
+```typescript
+// src/tools.ts:193
+export function getAllBaseTools(): Tools {
+  return [
+    AgentTool,
+    TaskOutputTool,
+    BashTool,
+    FileEditTool,
+    FileReadTool,
+    FileWriteTool,
+    GlobTool,
+    GrepTool,
+    WebFetchTool,
+    NotebookEditTool,
+    AskUserQuestionTool,
+    // Feature Flag 控制:
+    ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
+    ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
+    ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
+    // Ant 内部:
+    ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
+  ]
+}
+```
+
+### 32.5 Session Memory 更新的安全约束实现
+
+```typescript
+// src/services/SessionMemory/sessionMemory.ts:460
+export function createMemoryFileCanUseTool(memoryPath: string): CanUseToolFn {
+  return async (tool: Tool, input: unknown) => {
+    if (
+      tool.name === FILE_EDIT_TOOL_NAME &&
+      typeof input === 'object' && input !== null &&
+      'file_path' in input &&
+      typeof input.file_path === 'string' &&
+      input.file_path === memoryPath    // 精确路径匹配，不允许路径穿越
+    ) {
+      return { behavior: 'allow' as const, updatedInput: input }
+    }
+    return {
+      behavior: 'deny' as const,
+      message: `only ${FILE_EDIT_TOOL_NAME} on ${memoryPath} is allowed`,
+      decisionReason: { type: 'other',
+        reason: `only ${FILE_EDIT_TOOL_NAME} on ${memoryPath} is allowed` },
+    }
+  }
+}
+```
+
+### 32.6 connectedToServer 的 memoize 缓存键
+
+```typescript
+// src/services/mcp/client.ts:595
+export const connectToServer = memoize(
+  async (name, serverRef, serverStats) => { ... },
+  getServerCacheKey  // 缓存键 = name + JSON(serverRef)
+)
+```
+
+### 32.7 危险 Bash 权限检测的实现
+
+```typescript
+// src/utils/permissions/permissionSetup.ts
+export function isDangerousBashPermission(
+  toolName: string,
+  ruleContent: string | undefined,
+): boolean {
+  if (toolName !== BASH_TOOL_NAME) return false
+  // 空规则或 * 通配符 = 允许所有命令 = 极度危险
+  if (ruleContent === undefined || ruleContent === '' || ruleContent === '*') {
+    return true
+  }
+  for (const pattern of DANGEROUS_BASH_PATTERNS) {
+    if (content === `${pattern}:*`) return true   // "python:*" 匹配任意 python 命令
+    if (content === `${pattern}*`) return true    // "python*" 匹配 python, python3 等
+    if (content === `${pattern} *`) return true   // "python *" 匹配 python + 任意参数
+  }
+  return false
+}
+```
+
+### 32.8 密钥扫描规则示例
+
+```typescript
+// src/services/teamMemorySync/secretScanner.ts
+const SECRET_RULES: SecretRule[] = [
+  // AWS 访问密钥
+  { id: 'aws-access-token',
+    source: '\\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\\b' },
+  // Anthropic 自家 API Key（编译期拼接，避免密文出现在代码里）
+  { id: 'anthropic-api-key',
+    source: `\\b(${ANT_KEY_PFX}03-[a-zA-Z0-9_\\-]{93}AA)(?:...)` },
+  // GitHub Personal Access Token
+  { id: 'github-pat', source: 'ghp_[0-9a-zA-Z]{36}' },
+  // OpenAI API Key
+  { id: 'openai-api-key', source: '\\b(sk-(?:proj|svcacct|admin)-...' },
+  // 私钥文件（PEM 格式）
+  { id: 'private-key', source: '-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY...' },
+]
+```
+
+---
+
+## 33. 补充：沙箱路径语义详解
+
+### 33.1 两套完全不同的路径解析规则
+
+```typescript
+// src/utils/sandbox/sandbox-adapter.ts
+
+// 1. Permission rule 里的路径
+resolvePathPatternForSandbox(pattern, source):
+  // `//path` → absolute from filesystem root
+  // `/path`  → relative to settings file directory
+  // 这是 Claude Code 特有的权限规则语法
+
+// 2. sandbox.filesystem.* 里的路径
+resolveSandboxFilesystemPath(pattern, source):
+  // `/path`    → absolute path（标准 Unix 路径）
+  // `~/path`   → expanded to home directory
+  // `./path` 或 `path` → relative to settings file directory
+  // 这是标准路径语义
+```
+
+**如果不理解这两套语义的区别，就会把整个 sandbox 行为理解错。**
+
+### 33.2 convertToSandboxRuntimeConfig() 的内置保护
+
+```typescript
+convertToSandboxRuntimeConfig(settings):
+  初始化:
+    allowWrite = ['.', ClaudeTempDir]        // 默认允许写当前目录和临时目录
+    denyWrite = []
+    denyRead = []
+    allowRead = []
+
+  内置保护:
+    → 永远拒绝写: settings.json / settings.local.json / managed settings drop-in
+    → 永远拒绝写: .claude/skills（Skills have same privilege level）
+    → 对 cwd / originalCwd 都做保护
+
+  Git worktree 兼容:
+    → 若当前是 worktree: 把 main repo path 加入 allowWrite
+
+  add-dir 兼容:
+    → 把 additionalDirectories 和 session add-dir 注入 allowWrite
+
+  遍历所有 setting source:
+    → 从 permissions.allow/deny 提取 Edit/Read 规则
+    → 从 sandbox.filesystem.allowWrite/denyWrite 提取规则
+    → 按 source 解析路径语义（不同来源路径语义不同！）
+
+  Bare Git repo 防御:
+    → 扫描 ['HEAD','objects','refs','hooks','config'] 是否已存在
+    → 已存在 → denyWrite
+    → 不存在 → 加入 scrubPaths（执行后清理）
+```
+
+### 33.3 沙箱是否启用的完整判定链
+
+```typescript
+// src/utils/sandbox/sandbox-adapter.ts
+function isSandboxingEnabled(): boolean {
+  if (!isSupportedPlatform())           return false  // 平台不支持
+  if (checkDependencies().errors.length > 0) return false  // 依赖缺失
+  if (!isPlatformInEnabledList())       return false  // 不在 enabledPlatforms
+  return getSandboxEnabledSetting()                   // 用户配置
+}
+
+// "settings 写了 sandbox.enabled: true" 和 "实际正在沙箱模式运行" 不是同一概念
+// 中间隔着三关：平台、依赖、白名单
+
+function isSandboxRequired(): boolean {
+  // sandbox.enabled + sandbox.failIfUnavailable → 沙箱从"增强安全"升级成"必须条件"
+  return getSandboxEnabledSetting() &&
+    (settings?.sandbox?.failIfUnavailable ?? false)
+}
+```
+
+### 33.4 allowManagedDomainsOnly 的网络钳制
+
+```typescript
+shouldAllowManagedSandboxDomainsOnly():
+  → policySettings.sandbox.network.allowManagedDomainsOnly === true
+
+// 一旦 policy 开启:
+//   1. 沙箱的网络放行只能来自 managed/policy source
+//   2. 运行时 ask callback 被包装 → 直接拒绝临时放行
+//   3. UI 上的 "don't ask again for <host>" 选项被拿掉
+
+const wrappedCallback: SandboxAskCallback | undefined = sandboxAskCallback
+  ? async (hostPattern: NetworkHostPattern) => {
+      if (shouldAllowManagedSandboxDomainsOnly()) {
+        return false  // 直接拒绝
+      }
+      return sandboxAskCallback(hostPattern)
+    }
+  : undefined
+```
+
+---
+
+## 34. 逐行补充：前端组件 AppStateProvider 的完整初始化
+
+### 34.1 AppStateProvider
+
+```typescript
+// src/state/AppState.tsx
+AppStateProvider:
+  → 先检查 HasAppStateContext — 禁止嵌套 provider
+  → createStore(initialState ?? getDefaultAppState(), onChangeAppState)  — 懒初始化
+  → useEffect:
+      → 检查 toolPermissionContext.isBypassPermissionsModeAvailable
+      → 若远端设置要求禁用 bypass:
+        → 调用内部 _temp(prev) 把 toolPermissionContext 替换成禁用版
+  → useSettingsChange(onSettingsChange)  — 把 settings 变更同步回 store
+  → 最终挂载:
+      → MailboxProvider + VoiceProvider + AppStoreContext.Provider
+```
+
+### 34.2 useAppState 的切片订阅实现
+
+```typescript
+// src/state/AppState.tsx
+useAppState(selector):
+  → useAppStore() 取到 store
+  → 构造 get():
+      → 从 store.getState() 取新状态
+      → 执行 selector
+  → useSyncExternalStore(store.subscribe, get, get)
+  // 不是返回整棵树 — 强制调用者只取切片
+  // 配合 Object.is 语义 — 避免无关组件重渲染
+```
+
+---
+
+*基于 claude-code-analysis 项目全部 30 个 Markdown 分析文件系统整理*
 *整理日期: 2026-06-04*
-*总字数: ~25,000*
+*总计约 50,000 字*
