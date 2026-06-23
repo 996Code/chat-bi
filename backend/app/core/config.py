@@ -28,20 +28,23 @@ class Settings(BaseSettings):
     # ── Server ───────────────────────────────────────────────
     host: str = "0.0.0.0"
     port: int = 8999
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:28080"]
+    # CORS 来源走 .env (不同部署环境不同, 不写死 localhost)
+    cors_origins: list[str] = ["CHANGE_ME_CORS_ORIGINS"]
 
     # ── Database (PostgreSQL) ────────────────────────────────
     # 占位符: 真实值走 .env, 启动检测拒绝占位符启动 (fail-closed)
     database_url: str = "CHANGE_ME_DATABASE_URL"
 
     # ── Redis ────────────────────────────────────────────────
-    redis_url: str = "redis://localhost:6379/0"
+    # 占位符: url/凭证走 .env (生产有密码, 不能写死 localhost 无密码)
+    redis_url: str = "CHANGE_ME_REDIS_URL"
     redis_cache_ttl: int = 300
     redis_semantic_cache_threshold: float = 0.95
 
     # ── Milvus ───────────────────────────────────────────────
-    milvus_url: str = "http://localhost:19530"
-    milvus_token: str = "root:Milvus"
+    # 占位符: url/token 走 .env (root:Milvus 是默认凭证, 不能写死)
+    milvus_url: str = "CHANGE_ME_MILVUS_URL"
+    milvus_token: str = "CHANGE_ME_MILVUS_TOKEN"
     milvus_dim: int = 1024
 
     # ── LLM ──────────────────────────────────────────────────
@@ -54,9 +57,9 @@ class Settings(BaseSettings):
     llm_timeout: int = 60  # seconds
 
     # ── Embedding ────────────────────────────────────────────
-    # embedding_model 默认 BGE-large-zh (v1/v2 通用, 非敏感); url/key 走 .env
+    # 占位符: url/model/key 全走 .env (model 也不写死, 不同部署可能不同)
     embedding_url: str = "CHANGE_ME_EMBEDDING_URL"
-    embedding_model: str = "BAAI/bge-large-zh-v1.5"
+    embedding_model: str = "CHANGE_ME_EMBEDDING_MODEL"
     embedding_api_key: str = "CHANGE_ME_EMBEDDING_API_KEY"
 
     # ── Security ─────────────────────────────────────────────
