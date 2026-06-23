@@ -61,14 +61,14 @@ export const datasource = {
   create(data: DataSourceCreate) {
     return apiClient.post<DataSource>('/data-sources', data)
   },
-  /** 触发扫描 → 生成/更新语义层 */
+  /** 触发扫描 → 生成/更新语义层 (含 LLM 推断, 慢操作, 单独设 5 分钟超时) */
   scan(id: string) {
     return apiClient.post<{
       semantic_model_id: string
       version: number
       table_count: number
       models: string[]
-    }>(`/data-sources/${id}/scan`)
+    }>(`/data-sources/${id}/scan`, null, { timeout: 300000 })
   },
 }
 

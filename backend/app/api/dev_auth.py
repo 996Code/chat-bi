@@ -18,10 +18,14 @@ router = APIRouter(prefix="/dev", tags=["dev"])
 
 
 class DevTokenRequest(BaseModel):
-    """开发登录: 自填 tenant_id 和 role (便于测试不同角色)。"""
+    """开发登录: 自填 tenant_id 和 role (便于测试不同角色)。
+
+    注意: user_id 必须是数据库 users 表里真实存在的用户 (audit_logs 有外键约束)。
+    默认用 admin_user (数据库初始化时建的 admin)。
+    """
     tenant_id: str = "default_tenant"
-    user_id: str = "dev_user"
-    email: str = "dev@chatbi.local"
+    user_id: str = "admin_user"  # 数据库里真实存在的 admin 用户
+    email: str = "admin@chatbi.local"
     role: str = "admin"  # admin | user | read_only
 
 

@@ -225,6 +225,14 @@ async def scan_data_source_endpoint(
     }
 
 
+# ChatBI 自己的系统表 (元数据表), 扫描时不调 LLM 推断
+# 这些表用户不会查, 跳过能省 60%+ LLM 调用
+_SYSTEM_TABLES = frozenset({
+    "tenants", "users", "data_sources", "semantic_models",
+    "conversations", "saved_queries", "audit_logs", "feedback",
+})
+
+
 async def _enrich_with_llm(content) -> None:
     """扫描后用 LLM 给无注释的列补中文 display_name (原地 patch)。
 
@@ -232,26 +240,40 @@ async def _enrich_with_llm(content) -> None:
     有注释的列不动 (source=manual), 只补 source=auto_inferred 且 confidence=0.5
     (退化列名) 的那些 → 补完后升 source=auto_inferred, confidence=0.8。
 
+    优化:
+      - 跳过系统表 (ChatBI 元数据表, 用户不查, 省 60%+ LLM 调用)
+      - 并行调 LLM (asyncio.gather, N 张表并发而非串行)
     LLM 失败静默降级 (退化列名已可用, 不阻塞扫描)。
     """
+    import asyncio
     from app.core.llm_client import infer_column_chinese
 
+    # 筛出需要推断的业务表 (跳过系统表 + 全有注释的表)
+    tasks = []  # (model, needs_infer)
     for model in content.models:
-        # 找出需要 LLM 推断的列 (退化列名: source=auto_inferred 且 confidence=0.5)
+        if model.name in _SYSTEM_TABLES:
+            continue
         needs_infer = [
             c for c in model.columns
             if c.source == "auto_inferred" and c.confidence == 0.5
         ]
-        if not needs_infer:
-            continue
+        if needs_infer:
+            cols_for_llm = [{"name": c.name, "data_type": c.data_type} for c in needs_infer]
+            tasks.append((model, needs_infer, cols_for_llm))
 
-        cols_for_llm = [{"name": c.name, "data_type": c.data_type} for c in needs_infer]
-        inferred = await infer_column_chinese(model.name, cols_for_llm)
+    if not tasks:
+        return  # 没有需要推断的, 直接返回
 
-        if not inferred:
-            continue  # LLM 没返回, 保持退化列名
+    # 并行调 LLM (所有业务表同时推断, 而非串行)
+    results = await asyncio.gather(
+        *(infer_column_chinese(m.name, cols) for m, _, cols in tasks),
+        return_exceptions=True,  # 单个失败不影响其他
+    )
 
-        # patch: 补上中文, 提升 confidence (0.5 → 0.8)
+    # patch 结果
+    for (model, needs_infer, _), inferred in zip(tasks, results):
+        if isinstance(inferred, Exception) or not inferred:
+            continue  # 失败/空, 保持退化列名
         name_to_col = {c.name: c for c in needs_infer}
         for col_name, display_name in inferred.items():
             if col_name in name_to_col:
