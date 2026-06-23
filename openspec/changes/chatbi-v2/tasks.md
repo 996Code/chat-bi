@@ -55,8 +55,8 @@
 - [x] T031: SQL 执行 + 连接池管理 + 超时控制 + 大结果分块 — ✅ execute_sql (复用datasource_engine池 + asyncio.to_thread + wait_for超时30s + max_rows截断 + 自动加LIMIT防全表扫描); 10 测试
 - [x] T032: SQL 自愈 (10+ 错误码映射 + 专项纠正 prompt + 2 轮上限 + 熔断器) — ✅ heal_sql (错误码提取+类别映射 TABLE/COLUMN/SYNTAX/AMBIGUOUS + 专项纠正prompt + 自愈prompt保留全部安全规则[v1#32] + 自愈后走同样三层校验) + SelfHealCircuitBreaker(连续3次熔断); 20 测试
 - [x] T033: 结果自检 (0行/异常数字/不一致 → 分析 → 提示或修正) — ✅ check_result (纯规则: 0行/笛卡尔积/全NULL/COUNT=0可疑, 附suggestion修复方向); 9 测试
-- [ ] T034: 图表生成 (LLM 声明式 ECharts option JSON + Skills 约束 + JSON schema 校验)
-- [ ] T035: 图表降级 + JSON 自愈 (LLM 生成失败 → 规则推断 + 补全括号)
+- [x] T034: 图表生成 (LLM 声明式 ECharts option JSON + Skills 约束 + JSON schema 校验) — ✅ generate_chart (LLM ECharts option + chart_type_hint引导 + series结构校验) ; 13 测试(含T035)
+- [x] T035: 图表降级 + JSON 自愈 (LLM 生成失败 → 规则推断 + 补全括号) — ✅ heal_json(补缺失右括号, 对标AEE-008) + infer_chart_by_rule(时间→line/类别计数→pie/默认→bar); 降级链: LLM→自愈→规则, fail-closed不返回空
 
 ## Phase 5: 对话与上下文管理（1 周）
 
