@@ -52,8 +52,10 @@
 
 ## 遗留技术债
 - **TenantMixin 死代码已修复**：Phase 1 的 TenantMixin 定义在 auth.py 但 7 个模型都没继承 → 已迁移到 models.py 并让所有 tenant-scoped 模型继承（对标 v1 #48）
+- **多租户 session event 自动注入未实现**：当前是 contextvar + TenantMixin.tenant_filter() 显式过滤（调用方需手动 `.where(...)`），非全局自动注入。auth.py 注释已更正。待 T014 有真实查询场景时补 session event
 - 前端仅占位，认证/数据源 UI 待 Phase 7
 - SQL 危险函数校验（INTO OUTFILE/LOAD_FILE）未实现，留 Phase 4 T030（v1 #46 的另一半）
+- 前端 chunk 过大（index.js 1MB），生产部署前需代码分割
 - **端到端业务链路测试**待 Phase 2 API 实现后补（注册→登录→数据源→扫描→语义层，已在 test_integration.py 预留）
 
 ## OpenSpec 关联

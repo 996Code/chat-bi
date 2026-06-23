@@ -6,16 +6,26 @@ ChatBI v2 — 示例业务数据种子脚本
 
 用法:
   python backend/scripts/seed_business_data.py
+  # 或通过环境变量覆盖连接（对标 v1 #44: 密钥不硬编码，走环境变量）
+  SEED_DB_HOST=... SEED_DB_USER=... SEED_DB_PASSWORD=... python backend/scripts/seed_business_data.py
 
 幂等: 可重复运行 (TRUNCATE + RESTART IDENTITY CASCADE)
 对标: 海泰分析电商场景 (orders/users/products + GMV/客单价)
 """
+import os
 import random
 from datetime import datetime, timedelta
 
 import psycopg2
 
-CONN = dict(host="192.168.99.22", port=5432, dbname="njmind", user="njmind", password="njmind")
+# 连接配置走环境变量（默认指向开发库 njmind，对标 v1 #44）
+CONN = dict(
+    host=os.getenv("SEED_DB_HOST", "192.168.99.22"),
+    port=int(os.getenv("SEED_DB_PORT", "5432")),
+    dbname=os.getenv("SEED_DB_NAME", "njmind"),
+    user=os.getenv("SEED_DB_USER", "njmind"),
+    password=os.getenv("SEED_DB_PASSWORD", "njmind"),
+)
 
 
 def main() -> None:

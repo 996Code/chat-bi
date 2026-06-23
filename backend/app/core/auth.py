@@ -4,9 +4,13 @@ ChatBI v2 — JWT Authentication + RBAC (T005)
 Every API endpoint that needs auth uses Depends(get_current_user).
 JWT contains: user_id, email, tenant_id, role (对标 v1 经验教训 #3)
 
-+ Multi-tenant framework-level isolation (T006):
-  SQLAlchemy session event auto-injects tenant_id filter.
-  对标: v1 经验教训 #48 — 多租户隔离应该是默认行为
++ Multi-tenant isolation (T006):
+  机制: contextvars 存当前 tenant_id + TenantMixin.tenant_filter() 显式过滤。
+  所有 tenant-scoped 模型继承 TenantMixin，查询时需 .where(Model.tenant_filter(tid))。
+  对标: v1 经验教训 #48 — 多租户隔离应是默认行为
+
+  NOTE: 当前为"半自动"（需调用方显式 filter），非 session event 全局自动注入。
+  全局 session event 自动注入待 T014 (CRUD API) 时补 —— 届时有真实查询场景验证。
 """
 from __future__ import annotations
 
