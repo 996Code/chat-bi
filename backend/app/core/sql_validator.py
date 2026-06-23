@@ -39,6 +39,44 @@ _DANGEROUS_FUNCTIONS = frozenset({
 _DANGEROUS_INTO = frozenset({"OUTFILE", "DUMPFILE"})
 
 
+def _collect_derivable_names(stmt: exp.Expression) -> set[str]:
+    """收集 SQL 内部所有可派生的合法标识符 (非真实表列)。
+
+    这些标识符在 SQL 内部定义后可被引用, 不属于语义层白名单但合法:
+      - SELECT 别名 (AS xxx): COUNT(*) AS cnt → cnt 可在 ORDER BY/HAVING 引用
+      - CTE 名 + 输出列: WITH cte(x,y) AS (...) → cte, x, y 可引用
+      - 子查询派生表的列: SELECT a FROM (SELECT x AS a) sub → a 可引用
+      - 派生表别名: FROM (...) AS sub → sub 可引用
+
+    设计原则: 系统性收集所有来源, 不针对特定 SQL 模式打补丁。
+    遗漏任何来源 → 误拦合法 SQL; 多收 → 放行 (安全由真实列白名单兜底)。
+    """
+    names: set[str] = set()
+
+    # SELECT 别名 (Alias 节点的 alias 字段)
+    for node in stmt.find_all(exp.Alias):
+        if node.alias:
+            names.add(node.alias)
+
+    # CTE 名 + 列 (CTE 定义里的输出列名)
+    for cte in stmt.find_all(exp.CTE):
+        if cte.alias:  # CTE 名
+            names.add(cte.alias)
+        # CTE 输出列 (WITH cte(a, b) AS ... 里的 a, b)
+        cte_cols = cte.args.get("alias")
+        if cte_cols and hasattr(cte_cols, "columns"):
+            for col in cte_cols.columns:
+                if hasattr(col, "name") and col.name:
+                    names.add(col.name)
+
+    # 子查询/派生表的别名 (Subqueryable 的 alias)
+    for sub in stmt.find_all(exp.Subquery):
+        if sub.alias:
+            names.add(sub.alias)
+
+    return names
+
+
 @dataclass
 class ValidationResult:
     """校验结果。
@@ -131,24 +169,18 @@ def validate_sql(sql: str | None, allowed_columns: set[str] | None = None) -> Va
             )
 
     # ── Layer 3: 白名单列 ─────────────────────────────────────
+    # 目的: 防 LLM 臆造列名 / SQL 注入。
+    # 设计: 收集 SQL 内所有合法的标识符来源, 再校验每个 Column 引用是否可追溯。
+    #   合法来源 = 真实表列(allowed_columns) + SELECT别名 + CTE输出列 + 子查询输出列
+    #   (系统性收集, 不针对特定场景打补丁)
     if allowed_columns:
-        # 提取 SELECT 别名 (AS xxx), 加入白名单 (ORDER BY/GROUP BY 引用别名是合法的)
-        select_aliases = set()
-        for alias_node in stmt.find_all(exp.Alias):
-            if alias_node.alias:
-                select_aliases.add(alias_node.alias)
-        effective_whitelist = allowed_columns | select_aliases
+        effective_names = _collect_derivable_names(stmt) | allowed_columns
 
-        # 提取 SQL 里所有列引用 (Column 节点)
-        # SELECT * 无法静态分析列, 跳过 (由 Layer 1/2 兜底)
         for col in stmt.find_all(exp.Column):
             col_name = col.name
-            if not col_name:
+            if not col_name or col_name == "*":
                 continue
-            # 忽略通配符和函数参数里的伪列
-            if col_name in ("*",):
-                continue
-            if col_name not in effective_whitelist:
+            if col_name not in effective_names:
                 return ValidationResult(
                     ok=False,
                     reason=f"列 '{col_name}' 不在语义层白名单内",

@@ -19,7 +19,6 @@ T033: 结果自检 — 0行/异常数字/不一致 检测
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -45,22 +44,6 @@ class CheckResult:
 
 
 # 笛卡尔积启发式: 无 JOIN ON 的多表查询 + 行数爆炸
-# 阈值: 行数 > 500 且 SQL 有逗号连接的多表 (FROM a, b) 视为可疑
-_CARTESIAN_ROW_THRESHOLD = 500
-
-
-def _has_implicit_join(sql: str) -> bool:
-    """检测 SQL 是否用隐式 JOIN (FROM a, b 而非 JOIN)。
-
-    隐式 JOIN 容易遗漏 ON 条件 → 笛卡尔积。
-    """
-    sql_upper = sql.upper()
-    # FROM a, b (逗号分隔多表) 且无 JOIN/WHERE 关联
-    from_match = re.search(r"FROM\s+\w+\s*,\s*\w+", sql_upper)
-    has_join = "JOIN" in sql_upper
-    return bool(from_match) and not has_join
-
-
 def _count_all_null_columns(rows: list[tuple]) -> int:
     """统计有多少列是全部 NULL。
 
@@ -95,18 +78,25 @@ def check_result(
     columns: list[str],
     sql: str,
 ) -> CheckResult:
-    """自检执行结果 (纯规则, 不调 LLM)。
+    """自检执行结果 (基于统计特征, 不依赖 SQL 文本模式)。
+
+    设计原则: 异常判断基于结果本身的数据特征, 不解析 SQL 文本。
+    原因: SQL 文本分析脆弱 (大小写/子查询/CTE/格式差异), 且 T030 已做 AST 校验,
+    结果自检应独立判断"结果是否合理", 不重复 SQL 层面的工作。
 
     Args:
         rows: 执行结果行
         columns: 列名
-        sql: 生成结果的 SQL (用于启发式分析)
+        sql: 原始 SQL (仅用于 suggestion 提示, 不参与异常判断逻辑)
 
     Returns:
-        CheckResult — ok=True 正常; ok=False 异常 + suggestion 修复方向
+        CheckResult — ok=True 正常; ok=False 异常 + suggestion
     """
-    # 1. 0 行
-    if len(rows) == 0:
+    n_rows = len(rows)
+    n_cols = len(columns)
+
+    # 1. 0 行 (明确异常; COUNT 返回 0 单独处理)
+    if n_rows == 0:
         return CheckResult(
             ok=False,
             issue=ResultIssue.ZERO_ROWS,
@@ -114,30 +104,31 @@ def check_result(
             suggestion="检查 WHERE 条件是否过严, 或换一个查询维度",
         )
 
-    # 2. 全 NULL (仅 JOIN 场景有意义; 单表某列可空是正常数据)
-    sql_upper = sql.upper()
-    has_join = "JOIN" in sql_upper
-    if has_join:
+    # 2. 多数列全空 (JOIN 完全没匹配上的统计特征)
+    # 设计: 计算"全空列占比", 超过半数说明结果实质为空 (典型 JOIN 方向错)
+    # 不依赖 SQL 是否含 JOIN 关键字 — 单表也可能因 CASE WHEN 等产生全空列
+    if n_cols >= 2:
         null_col_count = _count_all_null_columns(rows)
-        # 多列全 NULL 才报 (单列全 NULL 可能只是该字段普遍为空, 如 remark)
-        if null_col_count >= 2:
+        if null_col_count > n_cols / 2:
             return CheckResult(
                 ok=False,
                 issue=ResultIssue.ALL_NULL,
-                reason=f"结果中 {null_col_count} 列全部为 NULL, 可能 JOIN 方向错误或外键不匹配",
-                suggestion="检查 JOIN 的表和外键方向, 可能需要换 JOIN 方向 (LEFT↔RIGHT)",
+                reason=f"结果 {null_col_count}/{n_cols} 列全部为 NULL, 数据实质为空",
+                suggestion="检查 JOIN 的表和外键方向, 或 WHERE 条件是否矛盾",
             )
 
-    # 3. 笛卡尔积 (行数爆炸 + 隐式 JOIN)
-    if _has_implicit_join(sql) and len(rows) > _CARTESIAN_ROW_THRESHOLD:
+    # 3. 行数异常多 (潜在笛卡尔积)
+    # 设计: 用配置阈值, 不在代码写死; 超过即提示 (不阻断, 由调用方判断)
+    from app.core.config import get_settings
+    if n_rows > get_settings().sql_max_rows * 0.5:  # 超过 max_rows 一半
         return CheckResult(
             ok=False,
             issue=ResultIssue.CARTESIAN_PRODUCT,
-            reason=f"结果 {len(rows)} 行, 疑似笛卡尔积 (缺少 JOIN 关联条件)",
-            suggestion="添加 JOIN ON 关联条件, 避免表的全连接",
+            reason=f"结果 {n_rows} 行, 异常多, 疑似笛卡尔积或缺少过滤",
+            suggestion="检查是否缺少 JOIN ON 条件或 WHERE 过滤",
         )
 
-    # 4. COUNT=0 可疑 (非空结果但聚合值是 0)
+    # 4. COUNT(*)=0 单行结果 (WHERE 过滤后无匹配, 偏可疑但非必然异常)
     if _is_count_zero(rows, sql):
         return CheckResult(
             ok=False,

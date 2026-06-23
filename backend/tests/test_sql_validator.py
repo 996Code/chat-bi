@@ -181,6 +181,23 @@ class TestLayer3WhitelistColumns:
         )
         assert r.ok
 
+    def test_cte_output_column_passes(self):
+        """CTE 输出列引用 → 放行 (系统性收集, 不只是别名)。"""
+        r = validate_sql(
+            "WITH cte AS (SELECT id, total_amount FROM orders) "
+            "SELECT id FROM cte WHERE total_amount > 100",
+            allowed_columns={"id", "total_amount"},  # cte 是 CTE 名
+        )
+        assert r.ok
+
+    def test_subquery_derived_column_passes(self):
+        """子查询派生表的列引用 → 放行。"""
+        r = validate_sql(
+            "SELECT sub.total FROM (SELECT id, SUM(total_amount) AS total FROM orders GROUP BY id) sub",
+            allowed_columns={"id", "total_amount"},  # total 是子查询别名
+        )
+        assert r.ok
+
 
 # ── 综合边界 ──────────────────────────────────────────────────
 

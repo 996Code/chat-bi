@@ -111,7 +111,13 @@ class TestCheckResultDetails:
         assert result.suggestion is not None
 
     def test_cartesian_suggests_join(self):
-        """笛卡尔积 → 建议加 JOIN 条件。"""
-        rows = [(i, j) for i in range(50) for j in range(50)]
-        result = check_result(rows, ["a", "b"], "SELECT * FROM a, b")
-        assert "JOIN" in result.suggestion.upper() or "条件" in result.suggestion
+        """行数异常多 (超 max_rows 一半) → 提示疑似笛卡尔积。
+
+        基于统计特征 (行数), 不依赖 SQL 文本模式 (对标正确性原则)。
+        sql_max_rows 默认 10000, 一半 5000, 这里造 5500 行。
+        """
+        rows = [(i,) for i in range(5500)]
+        result = check_result(rows, ["a"], "SELECT * FROM big_table")
+        assert not result.ok
+        assert result.issue == ResultIssue.CARTESIAN_PRODUCT
+        assert "JOIN" in result.suggestion or "过滤" in result.suggestion
