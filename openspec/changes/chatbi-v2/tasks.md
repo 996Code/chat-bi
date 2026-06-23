@@ -47,11 +47,11 @@
 ## Phase 4: Agent 执行引擎（2 周）
 
 - [ ] T025: Agent while(true) 执行循环 (生成→校验→执行→自检→修正→再生成)
-- [ ] T026: 意图识别 (5 种意图 + Pydantic 强约束 + confidence 降级 + 追问维度继承)
+- [x] T026: 意图识别 (5 种意图 + Pydantic 强约束 + confidence 降级 + 追问维度继承) — ✅ IntentOutput Pydantic + classify_intent (confidence<0.6降级CLARIFICATION, schema重试2次, LLM失败降级) + strip_visualization剥离可视化措辞; 19 测试
 - [ ] T027: 预思考机制 (选表理由+聚合方式+注意事项 → SSE thinking 事件)
 - [ ] T028: ask_user 关键节点暂停 (Schema不确定/结果异常时触发)
 - [ ] T029: SQL 生成 (白名单列名 + data_type 约束 + Skills 注入 + 多轮历史)
-- [ ] T030: SQL 三层校验 (AST 拒绝非 SELECT + 危险函数拒绝 + 白名单列名校验)
+- [x] T030: SQL 三层校验 (AST 拒绝非 SELECT + 危险函数拒绝 + 白名单列名校验) — ✅ sqlglot AST(非SELECT拒绝, 多语句拒绝) + 危险函数(LOAD_FILE/SLEEP/BENCHMARK/INTO OUTFILE, Anonymous.name) + 白名单列; 替换 security.py 占位; 26 测试
 - [ ] T031: SQL 执行 + 连接池管理 + 超时控制 + 大结果分块
 - [ ] T032: SQL 自愈 (10+ 错误码映射 + 专项纠正 prompt + 2 轮上限 + 熔断器)
 - [ ] T033: 结果自检 (0行/异常数字/不一致 → 分析 → 提示或修正)
