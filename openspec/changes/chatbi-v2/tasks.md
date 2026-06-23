@@ -24,7 +24,7 @@
 - [ ] T015: 语义层编辑器 UI (查看/编辑/版本历史/diff)
 - [ ] T016: 知识图谱 AI 推断 (表结构推断 + 外键 + 字段命名模式)
 - [ ] T017: 知识图谱演化 (历史查询挖掘 + 反馈回流 → 更新 confidence)
-- [ ] T018: 复合指标支持 (子指标递归展开 + factor_metric_names，对标海泰 MetricContext)
+- [x] T018: 复合指标支持 (子指标递归展开 + factor_metric_names，对标海泰 MetricContext) — ✅ 测试覆盖 (test_composite_metric.py, 8 个; 含 to_schema_context 序列化)
 
 ## Phase 3: RAG 检索与向量化（1 周）
 
