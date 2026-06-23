@@ -53,8 +53,8 @@
 - [x] T029: SQL 生成 (白名单列名 + data_type 约束 + Skills 注入 + 多轮历史) — ✅ generate_sql (prompt分层 §4: 静态schema/列约束/类型约束 + 动态问题/fewshot/历史) + 生成后立即T030校验; 10 测试
 - [x] T030: SQL 三层校验 (AST 拒绝非 SELECT + 危险函数拒绝 + 白名单列名校验) — ✅ sqlglot AST(非SELECT拒绝, 多语句拒绝) + 危险函数(LOAD_FILE/SLEEP/BENCHMARK/INTO OUTFILE, Anonymous.name) + 白名单列; 替换 security.py 占位; 26 测试
 - [x] T031: SQL 执行 + 连接池管理 + 超时控制 + 大结果分块 — ✅ execute_sql (复用datasource_engine池 + asyncio.to_thread + wait_for超时30s + max_rows截断 + 自动加LIMIT防全表扫描); 10 测试
-- [ ] T032: SQL 自愈 (10+ 错误码映射 + 专项纠正 prompt + 2 轮上限 + 熔断器)
-- [ ] T033: 结果自检 (0行/异常数字/不一致 → 分析 → 提示或修正)
+- [x] T032: SQL 自愈 (10+ 错误码映射 + 专项纠正 prompt + 2 轮上限 + 熔断器) — ✅ heal_sql (错误码提取+类别映射 TABLE/COLUMN/SYNTAX/AMBIGUOUS + 专项纠正prompt + 自愈prompt保留全部安全规则[v1#32] + 自愈后走同样三层校验) + SelfHealCircuitBreaker(连续3次熔断); 20 测试
+- [x] T033: 结果自检 (0行/异常数字/不一致 → 分析 → 提示或修正) — ✅ check_result (纯规则: 0行/笛卡尔积/全NULL/COUNT=0可疑, 附suggestion修复方向); 9 测试
 - [ ] T034: 图表生成 (LLM 声明式 ECharts option JSON + Skills 约束 + JSON schema 校验)
 - [ ] T035: 图表降级 + JSON 自愈 (LLM 生成失败 → 规则推断 + 补全括号)
 
