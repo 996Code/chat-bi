@@ -44,7 +44,7 @@ class TestFullPipeline:
         deps.execute_sql = AsyncMock(return_value=MagicMock(
             error=None, rows=[(1000,)], columns=["total"], truncated=False,
         ))
-        deps.check_result = AsyncMock(return_value=MagicMock(ok=True))
+        deps.check_result = MagicMock(return_value=MagicMock(ok=True))
         deps.generate_chart = AsyncMock(return_value=MagicMock(ok=True, option={"series": []}))
         deps.should_ask_for_schema = MagicMock(return_value=None)
         deps.should_ask_for_result = MagicMock(return_value=None)
@@ -128,7 +128,7 @@ class TestFailureRouting:
             success=True, sql="SELECT id FROM t", validation=MagicMock(ok=True),
         ))
         deps.should_ask_for_schema = MagicMock(return_value=None)
-        deps.check_result = AsyncMock(return_value=MagicMock(ok=True))
+        deps.check_result = MagicMock(return_value=MagicMock(ok=True))
         deps.generate_chart = AsyncMock(return_value=MagicMock(ok=True))
         deps.should_ask_for_result = MagicMock(return_value=None)
         deps.max_self_heal_rounds = 2  # int, 不是 MagicMock

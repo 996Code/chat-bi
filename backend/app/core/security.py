@@ -92,14 +92,5 @@ def decode_token(token: str) -> dict[str, Any]:
     return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
 
 
-# SQL Safety (placeholder — to be expanded in Phase 4)
-def validate_sql_select_only(sql: str) -> bool:
-    """Check that SQL is a SELECT statement only (keyword-level quick check)."""
-    import re
-
-    sql_upper = f" {sql.upper().strip()} "
-    forbidden = [
-        " DROP ", " TRUNCATE ", " DELETE ", " UPDATE ", " ALTER ", " INSERT ",
-        " CREATE ", " REPLACE ", " GRANT ", " REVOKE ",
-    ]
-    return not any(kw in sql_upper for kw in forbidden)
+# 注: SQL 安全校验已迁移到 app.core.sql_validator (T030, sqlglot AST 三层校验)
+# 旧的 validate_sql_select_only (字符串匹配占位) 已删除 (v1 教训 #46: AST 非字符串前缀)

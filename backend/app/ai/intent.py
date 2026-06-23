@@ -120,7 +120,11 @@ async def classify_intent(question: str, llm_client) -> IntentOutput:
         IntentOutput — 始终返回 (不抛), 低置信/失败降级 CLARIFICATION
     """
     from app.core.config import get_settings
+    from app.core.text_sanitize import sanitize_text
     settings = get_settings()
+
+    # SEC-007: 用户输入进 LLM 前清洗 (NFKC + 去零宽/方向控制字符)
+    clean_question = sanitize_text(question)
 
     last_error = None
     for attempt in range(MAX_RETRIES + 1):
@@ -129,7 +133,7 @@ async def classify_intent(question: str, llm_client) -> IntentOutput:
                 model=settings.llm_model,
                 messages=[
                     {"role": "system", "content": _INTENT_PROMPT},
-                    {"role": "user", "content": question},
+                    {"role": "user", "content": clean_question},
                 ],
                 max_tokens=300,
                 temperature=0.0,

@@ -216,7 +216,8 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
 
         # ── Stage 6: 结果自检 ────────────────────────────────
         state.stage = AgentStage.SELF_CHECK
-        check = await deps.check_result(
+        # check_result 是纯规则同步函数 (不调 LLM), 直接调不用 await
+        check = deps.check_result(
             rows=exec_result.rows if hasattr(exec_result, "rows") else [],
             columns=exec_result.columns if hasattr(exec_result, "columns") else [],
             sql=state.sql,

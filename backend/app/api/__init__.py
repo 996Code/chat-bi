@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from app.api.data_sources import router as data_sources_router
 from app.api.dev_auth import router as dev_auth_router
 from app.api.semantic_models import router as semantic_models_router
+from app.api.chat import router as chat_router
 
 router = APIRouter()
 
@@ -22,3 +23,4 @@ async def ping():
 router.include_router(data_sources_router)
 router.include_router(semantic_models_router)
 router.include_router(dev_auth_router)
+router.include_router(chat_router)

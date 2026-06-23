@@ -76,13 +76,14 @@ class TestSecurity:
         assert decoded["type"] == "refresh"
 
     def test_sql_select_only_validation(self):
-        from app.core.security import validate_sql_select_only
+        # T030: 已迁移到 sql_validator (sqlglot AST 三层校验), 不再用字符串匹配占位
+        from app.core.sql_validator import validate_sql
 
-        assert validate_sql_select_only("SELECT * FROM users")
-        assert validate_sql_select_only("select id, name from orders where id = 1")
-        assert not validate_sql_select_only("DROP TABLE users")
-        assert not validate_sql_select_only("DELETE FROM users WHERE 1=1")
-        assert not validate_sql_select_only("INSERT INTO users VALUES (1, 'x')")
+        assert validate_sql("SELECT * FROM users", {"id"}).ok
+        assert validate_sql("select id, name from orders where id = 1", {"id", "name"}).ok
+        assert not validate_sql("DROP TABLE users", set()).ok
+        assert not validate_sql("DELETE FROM users WHERE 1=1", {"id"}).ok
+        assert not validate_sql("INSERT INTO users VALUES (1, 'x')", set()).ok
 
 
 class TestFernet:

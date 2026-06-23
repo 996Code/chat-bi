@@ -81,9 +81,26 @@ class PromptCache:
         """Add a cacheable (static) section."""
         self._static_sections.append(PromptSection(name, compute, cacheable=True))
 
+    def set_static(self, name: str, compute: Callable[[], str]) -> None:
+        """Set/replace a static section by name (不堆积重复, 跨调用复用缓存)。"""
+        self._set_section(self._static_sections, name, compute, cacheable=True)
+
     def add_dynamic(self, name: str, compute: Callable[[], str]) -> None:
         """Add a per-request (dynamic) section."""
         self._dynamic_sections.append(PromptSection(name, compute, cacheable=False))
+
+    def set_dynamic(self, name: str, compute: Callable[[], str]) -> None:
+        """Set/replace a dynamic section by name (不堆积重复)。"""
+        self._set_section(self._dynamic_sections, name, compute, cacheable=False)
+
+    @staticmethod
+    def _set_section(sections: list, name: str, compute: Callable, cacheable: bool) -> None:
+        """按 name 覆盖 (存在则替换, 不存在则追加)。"""
+        for i, s in enumerate(sections):
+            if s.name == name:
+                sections[i] = PromptSection(name, compute, cacheable=cacheable)
+                return
+        sections.append(PromptSection(name, compute, cacheable=cacheable))
 
     def assemble(self) -> list[str]:
         """Assemble the full prompt sections list.

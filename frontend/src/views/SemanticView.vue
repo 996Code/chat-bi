@@ -10,6 +10,7 @@
       </div>
       <el-button-group v-if="model">
         <el-button :icon="Refresh" @click="fetchData">刷新</el-button>
+        <el-button :icon="Clock" @click="openVersions">版本历史</el-button>
       </el-button-group>
     </div>
 
@@ -94,20 +95,50 @@
         </el-table>
       </el-card>
     </div>
+
+    <!-- 版本历史抽屉 (T015) -->
+    <el-drawer v-model="versionDrawer" title="版本历史" size="400px">
+      <div v-loading="versionLoading">
+        <div v-if="!versions.length && !versionLoading" class="empty-hint" style="text-align:center;color:#999;padding:40px">
+          暂无历史版本
+        </div>
+        <div v-for="v in versions" :key="v.id" class="version-item">
+          <div class="version-head">
+            <el-tag :type="v.is_current ? 'success' : 'info'" size="small">
+              v{{ v.version }}{{ v.is_current ? ' 当前' : '' }}
+            </el-tag>
+            <el-button
+              v-if="!v.is_current"
+              size="small" type="warning" plain
+              :loading="rollingBack === v.version"
+              @click="doRollback(v.version)"
+            >
+              回滚到此版本
+            </el-button>
+          </div>
+          <div class="version-id"><code>{{ v.id.slice(0, 8) }}</code></div>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { ArrowLeft, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowLeft, Refresh, Clock } from '@element-plus/icons-vue'
 import { semantic, type SemanticModel, type SemanticTableModel } from '@/api'
 
 const route = useRoute()
 const model = ref<SemanticModel | null>(null)
 const selected = ref<SemanticTableModel | null>(null)
 const loading = ref(false)
+// 版本历史 + 回滚 (T015)
+const versionDrawer = ref(false)
+const versionLoading = ref(false)
+const versions = ref<{ id: string; version: number; is_current: boolean }[]>([])
+const rollingBack = ref<number | null>(null)
 const search = ref('')
 const showSystemTables = ref(false) // 默认隐藏系统表 (ChatBI 元数据表, 用户不查)
 
@@ -143,6 +174,44 @@ async function fetchData() {
     ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
   } finally {
     loading.value = false
+  }
+}
+
+async function openVersions() {
+  if (!model.value) return
+  versionDrawer.value = true
+  versionLoading.value = true
+  try {
+    const { data } = await semantic.versions(model.value.id)
+    versions.value = data
+  } catch (e: any) {
+    ElMessage.error('加载版本历史失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    versionLoading.value = false
+  }
+}
+
+async function doRollback(toVersion: number) {
+  if (!model.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认回滚到 v${toVersion}? 将创建新版本 (历史版本不可变)。`,
+      '回滚确认',
+      { type: 'warning' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  rollingBack.value = toVersion
+  try {
+    await semantic.rollback(model.value.id, toVersion)
+    ElMessage.success(`已回滚到 v${toVersion} (创建为新版本)`)
+    versionDrawer.value = false
+    await fetchData() // 刷新当前语义层
+  } catch (e: any) {
+    ElMessage.error('回滚失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    rollingBack.value = null
   }
 }
 
@@ -205,4 +274,11 @@ onMounted(fetchData)
 .badges span { margin-left: 8px; }
 .desc { color: #666; margin: 0 0 16px; }
 h4 { margin: 16px 0 8px; color: #303030; }
+.version-item {
+  padding: 12px 0; border-bottom: 1px solid #ebeef5;
+}
+.version-head {
+  display: flex; justify-content: space-between; align-items: center;
+}
+.version-id { font-size: 0.8rem; color: #999; margin-top: 6px; }
 </style>

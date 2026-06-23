@@ -64,6 +64,17 @@ def _build_datatype_constraint_section(schema_context: str) -> str:
     return f"【schema 与类型约束】\n{schema_context}\n注意: 遵守 data_type, 数值聚合(SUM/AVG)只能用于数值类型列。"
 
 
+def _build_dynamic_context(fewshot: str | None, history: str | None, question: str) -> str:
+    """构建动态 prompt 段 (每次查询都变)。"""
+    parts = []
+    if fewshot:
+        parts.append(f"【参考示例】\n{fewshot}")
+    if history:
+        parts.append(f"【对话历史】\n{history}")
+    parts.append(f"【用户问题】{question}\n\n请生成 SQL:")
+    return "\n\n".join(parts)
+
+
 def _extract_sql(content: str) -> str:
     """从 LLM 响应提取纯 SQL (去掉 markdown 包裹/解释)。"""
     if not content:
@@ -98,25 +109,31 @@ async def generate_sql(
         GenerateResult — error 非空表示生成/校验失败 (不抛, T025 决定下一步)
     """
     from app.core.config import get_settings
+    from app.core.prompt_cache import get_prompt_cache
     settings = get_settings()
 
-    # ── Prompt 分层组装 (对标 Claude Code §4) ────────────────
-    # 静态层 (可缓存): 系统规则 + schema + 列约束 + 类型约束
-    static_parts = [
-        _SYSTEM_PROMPT,
-        _build_datatype_constraint_section(schema_context),
-        _build_allowed_columns_section(allowed_columns),
-    ]
-    # 动态层 (每次变): 问题 + fewshot + 历史
-    dynamic_parts = []
-    if fewshot_examples:
-        dynamic_parts.append(f"【参考示例】\n{fewshot_examples}")
-    if history:
-        dynamic_parts.append(f"【对话历史】\n{history}")
-    dynamic_parts.append(f"【用户问题】{question}\n\n请生成 SQL:")
+    # ── Prompt 分层组装 (对标 Claude Code §4, 用 prompt_cache) ──
+    # 静态层 (可缓存, 跨调用复用): 系统规则 + schema + 列约束 + 类型约束
+    # 动态层 (每次重算): 问题 + fewshot + 历史
+    cache = get_prompt_cache()
+    cache.set_static("system_rules", lambda: _SYSTEM_PROMPT)
+    cache.set_static("schema_type", lambda: _build_datatype_constraint_section(schema_context))
+    cache.set_static("allowed_cols", lambda: _build_allowed_columns_section(allowed_columns))
+    cache.set_dynamic("context", lambda: _build_dynamic_context(fewshot_examples, history, question))
 
-    system_content = "\n\n".join(p for p in static_parts if p)
-    user_content = "\n\n".join(dynamic_parts)
+    sections = cache.assemble()
+    # assemble 返回 [static..., BOUNDARY, dynamic...]
+    # 静态段拼成 system prompt, 动态段拼成 user prompt
+    from app.core.prompt_cache import PromptCache
+    boundary = PromptCache.PROMPT_DYNAMIC_BOUNDARY
+    if boundary in sections:
+        idx = sections.index(boundary)
+        system_content = "\n\n".join(sections[:idx])
+        user_content = "\n\n".join(sections[idx + 1:])
+    else:
+        # 无动态段兜底
+        system_content = "\n\n".join(sections) or _SYSTEM_PROMPT
+        user_content = question
 
     # ── LLM 调用 ─────────────────────────────────────────────
     try:
