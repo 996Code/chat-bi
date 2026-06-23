@@ -1,15 +1,15 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: chatbi-v2 / Phase 2 执行中（T012-T013 完成，13/54）
-- **状态**: 下一步 T018（复合指标，与 T014 可并行）或 T014（CRUD+版本）
+- **阶段**: chatbi-v2 / Phase 2 执行中（T012-T014 + T018 完成，15/54）
+- **状态**: 下一步 T016（知识图谱推断）+ T017（演化，部分交付）
 
 ## Phase 进度
 
 | Phase | 名称 | 状态 |
 |-------|------|------|
 | 1 | 基础设施 | ✅ 已完成（代码就绪，含质量改进 58 测试 / 覆盖率 87%） |
-| 2 | 语义层与知识图谱 | ⏳ 执行中（T012-T013 完成，13/54） |
+| 2 | 语义层与知识图谱 | ⏳ 执行中（T012-T014 + T018 完成，15/54） |
 | 3 | RAG 检索与向量化 | 待规划 |
 | 4 | Agent 执行引擎 | 待规划 |
 | 5 | 对话与上下文管理 | 待规划 |
@@ -34,13 +34,17 @@
 **前端** (`frontend/src/`) — 骨架就绪
 - `main.ts` / `App.vue` / `router/` / `ChatView.vue`（占位）/ `api/client.ts`（JWT 拦截器）
 
-**测试** — 68 passed，覆盖率 88% (`pytest backend/tests/ --cov=app`)
-- `test_core.py` — 配置/密钥安全/JWT/SQL 校验/健康检查（9 个）
+**测试** — 108 passed，覆盖率 88% (`pytest backend/tests/ --cov=app`)
+- `test_core.py` — 配置/密钥安全/JWT/SQL 校验/Fernet/健康检查（13 个）
 - `test_infrastructure.py` — 模型/Checkpointer/记忆/缓存（11 个）
 - `test_semantic_schema.py` — 语义层 JSON Schema（13 个，T012）
 - `test_semantic_scan.py` — 数据源扫描/外键关系/注释/source 标注（10 个，T013）
+- `test_composite_metric.py` — 复合指标展开/schema_context 序列化（8 个，T018）
+- `test_datasource_engine.py` — 动态业务库引擎/URL拼接/连接池（8 个，Wave0-preB）
+- `test_llm_client.py` — LLM client 单例/中文推断/降级（7 个，Wave0-preC）
 - `test_auth.py` — JWT 依赖/RBAC/多租户隔离/审计写入（16 个，T006/T008 补齐）
 - `test_integration.py` — HTTP 层 + auth 端到端 + DB 集成（9 个）
+- `test_semantic_api.py` — 语义层 CRUD/版本/回滚/diff/多租户 全 HTTP（13 个，T014）
 
 **质量保证**
 - 覆盖率门禁 75% (`pytest --cov --cov-fail-under=75`)
@@ -73,6 +77,9 @@
 - 2026-06-23: Phase 2 T012 语义层 JSON Schema（Pydantic v2，13 测试）
 - 2026-06-23: 质量改进 — pytest-cov 门禁 75% + 补 auth 测试（T006/T008）+ 修复 TenantMixin 死代码（7 模型未继承，对标 v1 #48）+ 集成测试骨架。测试 33→58，覆盖率 87%
 - 2026-06-23: Phase 2 T013 数据源扫描（semantic_scanner.py，10 测试）+ 端到端连真库验证。在 njmind 建 5 张示例业务表（biz_前缀，电商场景）+ 样本数据。端到端发现并修复列注释读取缺陷（PG 无 get_column_comment，改从 col dict.comment 读）。测试 58→68，覆盖率 88%
+- 2026-06-23: Phase 2 Wave 0 三前置（Fernet/动态引擎/LLM client，19 测试）+ T018 复合指标（8 测试）。测试 68→95
+- 2026-06-23: Phase 2 T014 语义层 CRUD API（13 个全 HTTP 测试）+ 端到端 e2e_scan.py 通过（真实 PG 扫 13 表生成语义层）。修复 conftest 引擎隔离缺陷（StaticPool 共享连接）。测试 95→108
+- 2026-06-23: 清除 v1 遗留硬编码（config.py 的 qwen3-30b/localhost:8000/EMPTY/postgres:postgres→CHANGE_ME 占位符 + deploy/.env.example 的 LLM_MODEL + e2e 脚本走 config）。对标 v1 #44，fail-closed 设计
 
 ## 下一步
 执行 Phase 2 / T012（语义层 JSON Schema 定义）—— `/ai:do` 推进。

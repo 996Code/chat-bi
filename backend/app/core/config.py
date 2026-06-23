@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:28080"]
 
     # ── Database (PostgreSQL) ────────────────────────────────
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/chatbi"
+    # 占位符: 真实值走 .env, 启动检测拒绝占位符启动 (fail-closed)
+    database_url: str = "CHANGE_ME_DATABASE_URL"
 
     # ── Redis ────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
@@ -44,17 +45,19 @@ class Settings(BaseSettings):
     milvus_dim: int = 1024
 
     # ── LLM ──────────────────────────────────────────────────
-    llm_url: str = "http://localhost:8000/v1"
-    llm_model: str = "qwen3-30b"
-    llm_api_key: str = "EMPTY"
+    # 占位符: v2 用 OpenAI 兼容协议 (讯飞 MAAS 等), url/model/key 走 .env
+    llm_url: str = "CHANGE_ME_LLM_URL"
+    llm_model: str = "CHANGE_ME_LLM_MODEL"
+    llm_api_key: str = "CHANGE_ME_LLM_API_KEY"
     llm_max_tokens: int = 8192
     llm_temperature: float = 0.0
     llm_timeout: int = 60  # seconds
 
     # ── Embedding ────────────────────────────────────────────
-    embedding_url: str = "http://localhost:8000/v1"
+    # embedding_model 默认 BGE-large-zh (v1/v2 通用, 非敏感); url/key 走 .env
+    embedding_url: str = "CHANGE_ME_EMBEDDING_URL"
     embedding_model: str = "BAAI/bge-large-zh-v1.5"
-    embedding_api_key: str = "EMPTY"
+    embedding_api_key: str = "CHANGE_ME_EMBEDDING_API_KEY"
 
     # ── Security ─────────────────────────────────────────────
     secret_key: str = "CHANGE_ME_SECRET_KEY"

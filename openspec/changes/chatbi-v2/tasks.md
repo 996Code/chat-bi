@@ -20,7 +20,7 @@
 
 - [x] T012: 语义层 JSON Schema 定义 (Model/Relationship/Metric/Calculated Field + composite metrics) — ✅ 测试覆盖 (test_semantic_schema.py, 13 个)
 - [x] T013: 数据源自动扫描 → 生成初始语义层 JSON — ✅ 测试覆盖 (test_semantic_scan.py, 10 个) + 端到端真库验证 (njmind 5 张业务表, 列注释修复) (AI 自动推断 + confidence 标注)
-- [ ] T014: 语义层 CRUD API + 版本管理 + 回滚
+- [x] T014: 语义层 CRUD API + 版本管理 + 回滚 — ✅ 测试覆盖 (test_semantic_api.py, 13 个全 HTTP) + 端到端 e2e_scan.py 通过 (真实 PG 扫 13 表)
 - [ ] T015: 语义层编辑器 UI (查看/编辑/版本历史/diff)
 - [ ] T016: 知识图谱 AI 推断 (表结构推断 + 外键 + 字段命名模式)
 - [ ] T017: 知识图谱演化 (历史查询挖掘 + 反馈回流 → 更新 confidence)
