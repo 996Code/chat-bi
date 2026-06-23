@@ -1,15 +1,15 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: chatbi-v2 / Phase 2 执行中（T012-T014 + T018 完成，15/54）
-- **状态**: 下一步 T016（知识图谱推断）+ T017（演化，部分交付）
+- **阶段**: chatbi-v2 / Phase 2 完成（T012-T018 全部，17/54），下一步 Phase 3
+- **状态**: Phase 2 收尾完成，准备规划 Phase 3（RAG 检索）
 
 ## Phase 进度
 
 | Phase | 名称 | 状态 |
 |-------|------|------|
 | 1 | 基础设施 | ✅ 已完成（代码就绪，含质量改进 58 测试 / 覆盖率 87%） |
-| 2 | 语义层与知识图谱 | ⏳ 执行中（T012-T014 + T018 完成，15/54） |
+| 2 | 语义层与知识图谱 | ✅ 已完成（T012-T018 全部，17/54） |
 | 3 | RAG 检索与向量化 | 待规划 |
 | 4 | Agent 执行引擎 | 待规划 |
 | 5 | 对话与上下文管理 | 待规划 |
@@ -34,7 +34,7 @@
 **前端** (`frontend/src/`) — 骨架就绪
 - `main.ts` / `App.vue` / `router/` / `ChatView.vue`（占位）/ `api/client.ts`（JWT 拦截器）
 
-**测试** — 108 passed，覆盖率 88% (`pytest backend/tests/ --cov=app`)
+**测试** — 134 passed，覆盖率 83% (`pytest --cov=backend/app`)
 - `test_core.py` — 配置/密钥安全/JWT/SQL 校验/Fernet/健康检查（13 个）
 - `test_infrastructure.py` — 模型/Checkpointer/记忆/缓存（11 个）
 - `test_semantic_schema.py` — 语义层 JSON Schema（13 个，T012）
@@ -80,8 +80,10 @@
 - 2026-06-23: Phase 2 Wave 0 三前置（Fernet/动态引擎/LLM client，19 测试）+ T018 复合指标（8 测试）。测试 68→95
 - 2026-06-23: Phase 2 T014 语义层 CRUD API（13 个全 HTTP 测试）+ 端到端 e2e_scan.py 通过（真实 PG 扫 13 表生成语义层）。修复 conftest 引擎隔离缺陷（StaticPool 共享连接）。测试 95→108
 - 2026-06-23: 清除 v1 遗留硬编码（config.py 的 qwen3-30b/localhost:8000/EMPTY/postgres:postgres→CHANGE_ME 占位符 + deploy/.env.example 的 LLM_MODEL + e2e 脚本走 config）。对标 v1 #44，fail-closed 设计
+- 2026-06-23: 最小可视化前端（LoginView + DataSourceView + SemanticView）+ dev-token 端点。修复扫描超时（asyncio.gather 并行 + 跳系统表，40s→7s）+ FK 冲突（dev_user→admin_user）+ 前端隐藏系统表退化提示
+- 2026-06-23: uv 依赖管理（uv.lock，93 包）+ pyproject 提到项目根 + start-backend.sh 清 shell 环境变量
+- 2026-06-23: Phase 2 收尾 — T016 知识图谱 AI 推断（name_pattern 0.6 + ai_inferred 0.7，去重不写回）+ T017 知识图谱演化（mine_implicit_relationships 频繁 JOIN 提升 + apply_feedback_signals 纠正/点赞三态，算法先行 e2e 留 Phase 6）。测试 108→134，覆盖率 83%
 
 ## 下一步
-执行 Phase 2 / T012（语义层 JSON Schema 定义）—— `/ai:do` 推进。
-计划文档：`.planning/phases/chatbi-v2/02-PLAN.md`（4 Wave：T012 地基 → T013/T014 扫描+CRUD → T018 复合指标 → T015/T016/T017 前端+知识图谱）。
-顺带在 T014 清 Phase 1 遗留债（T006 多租户 + T008 审计测试）。
+Phase 2 全部完成（T012-T018）。下一步规划 **Phase 3（RAG 检索与向量化，T019-T024）**。
+计划文档：`.planning/phases/chatbi-v2/02-PLAN.md`（已完成的 4 Wave）。

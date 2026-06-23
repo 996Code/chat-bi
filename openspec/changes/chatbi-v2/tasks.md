@@ -21,9 +21,9 @@
 - [x] T012: 语义层 JSON Schema 定义 (Model/Relationship/Metric/Calculated Field + composite metrics) — ✅ 测试覆盖 (test_semantic_schema.py, 13 个)
 - [x] T013: 数据源自动扫描 → 生成初始语义层 JSON — ✅ 测试覆盖 (test_semantic_scan.py, 10 个) + 端到端真库验证 (njmind 5 张业务表, 列注释修复) (AI 自动推断 + confidence 标注)
 - [x] T014: 语义层 CRUD API + 版本管理 + 回滚 — ✅ 测试覆盖 (test_semantic_api.py, 13 个全 HTTP) + 端到端 e2e_scan.py 通过 (真实 PG 扫 13 表)
-- [ ] T015: 语义层编辑器 UI (查看/编辑/版本历史/diff)
-- [ ] T016: 知识图谱 AI 推断 (表结构推断 + 外键 + 字段命名模式)
-- [ ] T017: 知识图谱演化 (历史查询挖掘 + 反馈回流 → 更新 confidence)
+- [ ] T015: 语义层编辑器 UI (查看/编辑/版本历史/diff) — *延后到前端集中 phase*
+- [x] T016: 知识图谱 AI 推断 (表结构推断 + 外键 + 字段命名模式) — ✅ 测试覆盖 (test_knowledge_graph.py, 13 个; name_pattern 0.6 + ai_inferred 0.7, 去重不写回)
+- [x] T017: 知识图谱演化 (历史查询挖掘 + 反馈回流 → 更新 confidence) — ✅ 算法 + 单元测试覆盖 (test_knowledge_graph_evolution.py, 13 个; e2e 留 Phase 6)
 - [x] T018: 复合指标支持 (子指标递归展开 + factor_metric_names，对标海泰 MetricContext) — ✅ 测试覆盖 (test_composite_metric.py, 8 个; 含 to_schema_context 序列化)
 
 ## Phase 3: RAG 检索与向量化（1 周）
