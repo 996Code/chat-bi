@@ -1,0 +1,171 @@
+"""
+T019 前置: 向量存储抽象层 + Mock 实现
+
+对标:
+  - RAG-001 (openspec spec): 向量索引构建 (upsert) + 增量更新 (delete + upsert)
+  - RAG-002: 向量检索 (search) + score 过滤 (>= 0.5)
+  - RAG-005: 标量过滤 (table_name 精确匹配，非向量检索)
+
+设计要点 (对标 5 大设计原则 — 可演化):
+  - VectorStore Protocol: 抽象接口，实现可切换 (Milvus / pgvector / Mock)
+    不绑死 pymilvus，未来换 pgvector 或测试用 Mock 都不改调用方
+  - MockVectorStore: 纯内存 + 余弦相似度，CI 不依赖外部服务
+  - 维度由构造参数决定，不强绑 1024 (embedding 模型确定后再定 dim)
+
+为什么先做这层:
+  - embedding 维度 + Milvus 连通性都还没定，但这层接口是稳定的
+  - T020 (索引构建) / T022 (检索) / T021 (增量更新) 全依赖这层抽象
+  - 先把 Mock 跑通，真实 Milvus 实现等连通后填 (依赖注入切换)
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+
+
+# ── 数据结构 ──────────────────────────────────────────────────
+
+@dataclass
+class VectorRecord:
+    """一条向量记录: id + 向量 + 标量元数据 + 原文(可选)。
+
+    对标 Milvus: primary key + FLOAT_VECTOR + 标量字段。
+    对标 RAG-005: metadata 里放 table_name / data_type 等供标量过滤。
+    """
+    id: str
+    vector: list[float]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    text: str | None = None  # 原文（调试/缓存用，不参与检索）
+
+
+@dataclass
+class SearchResult:
+    """检索结果: 记录 + 相似度分数 [0, 1]。"""
+    record: VectorRecord
+    score: float
+
+
+# ── 抽象接口 ──────────────────────────────────────────────────
+
+@runtime_checkable
+class VectorStore(Protocol):
+    """向量存储抽象。
+
+    所有实现 (Milvus/pgvector/Mock) 必须满足此接口。
+    调用方 (T020 索引构建 / T022 检索) 只依赖此接口，不依赖具体实现。
+    """
+
+    async def upsert(self, records: list[VectorRecord]) -> None:
+        """插入或更新（同 id 覆盖）。对标 RAG-001 增量更新。"""
+        ...
+
+    async def search(
+        self,
+        query_vector: list[float],
+        top_k: int = 20,
+        score_threshold: float = 0.0,
+        filter: dict[str, Any] | None = None,
+    ) -> list[SearchResult]:
+        """向量检索。对标 RAG-002: top-K + score 过滤 + 标量过滤。
+
+        Args:
+            query_vector: 查询向量
+            top_k: 召回数量 (默认 20，对标 RAG-002 K=20)
+            score_threshold: score < 此值的结果过滤 (默认不过滤；RAG-002 用 0.5)
+            filter: 标量精确匹配过滤 (对标 RAG-005 table_name)
+        """
+        ...
+
+    async def delete(self, ids: list[str]) -> None:
+        """按 id 删除。"""
+        ...
+
+    async def delete_by_filter(self, filter: dict[str, Any]) -> int:
+        """按标量过滤批量删，返回删除数量。对标 RAG-001: 删某数据源全量向量。"""
+        ...
+
+    async def get(self, id: str) -> VectorRecord | None:
+        """按 id 取（调试/测试用）。"""
+        ...
+
+    async def count(self) -> int:
+        """记录总数（测试/监控用）。"""
+        ...
+
+
+# ── Mock 实现 (纯内存 + 余弦相似度) ───────────────────────────
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """余弦相似度 [-1, 1]。零向量 → 0。"""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _matches_filter(metadata: dict[str, Any], filter: dict[str, Any]) -> bool:
+    """标量精确匹配: metadata 里所有 filter 键值都相等。"""
+    return all(metadata.get(k) == v for k, v in filter.items())
+
+
+class MockVectorStore:
+    """内存向量存储，余弦相似度，CI 不依赖外部服务。
+
+    语义与真实 Milvus 对齐:
+      - upsert 同 id 覆盖
+      - search 按余弦相似度降序 + top_k + score_threshold + filter
+      - 维度校验 (防 schema 错配)
+    """
+
+    def __init__(self, dim: int):
+        self.dim = dim
+        self._records: dict[str, VectorRecord] = {}
+
+    async def upsert(self, records: list[VectorRecord]) -> None:
+        for rec in records:
+            if len(rec.vector) != self.dim:
+                raise ValueError(
+                    f"vector dimension mismatch: record {rec.id} has "
+                    f"dim={len(rec.vector)}, store expects dim={self.dim}"
+                )
+            self._records[rec.id] = rec
+
+    async def search(
+        self,
+        query_vector: list[float],
+        top_k: int = 20,
+        score_threshold: float = 0.0,
+        filter: dict[str, Any] | None = None,
+    ) -> list[SearchResult]:
+        scored: list[SearchResult] = []
+        for rec in self._records.values():
+            if filter and not _matches_filter(rec.metadata, filter):
+                continue
+            score = _cosine_similarity(query_vector, rec.vector)
+            if score < score_threshold:
+                continue
+            scored.append(SearchResult(record=rec, score=score))
+        scored.sort(key=lambda r: r.score, reverse=True)
+        return scored[:top_k]
+
+    async def delete(self, ids: list[str]) -> None:
+        for id_ in ids:
+            self._records.pop(id_, None)
+
+    async def delete_by_filter(self, filter: dict[str, Any]) -> int:
+        to_delete = [
+            id_ for id_, rec in self._records.items()
+            if _matches_filter(rec.metadata, filter)
+        ]
+        for id_ in to_delete:
+            del self._records[id_]
+        return len(to_delete)
+
+    async def get(self, id: str) -> VectorRecord | None:
+        return self._records.get(id)
+
+    async def count(self) -> int:
+        return len(self._records)

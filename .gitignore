@@ -24,6 +24,9 @@ env/
 *.db
 *.sqlite3
 
+# 本地基础设施数据（docker/docker-compose.infra.yml 的 bind mount）
+docker/data/
+
 # IDE
 .vscode/
 .idea/

@@ -16,20 +16,42 @@ from app.core.logging import setup_logging
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan — startup and shutdown hooks."""
+    """Application lifespan — startup and shutdown hooks.
+
+    对标: 连接池/客户端单例在启动时预热，关闭时优雅释放。
+    Redis/Milvus 连接失败不阻塞启动（降级模式，对标 v1 fail-closed）。
+    """
     # Startup
     setup_logging()
     validate_settings_on_startup()
 
-    settings = get_settings()
+    # 预热连接（best-effort，失败降级，不阻塞启动）
+    # Redis: 语义缓存(T023)/限流用；连不上 → 降级跳过缓存
+    from app.core.redis_client import get_redis, close_redis
+    try:
+        await get_redis()
+    except Exception:
+        pass  # get_redis 内部已处理降级
 
-    # TODO: Phase 1 — Initialize database connection pool, Redis, Milvus
-    # TODO: Phase 1 — Initialize Checkpointer (PostgreSQL)
+    # Milvus: 向量检索(T019+); 启动时探测连通性，连不上不阻塞
+    # (本地 infra 可能未起；真正用时再连，降级为检索无结果)
+    from app.core.milvus_client import get_milvus_client, close_milvus
+    try:
+        get_milvus_client()
+    except Exception:
+        pass
 
     yield
 
-    # Shutdown
-    # TODO: Phase 1 — Close connection pools
+    # Shutdown — 优雅释放连接池
+    try:
+        await close_redis()
+    except Exception:
+        pass
+    try:
+        close_milvus()
+    except Exception:
+        pass
 
 
 def create_app() -> FastAPI:
