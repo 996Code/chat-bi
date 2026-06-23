@@ -10,6 +10,7 @@ from typing import Any
 
 from jose import JWTError, jwt
 import bcrypt
+from cryptography.fernet import Fernet
 
 from app.core.config import get_settings
 
@@ -30,6 +31,33 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         plain_password.encode("utf-8"),
         hashed_password.encode("utf-8"),
     )
+
+
+# DataSource password encryption (Fernet symmetric, 对标 v1 #38/#44)
+#
+# 区别于上面的 bcrypt (用户密码: 单向哈希, 不可还原),
+# 数据源密码需要解密后才能连库 → 用 Fernet 对称加密, 密钥从 config 注入。
+# 密钥与密文理论上同机仍有风险 (#38), 生产建议 KMS/IAM; 当前至少不硬编码 (#44)。
+
+_fernet_instance: Fernet | None = None
+
+
+def _get_fernet() -> Fernet:
+    """模块级缓存的 Fernet 实例（密钥来自 settings.fernet_key）。"""
+    global _fernet_instance
+    if _fernet_instance is None:
+        _fernet_instance = Fernet(get_settings().fernet_key.encode())
+    return _fernet_instance
+
+
+def encrypt_password(plain: str) -> str:
+    """加密数据源密码 → 返回 Fernet token 字符串。"""
+    return _get_fernet().encrypt(plain.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_password(token: str) -> str:
+    """解密数据源密码 → 返回明文。密钥错误抛 InvalidToken。"""
+    return _get_fernet().decrypt(token.encode("utf-8")).decode("utf-8")
 
 
 # JWT

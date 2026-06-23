@@ -1,0 +1,102 @@
+"""
+T016-preC: LLM client 封装 (AsyncOpenAI) + 中文推断
+
+对标: milvus_client.py / redis_client.py 的单例封装范式。
+讯飞 MAAS 用 OpenAI 兼容协议 (base_url + api_key), 直接用 AsyncOpenAI 对接。
+
+设计:
+  - get_llm_client / get_embedding_client: 模块级单例, 配置来自 settings
+  - infer_column_chinese: 调 LLM 批量补中文 display_name, 失败降级为空 dict
+    (宁缺毋滥: LLM 挂了不阻塞扫描, 退化用列名即可)
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Optional
+
+from openai import AsyncOpenAI
+
+from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+_llm_client: Optional[AsyncOpenAI] = None
+_embedding_client: Optional[AsyncOpenAI] = None
+
+
+def get_llm_client() -> AsyncOpenAI:
+    """对话/推断用的 LLM client 单例。"""
+    global _llm_client
+    if _llm_client is not None:
+        return _llm_client
+    settings = get_settings()
+    _llm_client = AsyncOpenAI(
+        base_url=settings.llm_url,
+        api_key=settings.llm_api_key,
+        timeout=settings.llm_timeout,
+    )
+    return _llm_client
+
+
+def get_embedding_client() -> AsyncOpenAI:
+    """Embedding client 单例（可能与 LLM 是不同 endpoint/key）。"""
+    global _embedding_client
+    if _embedding_client is not None:
+        return _embedding_client
+    settings = get_settings()
+    _embedding_client = AsyncOpenAI(
+        base_url=settings.embedding_url,
+        api_key=settings.embedding_api_key,
+        timeout=settings.llm_timeout,
+    )
+    return _embedding_client
+
+
+def reset_clients() -> None:
+    """重置单例（测试用）。"""
+    global _llm_client, _embedding_client
+    _llm_client = None
+    _embedding_client = None
+
+
+async def infer_column_chinese(table_name: str, columns: list[dict]) -> dict[str, str]:
+    """调 LLM 批量推断列的中文 display_name。
+
+    对标 v1 教训 #15: 元数据质量是准确率根本（中文描述为空 → LLM 只能猜）。
+    本函数给"无注释的列"补中文语义。
+
+    Args:
+        table_name: 表名（给 LLM 上下文）
+        columns: 列列表，每项含 name + 可选 data_type
+
+    Returns:
+        {列名: 中文名} 映射。失败/异常返回空 dict（降级，不抛）。
+    """
+    settings = get_settings()
+    col_desc = ", ".join(
+        f"{c['name']}({c.get('data_type', '')})" for c in columns
+    )
+    prompt = (
+        f"你是数据库语义推断助手。表名: {table_name}\n"
+        f"列: {col_desc}\n\n"
+        f"为每个列推断一个简洁的中文展示名（display_name）。"
+        f"只返回 JSON，格式: {{\"列名\": \"中文名\"}}，不要解释。"
+    )
+
+    try:
+        client = get_llm_client()
+        resp = await client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature,
+        )
+        content = resp.choices[0].message.content or ""
+        return json.loads(content)
+    except json.JSONDecodeError:
+        logger.warning("infer_column_chinese: LLM 返回非法 JSON, 降级为空 dict")
+        return {}
+    except Exception as e:
+        logger.warning("infer_column_chinese: LLM 调用失败, 降级为空 dict: %s", e)
+        return {}

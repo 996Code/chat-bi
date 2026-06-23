@@ -85,6 +85,46 @@ class TestSecurity:
         assert not validate_sql_select_only("INSERT INTO users VALUES (1, 'x')")
 
 
+class TestFernet:
+    """T014-preA: 数据源密码 Fernet 对称加密。
+
+    对标 v1 经验教训 #38: 密钥不能与密文同机（密钥从 config 注入）+ #44 不硬编码。
+    Fernet 保证: 加密后解密可还原；密文每次不同（带时间戳+IV）；无法逆推。
+    """
+
+    def test_encrypt_decrypt_roundtrip(self):
+        from app.core.security import encrypt_password, decrypt_password
+
+        plain = "my-db-password-123!@#"
+        token = encrypt_password(plain)
+        assert decrypt_password(token) == plain
+
+    def test_ciphertext_differs_from_plaintext(self):
+        from app.core.security import encrypt_password
+
+        token = encrypt_password("secret")
+        assert token != "secret"
+        assert "secret" not in token  # 明文不出现在密文里
+
+    def test_same_plaintext_different_ciphertext(self):
+        """Fernet 每次加密结果不同（带时间戳+IV），无法通过比对密文判断明文是否相同。"""
+        from app.core.security import encrypt_password
+
+        t1 = encrypt_password("same-password")
+        t2 = encrypt_password("same-password")
+        assert t1 != t2
+
+    def test_wrong_key_fails_to_decrypt(self):
+        """密钥错误解不开（对标 #38: 密钥是解密的唯一凭证）。"""
+        from cryptography.fernet import Fernet, InvalidToken
+        from app.core.security import encrypt_password
+
+        token = encrypt_password("data")
+        wrong_key = Fernet.generate_key()
+        with pytest.raises(InvalidToken):
+            Fernet(wrong_key).decrypt(token.encode())
+
+
 class TestAppHealth:
     """T001: FastAPI app health check."""
 

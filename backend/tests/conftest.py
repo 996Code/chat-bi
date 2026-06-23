@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Force test settings before any imports
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["SECRET_KEY"] = "test-secret-key-change-in-production-abcdef123456"
-os.environ["FERNET_KEY"] = "test-fernet-key-change-in-production-abcdef123456="
+# Fernet key 必须是 32 字节 url-safe base64（合法格式才能被 Fernet 接受）
+os.environ["FERNET_KEY"] = "3OO-go6es96rvMajcdliCWYpXiwvZ_Sckkpe0pQKF40="
 os.environ["LOG_LEVEL"] = "WARNING"
 os.environ["ENV_FILE"] = ""  # Prevent loading .env from disk
 
