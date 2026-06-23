@@ -152,6 +152,8 @@ async def scan_data_source_endpoint(
     try:
         url = datasource_to_url(ds)
         inspector = pool.get_inspector(ds_id, url)
+        # 同步扫描拿到结构 + 注释 (infer_llm 不在此传, 因为它是同步函数,
+        # 而 LLM 调用是 async。LLM 推断在扫描后单独跑, 再 patch 回结果)
         content = scan_data_source(inspector)
     except Exception as e:
         await write_audit_log(
@@ -164,6 +166,13 @@ async def scan_data_source_endpoint(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"扫描失败: {type(e).__name__}",
         )
+
+    # LLM 中文推断: 给无注释的表/列补 display_name (对标 v1 #15 元数据质量)
+    # scanner 是同步的, LLM 是 async, 所以扫描后单独跑再 patch 回 content
+    try:
+        await _enrich_with_llm(content)
+    except Exception:
+        pass  # LLM 推断失败不阻塞扫描 (宁缺毋滥, 退化列名已可用)
 
     # 版本管理: 新版本号 = max(version)+1, 旧版本 is_current=False
     max_version = (
@@ -214,3 +223,38 @@ async def scan_data_source_endpoint(
         "table_count": len(content.models),
         "models": [m.name for m in content.models],
     }
+
+
+async def _enrich_with_llm(content) -> None:
+    """扫描后用 LLM 给无注释的列补中文 display_name (原地 patch)。
+
+    对标 v1 经验教训 #15: 元数据质量是准确率根本。
+    有注释的列不动 (source=manual), 只补 source=auto_inferred 且 confidence=0.5
+    (退化列名) 的那些 → 补完后升 source=auto_inferred, confidence=0.8。
+
+    LLM 失败静默降级 (退化列名已可用, 不阻塞扫描)。
+    """
+    from app.core.llm_client import infer_column_chinese
+
+    for model in content.models:
+        # 找出需要 LLM 推断的列 (退化列名: source=auto_inferred 且 confidence=0.5)
+        needs_infer = [
+            c for c in model.columns
+            if c.source == "auto_inferred" and c.confidence == 0.5
+        ]
+        if not needs_infer:
+            continue
+
+        cols_for_llm = [{"name": c.name, "data_type": c.data_type} for c in needs_infer]
+        inferred = await infer_column_chinese(model.name, cols_for_llm)
+
+        if not inferred:
+            continue  # LLM 没返回, 保持退化列名
+
+        # patch: 补上中文, 提升 confidence (0.5 → 0.8)
+        name_to_col = {c.name: c for c in needs_infer}
+        for col_name, display_name in inferred.items():
+            if col_name in name_to_col:
+                col = name_to_col[col_name]
+                col.display_name = display_name
+                col.confidence = 0.8  # LLM 推断, 升级置信度
