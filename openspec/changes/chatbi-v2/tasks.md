@@ -19,7 +19,7 @@
 ## Phase 2: 语义层与知识图谱（1 周）
 
 - [x] T012: 语义层 JSON Schema 定义 (Model/Relationship/Metric/Calculated Field + composite metrics) — ✅ 测试覆盖 (test_semantic_schema.py, 13 个)
-- [ ] T013: 数据源自动扫描 → 生成初始语义层 JSON (AI 自动推断 + confidence 标注)
+- [x] T013: 数据源自动扫描 → 生成初始语义层 JSON — ✅ 测试覆盖 (test_semantic_scan.py, 10 个) + 端到端真库验证 (njmind 5 张业务表, 列注释修复) (AI 自动推断 + confidence 标注)
 - [ ] T014: 语义层 CRUD API + 版本管理 + 回滚
 - [ ] T015: 语义层编辑器 UI (查看/编辑/版本历史/diff)
 - [ ] T016: 知识图谱 AI 推断 (表结构推断 + 外键 + 字段命名模式)
