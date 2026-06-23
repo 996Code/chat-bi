@@ -14,14 +14,11 @@ build/
 venv/
 env/
 
-# Environment files
+# Environment files — 所有 .env* 一律忽略，防止密钥泄露 (v1 教训 #44)
+# 真实配置不入库；模板文件放 deploy/.env.example 和 backend/.env.example
 .env
-.env.local
-*.env.local
-frontend/.env
-!.env.example
-!.env.home
-!.env.office
+.env.*
+!.gitignore
 
 # Database
 *.db
@@ -42,6 +39,7 @@ Thumbs.db
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/*.tsbuildinfo
 
 # Logs
 *.log
