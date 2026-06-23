@@ -36,11 +36,13 @@ class ChatRequest(BaseModel):
     """问答请求。"""
     question: str
     data_source_id: str | None = None  # None → 用用户默认/第一个数据源
+    conversation_id: str | None = None  # None → 新对话; 有值 → 追问 (恢复上下文)
 
 
 class ChatResponse(BaseModel):
     """问答结果 (Agent 全流程产出)。"""
     success: bool
+    conversation_id: str | None = None  # 追问时带上恢复上下文
     intent: str | None = None
     question: str | None = None  # normalized_question
     sql: str | None = None
@@ -169,6 +171,26 @@ async def chat(
     state = AgentState(question=req.question, semantic_content=content)
     state = await run_agent(state, deps)
 
+    # 持久化 Agent 状态到 Checkpointer (对标 AEE-005, 支持追问恢复)
+    import uuid
+    conversation_id = req.conversation_id or str(uuid.uuid4()).replace("-", "")[:32]
+    try:
+        from app.core.checkpointer import get_checkpointer
+        get_checkpointer().save_turn(
+            tenant_id=user.tenant_id,
+            conversation_id=conversation_id,
+            turn_data={
+                "question": req.question,
+                "intent": state.intent_output.intent if state.intent_output else None,
+                "sql": state.sql,
+                "success": state.success,
+                "error": state.error,
+                "stage": state.stage.value,
+            },
+        )
+    except Exception as e:
+        logger.warning("Checkpointer 持久化失败 (不阻塞): %s", e)
+
     # 审计
     await write_audit_log(
         db, tenant_id=user.tenant_id, user_id=user.user_id,
@@ -183,6 +205,7 @@ async def chat(
     exec_result = state.execute_result
     return ChatResponse(
         success=state.success,
+        conversation_id=conversation_id,
         intent=state.intent_output.intent if state.intent_output else None,
         question=state.intent_output.normalized_question if state.intent_output else req.question,
         sql=state.sql or None,
