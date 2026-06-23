@@ -46,8 +46,6 @@ def main() -> int:
         snapshot_download(
             repo_id=MODEL_ID,
             local_dir=str(MODEL_DIR),
-            # 只要模型文件，不要 .git/lfs 冗余
-            local_dir_use_symlinks=False,
         )
     except Exception as e:
         print(f"✗ 下载失败: {e}", file=sys.stderr)
