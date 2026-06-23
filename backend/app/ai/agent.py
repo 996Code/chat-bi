@@ -114,12 +114,14 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
 
         # CLARIFICATION → 需要 ask_user (低置信/追问)
         if intent == "CLARIFICATION":
+            from app.ai.ask_user import AskUserRequest, AskUserReason
             state.stage = AgentStage.FINAL
             state.success = False
             state.error = f"需要澄清: {state.intent_output.reason}"
-            state.ask_user_request = deps.should_ask_for_schema(
-                MagicMock(models=[], no_match_reason=state.intent_output.reason)
-            ) or MagicMock(reason="CLARIFICATION", question=state.intent_output.reason)
+            state.ask_user_request = AskUserRequest(
+                reason=AskUserReason.SCHEMA_AMBIGUOUS,
+                question=state.intent_output.reason or "请提供更具体的问题",
+            )
             return state
 
         # ── Stage 2: schema 检索 ───────────────────────────────

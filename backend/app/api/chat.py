@@ -139,6 +139,21 @@ def _get_embedder():
     return get_embedder()
 
 
+def _normalize_value(v):
+    """DB 行值 → JSON 安全类型 (Decimal/datetime/UUID/bytes 等)。"""
+    from decimal import Decimal
+    import datetime
+    if v is None:
+        return None
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
+        return v.isoformat()
+    if isinstance(v, bytes):
+        return v.decode("utf-8", errors="replace")
+    return v
+
+
 def _chat_rate():
     """查询限流值 (从 config 读, 对标 rate_limit_queries_per_minute)。"""
     from app.core.config import get_settings
@@ -222,7 +237,7 @@ async def chat(
         question=state.intent_output.normalized_question if state.intent_output else req.question,
         sql=state.sql or None,
         columns=list(exec_result.columns) if exec_result and hasattr(exec_result, "columns") else [],
-        rows=[list(r) for r in exec_result.rows] if exec_result and hasattr(exec_result, "rows") else [],
+        rows=[[_normalize_value(v) for v in r] for r in exec_result.rows] if exec_result and hasattr(exec_result, "rows") else [],
         row_count=len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
         truncated=exec_result.truncated if exec_result and hasattr(exec_result, "truncated") else False,
         chart=state.chart_option,

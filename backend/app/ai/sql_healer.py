@@ -78,30 +78,49 @@ def extract_error_code(error: str) -> str | None:
 # ── 熔断器 (对标 Claude Code §6.4) ────────────────────────────
 
 class SelfHealCircuitBreaker:
-    """跨查询连续失败熔断器。
+    """跨查询连续失败熔断器 (三态: closed / open / half-open)。
 
-    连续失败 >= threshold → 熔断 (停止自愈, 避免无限重试浪费 LLM 调用)。
-    成功一次 → 重置计数。
+    closed: 正常工作, 记录失败/成功
+    open: 连续失败 >= threshold, 拒绝自愈 (不调 LLM)
+    half-open: open 后经过 cooldown 秒, 允许一次试探; 成功→closed, 失败→open
+
+    对标 Claude Code §6.4 + 标准熔断器模式 (避免永久锁死)。
     """
 
-    def __init__(self, threshold: int = 3):
+    def __init__(self, threshold: int = 3, cooldown_seconds: int = 60):
+        import time
         self._threshold = threshold
+        self._cooldown_seconds = cooldown_seconds
         self._consecutive_failures = 0
+        self._tripped_at: float = 0.0  # 熔断时刻 (用于 half-open 判断)
 
     def record_failure(self) -> None:
         self._consecutive_failures += 1
-        if self.is_tripped():
+        if self._consecutive_failures >= self._threshold:
+            import time
+            self._tripped_at = time.monotonic()
             logger.error(
                 "自愈熔断器触发: 连续 %d 次失败 (>= %d), 停止自愈",
                 self._consecutive_failures, self._threshold,
             )
 
     def record_success(self) -> None:
+        """自愈成功 → 重置 (closed 状态)。"""
         if self._consecutive_failures > 0:
             self._consecutive_failures = 0
+            self._tripped_at = 0.0
 
     def is_tripped(self) -> bool:
-        return self._consecutive_failures >= self._threshold
+        """是否熔断 (含半开恢复: cooldown 后放行一次试探)。"""
+        if self._consecutive_failures < self._threshold:
+            return False
+        # open 状态: 检查是否过了 cooldown → half-open (放行试探)
+        import time
+        if self._tripped_at and (time.monotonic() - self._tripped_at) > self._cooldown_seconds:
+            logger.info("自愈熔断器进入 half-open, 允许试探一次")
+            self._tripped_at = 0.0  # 标记已进入 half-open (下一次结果决定 closed/open)
+            return False
+        return True
 
     def reset(self) -> None:
         self._consecutive_failures = 0

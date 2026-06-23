@@ -228,3 +228,28 @@ class TestEdgeCases:
         # 但如果带了 DROP 在注释外, Layer1 会抓
         # 这里注释内的 DROP 被 sqlglot 忽略, SELECT 合法 → 应放行
         assert r.ok
+
+
+class TestUnionQueries:
+    """UNION/INTERSECT/EXCEPT 是合法只读查询 (BI 常见, 如合并时段)。"""
+
+    def test_union_passes(self):
+        r = validate_sql(
+            "SELECT 'a' AS x UNION SELECT 'b'",
+            allowed_columns={"x"},
+        )
+        assert r.ok
+
+    def test_union_all_passes(self):
+        r = validate_sql(
+            "SELECT id FROM orders UNION ALL SELECT id FROM orders",
+            allowed_columns={"id"},
+        )
+        assert r.ok
+
+    def test_intersect_passes(self):
+        r = validate_sql(
+            "SELECT id FROM orders INTERSECT SELECT id FROM orders",
+            allowed_columns={"id"},
+        )
+        assert r.ok

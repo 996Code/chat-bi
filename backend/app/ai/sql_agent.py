@@ -123,13 +123,14 @@ async def generate_sql(
     from app.core.prompt_cache import get_prompt_cache
     settings = get_settings()
 
-    # ── Prompt 分层组装 (对标 Claude Code §4, 用 prompt_cache) ──
-    # 静态层 (可缓存, 跨调用复用): 系统规则 + schema + 列约束 + 类型约束
-    # 动态层 (每次重算): 问题 + fewshot + 历史
-    cache = get_prompt_cache()
+    # ── Prompt 分层组装 (对标 Claude Code §4) ──
+    # 用独立 PromptCache 实例 (不共享单例 — schema/columns 每次不同,
+    # 共享单例会跨数据源泄漏白名单)
+    from app.core.prompt_cache import PromptCache
+    cache = PromptCache()
     cache.set_static("system_rules", lambda: _SYSTEM_PROMPT)
-    cache.set_static("schema_type", lambda: _build_datatype_constraint_section(schema_context))
-    cache.set_static("allowed_cols", lambda: _build_allowed_columns_section(allowed_columns))
+    cache.set_dynamic("schema_type", lambda: _build_datatype_constraint_section(schema_context))
+    cache.set_dynamic("allowed_cols", lambda: _build_allowed_columns_section(allowed_columns))
     cache.set_dynamic("context", lambda: _build_dynamic_context(fewshot_examples, history, question, skills))
 
     sections = cache.assemble()

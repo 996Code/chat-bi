@@ -131,12 +131,15 @@ def validate_sql(sql: str | None, allowed_columns: set[str] | None = None) -> Va
 
     stmt = statements[0]
 
-    # 必须是 SELECT (含 WITH CTE / 子查询, 它们顶层仍是 Select)
-    if not isinstance(stmt, exp.Select):
+    # 必须是只读查询类型 (SELECT / UNION / INTERSECT / EXCEPT / CTE)
+    # sqlglot 把这些解析成不同节点: Select, Union, Intersect, Except, Subqueryable
+    # 都不含写操作, 应放行 (UNION 是 BI 常见模式, 如合并两个时段)
+    _READONLY_QUERY_TYPES = (exp.Select, exp.Union, exp.Intersect, exp.Except, exp.Subquery)
+    if not isinstance(stmt, _READONLY_QUERY_TYPES):
         stmt_type = type(stmt).__name__
         return ValidationResult(
             ok=False,
-            reason=f"仅允许 SELECT 语句, 检测到 {stmt_type}",
+            reason=f"仅允许只读查询 (SELECT/UNION/INTERSECT/EXCEPT), 检测到 {stmt_type}",
             violated_layer="AST",
         )
 
