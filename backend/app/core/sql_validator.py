@@ -132,6 +132,13 @@ def validate_sql(sql: str | None, allowed_columns: set[str] | None = None) -> Va
 
     # ── Layer 3: 白名单列 ─────────────────────────────────────
     if allowed_columns:
+        # 提取 SELECT 别名 (AS xxx), 加入白名单 (ORDER BY/GROUP BY 引用别名是合法的)
+        select_aliases = set()
+        for alias_node in stmt.find_all(exp.Alias):
+            if alias_node.alias:
+                select_aliases.add(alias_node.alias)
+        effective_whitelist = allowed_columns | select_aliases
+
         # 提取 SQL 里所有列引用 (Column 节点)
         # SELECT * 无法静态分析列, 跳过 (由 Layer 1/2 兜底)
         for col in stmt.find_all(exp.Column):
@@ -141,7 +148,7 @@ def validate_sql(sql: str | None, allowed_columns: set[str] | None = None) -> Va
             # 忽略通配符和函数参数里的伪列
             if col_name in ("*",):
                 continue
-            if col_name not in allowed_columns:
+            if col_name not in effective_whitelist:
                 return ValidationResult(
                     ok=False,
                     reason=f"列 '{col_name}' 不在语义层白名单内",

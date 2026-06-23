@@ -157,9 +157,13 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         state.thinking = await deps.think(question, schema_context, state.retrieved_models)
         state.llm_call_count += 1
 
-        # ── Stage 4: SQL 生成 + 校验 ──────────────────────────
+        # ── Stage 4+5: SQL 生成/校验/执行/自愈 统一循环 (对标 while-true) ──
+        # 设计: 生成→校验→执行, 任一步失败→自愈(改SQL)→重新校验+执行
+        # (对标 Claude Code §2: 工具是循环延续; 不因单次失败终止)
         state.stage = AgentStage.GENERATE_SQL
         allowed_columns = extract_allowed_columns(state.semantic_content, retrieved_names)
+
+        # 生成首版 SQL
         gen_result = await deps.generate_sql(
             question=question,
             schema_context=schema_context,
@@ -168,50 +172,68 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         )
         state.llm_call_count += 1
 
-        # 生成/校验失败 → final(failed) (上游失败 break)
-        if gen_result.error or not (hasattr(gen_result, "validation") and gen_result.validation.ok):
+        # 生成彻底失败 (LLM 挂了) → final(failed)
+        if gen_result.error and not gen_result.sql:
             state.stage = AgentStage.FINAL
             state.success = False
-            state.error = gen_result.error or "SQL 校验失败"
+            state.error = gen_result.error
             return state
 
         state.sql = gen_result.sql
+        last_error = None  # 校验或执行的错误 (喂给自愈)
 
-        # ── Stage 5: 执行 + 自愈循环 (对标 while-true) ────────
+        # 校验首版 SQL
+        if hasattr(gen_result, "validation") and not gen_result.validation.ok:
+            last_error = f"校验失败 ({gen_result.validation.violated_layer}): {gen_result.validation.reason}"
+
+        # 执行首版 SQL (校验通过才执行)
         state.stage = AgentStage.EXECUTE_SQL
-        exec_result = await deps.execute_sql(state.sql)
-        state.execute_result = exec_result
+        exec_result = None
+        if last_error is None:
+            exec_result = await deps.execute_sql(state.sql)
+            state.execute_result = exec_result
+            if exec_result.error:
+                last_error = exec_result.error
 
-        # 执行失败 → 自愈循环 (最多 max_rounds 轮)
-        while exec_result.error is not None and state.self_heal_rounds < deps.max_self_heal_rounds:
+        # ── 自愈循环: 校验失败/执行失败 → heal → 重新校验+执行 ──
+        while last_error is not None and state.self_heal_rounds < deps.max_self_heal_rounds:
             state.self_heal_rounds += 1
-            logger.info("SQL 执行失败, 自愈第 %d 轮", state.self_heal_rounds)
+            logger.info("SQL 自愈第 %d 轮 (错误: %s)", state.self_heal_rounds, last_error[:80])
 
             heal_result = await deps.heal_sql(
                 sql=state.sql,
-                error=exec_result.error,
+                error=last_error,
                 allowed_columns=allowed_columns,
                 schema_context=schema_context,
             )
             state.llm_call_count += 1
 
             if not heal_result.success:
-                # 自愈失败 → final(failed)
                 state.stage = AgentStage.FINAL
                 state.success = False
                 state.error = f"SQL 自愈失败 ({state.self_heal_rounds} 轮): {heal_result.error}"
                 return state
 
-            # 自愈成功 → 重新执行
+            # 自愈成功 → 更新 SQL, 重新校验 + 执行
             state.sql = heal_result.sql
+            last_error = None
+
+            # 重新校验 (自愈后的 SQL 也走三层校验, v1 教训 #32)
+            if hasattr(heal_result, "validation") and not heal_result.validation.ok:
+                last_error = f"校验失败 ({heal_result.validation.violated_layer}): {heal_result.validation.reason}"
+                continue
+
+            # 重新执行
             exec_result = await deps.execute_sql(state.sql)
             state.execute_result = exec_result
+            if exec_result.error:
+                last_error = exec_result.error
 
-        # 执行仍有错 (自愈耗尽) → final(failed)
-        if exec_result.error is not None:
+        # 仍有错 (自愈耗尽) → final(failed)
+        if last_error is not None:
             state.stage = AgentStage.FINAL
             state.success = False
-            state.error = f"SQL 执行失败 (自愈 {state.self_heal_rounds} 轮未解决): {exec_result.error}"
+            state.error = f"SQL 失败 (自愈 {state.self_heal_rounds} 轮未解决): {last_error}"
             return state
 
         # ── Stage 6: 结果自检 ────────────────────────────────

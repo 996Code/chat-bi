@@ -161,6 +161,26 @@ class TestLayer3WhitelistColumns:
         r = validate_sql("SELECT * FROM orders", allowed_columns=set())
         assert r.ok
 
+    def test_window_function_alias_in_orderby_passes(self):
+        """窗口函数别名在 ORDER BY 引用 → 放行 (别名不是真实列, 不该拦)。
+
+        RANK() OVER(...) AS rank ... ORDER BY rank — rank 是别名不是列。
+        """
+        r = validate_sql(
+            "SELECT id, RANK() OVER (ORDER BY total_amount DESC) AS rnk "
+            "FROM orders ORDER BY rnk",
+            allowed_columns={"id", "total_amount"},  # rnk 是别名不在白名单
+        )
+        assert r.ok
+
+    def test_aggregate_alias_in_orderby_passes(self):
+        """聚合别名在 ORDER BY 引用 → 放行。"""
+        r = validate_sql(
+            "SELECT category, COUNT(*) AS cnt FROM products GROUP BY category ORDER BY cnt DESC",
+            allowed_columns={"category"},  # cnt 是别名
+        )
+        assert r.ok
+
 
 # ── 综合边界 ──────────────────────────────────────────────────
 

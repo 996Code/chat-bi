@@ -63,15 +63,26 @@ class TestCheckResult:
         assert result.ok
 
     def test_null_values_flagged(self):
-        """结果含大量 NULL → 可能 JOIN 方向错/外键错。"""
-        rows = [("a", None), ("b", None), ("c", None)]
+        """JOIN 结果多列全 NULL → JOIN 方向错/外键错。"""
+        # 右表 b 两列(val, extra)全空 → JOIN 方向错
+        rows = [("a", None, None), ("b", None, None), ("c", None, None)]
         result = check_result(
             rows=rows,
-            columns=["name", "joined_value"],
-            sql="SELECT a.name, b.val FROM a LEFT JOIN b ON a.id = b.aid",
+            columns=["name", "val", "extra"],
+            sql="SELECT a.name, b.val, b.extra FROM a LEFT JOIN b ON a.id = b.aid",
         )
         assert not result.ok
         assert result.issue == ResultIssue.ALL_NULL
+
+    def test_single_null_column_not_flagged(self):
+        """单列全 NULL 不报 (可能是该字段普遍为空, 如 remark)。"""
+        rows = [("a", None), ("b", None), ("c", None)]
+        result = check_result(
+            rows=rows,
+            columns=["name", "remark"],
+            sql="SELECT name, remark FROM biz_orders",
+        )
+        assert result.ok  # 单列全空, 正常数据
 
     def test_count_zero_when_aggregate_flagged(self):
         """COUNT 结果是 0 (但不是 0行空结果) → 标记。"""

@@ -61,21 +61,22 @@ def _has_implicit_join(sql: str) -> bool:
     return bool(from_match) and not has_join
 
 
-def _is_all_null(rows: list[tuple]) -> bool:
-    """是否存在某列全 NULL (JOIN 列全空 → JOIN 方向错)。
+def _count_all_null_columns(rows: list[tuple]) -> int:
+    """统计有多少列是全部 NULL。
 
-    不是要求所有列都 NULL, 而是任一列全 NULL 即视为可疑
-    (典型场景: LEFT JOIN 右表无匹配 → 右表列全 NULL)。
+    返回全 NULL 的列数 (0=没有全空列)。
+    用于判断 JOIN 方向错 (右表多列全空), 单列全空不算异常。
     """
     if not rows:
-        return False
+        return 0
     n_cols = len(rows[0])
     if n_cols == 0:
-        return False
+        return 0
+    null_cols = 0
     for col_idx in range(n_cols):
         if all(row[col_idx] is None for row in rows):
-            return True
-    return False
+            null_cols += 1
+    return null_cols
 
 
 def _is_count_zero(rows: list[tuple], sql: str) -> bool:
@@ -113,14 +114,19 @@ def check_result(
             suggestion="检查 WHERE 条件是否过严, 或换一个查询维度",
         )
 
-    # 2. 全 NULL
-    if _is_all_null(rows):
-        return CheckResult(
-            ok=False,
-            issue=ResultIssue.ALL_NULL,
-            reason="结果全部为 NULL, 可能 JOIN 方向错误或外键不匹配",
-            suggestion="检查 JOIN 的表和外键方向, 可能需要换 JOIN 方向 (LEFT↔RIGHT)",
-        )
+    # 2. 全 NULL (仅 JOIN 场景有意义; 单表某列可空是正常数据)
+    sql_upper = sql.upper()
+    has_join = "JOIN" in sql_upper
+    if has_join:
+        null_col_count = _count_all_null_columns(rows)
+        # 多列全 NULL 才报 (单列全 NULL 可能只是该字段普遍为空, 如 remark)
+        if null_col_count >= 2:
+            return CheckResult(
+                ok=False,
+                issue=ResultIssue.ALL_NULL,
+                reason=f"结果中 {null_col_count} 列全部为 NULL, 可能 JOIN 方向错误或外键不匹配",
+                suggestion="检查 JOIN 的表和外键方向, 可能需要换 JOIN 方向 (LEFT↔RIGHT)",
+            )
 
     # 3. 笛卡尔积 (行数爆炸 + 隐式 JOIN)
     if _has_implicit_join(sql) and len(rows) > _CARTESIAN_ROW_THRESHOLD:
