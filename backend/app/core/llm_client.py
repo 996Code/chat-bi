@@ -93,10 +93,9 @@ async def infer_column_chinese(table_name: str, columns: list[dict]) -> dict[str
             temperature=settings.llm_temperature,
         )
         content = resp.choices[0].message.content or ""
-        return json.loads(content)
-    except json.JSONDecodeError:
-        logger.warning("infer_column_chinese: LLM 返回非法 JSON, 降级为空 dict")
-        return {}
+        from app.core.llm_json import parse_json_response
+        result = parse_json_response(content)
+        return result if isinstance(result, dict) else {}
     except Exception as e:
         logger.warning("infer_column_chinese: LLM 调用失败, 降级为空 dict: %s", e)
         return {}

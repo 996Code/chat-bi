@@ -139,7 +139,10 @@ async def classify_intent(question: str, llm_client) -> IntentOutput:
                 temperature=0.0,
             )
             content = resp.choices[0].message.content or ""
-            parsed = json.loads(content)
+            from app.core.llm_json import parse_json_response
+            parsed = parse_json_response(content)
+            if parsed is None:
+                raise ValueError("LLM 未返回有效 JSON")
             output = IntentOutput(**parsed)
 
             # confidence < 阈值 → 降级 CLARIFICATION

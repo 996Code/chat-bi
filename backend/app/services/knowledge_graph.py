@@ -161,10 +161,11 @@ async def _infer_relationships_by_llm(
             temperature=0.1,
         )
         content = resp.choices[0].message.content or ""
-        raw_list = json.loads(content)
-    except json.JSONDecodeError:
-        logger.warning("_infer_relationships_by_llm: LLM 返回非法 JSON, 降级为空")
-        return []
+        from app.core.llm_json import parse_json_response
+        raw_list = parse_json_response(content)
+        if raw_list is None:
+            logger.warning("_infer_relationships_by_llm: LLM 返回非法 JSON, 降级为空")
+            return []
     except Exception as e:
         logger.warning("_infer_relationships_by_llm: LLM 调用失败, 降级为空: %s", e)
         return []

@@ -228,17 +228,11 @@ async def generate_chart(
         option = infer_chart_by_rule(columns, rows)
         return ChartResult(ok=option is not None, option=option, degraded=True, error=str(e))
 
-    # 2. 解析 JSON (含 T035 自愈)
-    content = content.strip()
-    # 去 markdown 包裹
-    content = re.sub(r"^```(?:json)?\s*\n?", "", content)
-    content = re.sub(r"\n?```\s*$", "", content)
-
-    try:
-        option = json.loads(content)
+    # 2. 解析 JSON (统一用 parse_json_response, 含 T035 自愈)
+    from app.core.llm_json import parse_json_response
+    option = parse_json_response(content)
+    if option is not None and isinstance(option, dict):
         return ChartResult(ok=True, option=option)
-    except json.JSONDecodeError:
-        pass
 
     # 3. T035 JSON 自愈 (补括号)
     healed, ok = heal_json(content)

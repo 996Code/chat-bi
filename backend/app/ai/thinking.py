@@ -90,13 +90,17 @@ async def think(
         return ThinkingResult(error=str(e))
 
     try:
-        parsed = json.loads(content)
+        from app.core.llm_json import parse_json_response
+        parsed = parse_json_response(content)
+        if parsed is None:
+            logger.warning("预思考返回非 JSON, 降级为空")
+            return ThinkingResult(raw=content, error="LLM 返回非 JSON")
         return ThinkingResult(
             tables=parsed.get("tables", []),
             aggregation=parsed.get("aggregation", ""),
             caveats=parsed.get("caveats", []),
             raw=content,
         )
-    except json.JSONDecodeError:
+    except Exception:
         logger.warning("预思考返回非 JSON, 降级为空")
         return ThinkingResult(raw=content, error="LLM 返回非 JSON")

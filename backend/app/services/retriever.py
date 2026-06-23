@@ -147,10 +147,11 @@ async def _llm_refine(
             temperature=0.0,
         )
         content = resp.choices[0].message.content or ""
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        logger.warning("_llm_refine: LLM 返回非法 JSON, 降级返回原始召回")
-        return RetrievalResult(models=_candidates_to_models(candidates), degraded=True)
+        from app.core.llm_json import parse_json_response
+        parsed = parse_json_response(content)
+        if parsed is None:
+            logger.warning("_llm_refine: LLM 未返回有效 JSON, 降级返回原始召回")
+            return RetrievalResult(models=_candidates_to_models(candidates), degraded=True)
     except Exception as e:
         logger.warning("_llm_refine: LLM 精筛失败, 降级返回原始召回: %s", e)
         return RetrievalResult(models=_candidates_to_models(candidates), degraded=True)
