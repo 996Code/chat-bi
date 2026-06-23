@@ -57,6 +57,8 @@ class AgentState:
     execute_result: Any = None
     check_result: Any = None
     chart_option: dict | None = None
+    # 语义层内容 (白名单列 + schema context 的权威来源, 对标 RAG-005)
+    semantic_content: Any = None  # SemanticModelContent
     # 计数器 (对标 query.ts 循环保护)
     llm_call_count: int = 0
     self_heal_rounds: int = 0
@@ -144,14 +146,20 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             return state
 
         # ── Stage 3: 预思考 ───────────────────────────────────
-        schema_context = _build_schema_context(state.retrieved_models)
+        # schema context + 白名单列从语义层取 (权威来源, 不靠检索文本正则猜)
+        from app.ai.schema_utils import build_schema_context, extract_allowed_columns
+        retrieved_names = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
+        schema_context = build_schema_context(state.semantic_content, retrieved_names)
+        if not schema_context:
+            # 语义层为空时退化用检索文本 (兜底)
+            schema_context = _build_schema_context_fallback(state.retrieved_models)
         state.schema_context = schema_context
         state.thinking = await deps.think(question, schema_context, state.retrieved_models)
         state.llm_call_count += 1
 
         # ── Stage 4: SQL 生成 + 校验 ──────────────────────────
         state.stage = AgentStage.GENERATE_SQL
-        allowed_columns = _extract_allowed_columns(state.retrieved_models)
+        allowed_columns = extract_allowed_columns(state.semantic_content, retrieved_names)
         gen_result = await deps.generate_sql(
             question=question,
             schema_context=schema_context,
@@ -251,8 +259,12 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         return state
 
 
-def _build_schema_context(models: list[dict]) -> str:
-    """从检索结果构建 schema_context (供 SQL 生成 prompt)。"""
+def _build_schema_context_fallback(models: list[dict]) -> str:
+    """兜底: 语义层为空时, 从检索结果 text 构建 schema_context。
+
+    正常路径用 schema_utils.build_schema_context (从语义层完整定义),
+    这个仅当 semantic_content 缺失时兜底 (不靠正则猜列名)。
+    """
     if not models:
         return ""
     lines = []
@@ -261,19 +273,3 @@ def _build_schema_context(models: list[dict]) -> str:
         text = m.get("text", "")
         lines.append(f"{name}: {text}")
     return "\n".join(lines)
-
-
-def _extract_allowed_columns(models: list[dict]) -> set[str]:
-    """从检索结果提取白名单列 (简化: 实际应从语义层完整列定义取)。
-
-    TODO: 完整实现应从 SemanticModelContent 取全部列名,
-    这里先从检索结果的 text 提取占位 (Phase 4 后续完善)。
-    """
-    cols = set()
-    import re
-    for m in models:
-        text = m.get("text", "")
-        # text 格式 "表名 描述 列名(中文名)[类型] ..."
-        for match in re.finditer(r"(\w+)\(", text):
-            cols.add(match.group(1))
-    return cols

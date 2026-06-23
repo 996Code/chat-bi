@@ -42,16 +42,26 @@ class ExecuteResult:
 
 
 def _inject_limit(sql: str, max_rows: int) -> str:
-    """无 LIMIT 的 SELECT 自动加 LIMIT max_rows (防全表扫描 OOM)。
+    """无顶层 LIMIT 的 SELECT 自动加 LIMIT max_rows (防全表扫描 OOM)。
 
-    简单检测: SQL 末尾(忽略空白/分号/注释)是否有 LIMIT。
-    不用 AST 是因为执行阶段信任 T030 已校验过, 这里只做安全兜底。
+    用 sqlglot AST 判断顶层是否有 Limit (对标 v1 教训 #46: 不用字符串检测)。
+    子查询里的 LIMIT 不算 (外层仍可能全表扫描)。
     """
-    sql_upper = sql.upper().strip().rstrip(";").strip()
-    # 已有 LIMIT (任意位置出现) → 不重复加
-    if re.search(r"\bLIMIT\b", sql_upper):
-        return sql
-    return f"{sql} LIMIT {max_rows}"
+    try:
+        import sqlglot
+        from sqlglot import exp
+        stmt = sqlglot.parse_one(sql, read="postgres")
+        # 顶层 Limit 直接挂在 stmt.args['limit'] (子查询的 Limit 不在这)
+        if stmt.args.get("limit") is not None:
+            return sql
+        # 顶层无 Limit → 加
+        return stmt.limit(max_rows).sql(dialect="postgres")
+    except Exception:
+        # parse 失败 (T030 应已拦截, 这里兜底) → 字符串兜底加
+        sql_clean = sql.strip().rstrip(";").strip()
+        if re.search(r"\bLIMIT\b", sql_clean, re.IGNORECASE):
+            return sql
+        return f"{sql_clean} LIMIT {max_rows}"
 
 
 def _execute_sync(

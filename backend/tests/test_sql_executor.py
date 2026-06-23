@@ -191,7 +191,7 @@ class TestSafetyLimit:
 
     @pytest.mark.asyncio
     async def test_limit_not_injected_if_present(self):
-        """已有 LIMIT → 不重复加。"""
+        """已有顶层 LIMIT → 不重复加。"""
         engine, conn = _mock_engine([(1,)], ["id"])
         pool = MagicMock()
         pool.get_or_create.return_value = engine
@@ -200,3 +200,37 @@ class TestSafetyLimit:
 
         executed_sql = str(conn.execute.call_args[0][0]).upper()
         assert executed_sql.count("LIMIT") == 1
+
+    @pytest.mark.asyncio
+    async def test_subquery_limit_still_gets_outer_limit(self):
+        """子查询有 LIMIT 但外层没有 → 外层仍要加 (修复: 正则误判)。
+
+        之前字符串检测看到子查询 LIMIT 就不加外层 → 外层可能全表扫描。
+        现在用 AST 判断顶层, 子查询 LIMIT 不算。
+        """
+        engine, conn = _mock_engine([(1,)], ["id"])
+        pool = MagicMock()
+        pool.get_or_create.return_value = engine
+
+        await execute_sql(
+            "SELECT * FROM (SELECT * FROM t LIMIT 5) x",
+            "ds1", "x", pool, max_rows=1000,
+        )
+
+        executed_sql = str(conn.execute.call_args[0][0]).upper()
+        # 外层应被加上 LIMIT (count >= 2: 子查询1 + 外层1)
+        assert executed_sql.count("LIMIT") >= 2
+
+    @pytest.mark.asyncio
+    async def test_limit_with_semicolon_handled(self):
+        """带分号的 SQL 加 LIMIT 不出错 (修复: 之前加分号后)。"""
+        engine, conn = _mock_engine([(1,)], ["id"])
+        pool = MagicMock()
+        pool.get_or_create.return_value = engine
+
+        await execute_sql("SELECT * FROM t;", "ds1", "x", pool, max_rows=1000)
+
+        executed_sql = str(conn.execute.call_args[0][0])
+        # LIMIT 不应出现在分号之后
+        assert ";" not in executed_sql or executed_sql.rstrip().endswith("1000")
+        assert "LIMIT" in executed_sql.upper()
