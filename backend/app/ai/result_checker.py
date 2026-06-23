@@ -87,10 +87,14 @@ def check_result(
     Args:
         rows: 执行结果行
         columns: 列名
-        sql: 原始 SQL (仅用于 suggestion 提示, 不参与异常判断逻辑)
+        sql: 原始 SQL (用于 COUNT 检测 + suggestion 提示)
 
     Returns:
         CheckResult — ok=True 正常; ok=False 异常 + suggestion
+
+    注: 异常判断主要基于结果统计特征 (行数/空列占比)。
+        COUNT 检测是唯一需要看 SQL 文本的场景 (判断是否是 COUNT 聚合),
+        这是合理的例外, 不影响整体设计原则。
     """
     n_rows = len(rows)
     n_cols = len(columns)

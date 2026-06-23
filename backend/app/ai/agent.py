@@ -112,6 +112,14 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             state.success = True
             return state
 
+        # CHART_MODIFY → 只改图表不改 SQL, 需要上一轮上下文 (Phase 5 多轮对话)
+        # 当前无多轮状态恢复, 短路提示而非错误地重新生成 SQL
+        if intent == "CHART_MODIFY":
+            state.stage = AgentStage.FINAL
+            state.success = False
+            state.error = "图表修改需要对话上下文 (多轮对话 Phase 5 支持)"
+            return state
+
         # CLARIFICATION → 需要 ask_user (低置信/追问)
         if intent == "CLARIFICATION":
             from app.ai.ask_user import AskUserRequest, AskUserReason

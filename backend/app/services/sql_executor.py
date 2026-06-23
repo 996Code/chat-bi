@@ -69,14 +69,21 @@ def _execute_sync(
     engine,
     sql: str,
     max_rows: int,
+    timeout_seconds: int = 30,
 ) -> ExecuteResult:
     """同步执行 SQL (在 to_thread 里跑)。
 
+    超时双保险:
+      1. SQL 层 SET LOCAL statement_timeout (DB 主动中断, 释放连接)
+      2. asyncio.wait_for 兜底 (主线程不等了, 但线程靠 DB timeout 结束)
     返回 ExecuteResult, 不抛异常 (异常转成 error 字段)。
     """
     safe_sql = _inject_limit(sql, max_rows)
     try:
         with engine.connect() as conn:
+            # DB 侧超时 (statement_timeout): DB 主动中断查询, 释放连接/线程
+            # 比 asyncio.wait_for 更可靠 — Python 无法取消线程, 但 DB 能取消查询
+            conn.execute(text(f"SET LOCAL statement_timeout = '{timeout_seconds * 1000}'"))
             result = conn.execute(text(safe_sql))
             columns = list(result.keys()) if hasattr(result, "keys") else []
             rows = result.fetchall()
@@ -132,7 +139,7 @@ async def execute_sql(
 
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(_execute_sync, engine, sql, max_rows),
+            asyncio.to_thread(_execute_sync, engine, sql, max_rows, timeout),
             timeout=timeout,
         )
         return result
