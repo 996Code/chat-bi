@@ -217,10 +217,31 @@ async def scan_data_source_endpoint(
     )
     await db.commit()
 
+    # T020: 自动建向量索引 (扫描后触发, 对标 RAG-001)
+    # 失败降级不阻塞扫描 (索引只是优化检索, 缺失时检索返回空)
+    index_count = 0
+    try:
+        from app.services.indexer import build_index
+        from app.services.embedder import get_embedder
+        from app.services.vector_store import get_vector_store
+        result = await build_index(
+            content=content,
+            data_source_id=ds_id,
+            store=get_vector_store(),
+            embedder=get_embedder(),
+        )
+        index_count = result.indexed_count
+    except Exception as e:
+        import logging
+        logging.getLogger("app.api.data_sources").warning(
+            "扫描后建索引失败, RAG 检索将降级: %s", e
+        )
+
     return {
         "semantic_model_id": sm.id,
         "version": new_version,
         "table_count": len(content.models),
+        "index_count": index_count,
         "models": [m.name for m in content.models],
     }
 
