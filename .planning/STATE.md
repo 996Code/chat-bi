@@ -2,7 +2,7 @@
 
 ## 当前位置
 - **阶段**: chatbi-v2 / Phase 1 已完成，Phase 2 计划已制定待执行
-- **状态**: Phase 1 代码就绪（11/11 任务，20 测试通过）；Phase 2 计划见 `.planning/phases/chatbi-v2/02-PLAN.md`，下一步 `/ai:do` 执行 T012
+- **状态**: Phase 2 执行中（T012 完成，12/54）；下一步 T013（数据源扫描）或 T018（复合指标，可并行）
 
 ## Phase 进度
 
