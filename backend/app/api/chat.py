@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +28,10 @@ from app.schemas.semantic_layer import SemanticModelContent
 from app.services.datasource_engine import datasource_to_url, get_engine_pool
 
 logger = logging.getLogger(__name__)
+
+# 限流器 (慢导入避免循环, main.py 注册到 app.state)
+from app.core.rate_limit import get_limiter as _get_limiter
+_limiter = _get_limiter()
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -135,8 +139,16 @@ def _get_embedder():
     return get_embedder()
 
 
+def _chat_rate():
+    """查询限流值 (从 config 读, 对标 rate_limit_queries_per_minute)。"""
+    from app.core.config import get_settings
+    return f"{get_settings().rate_limit_queries_per_minute}/minute"
+
+
+@_limiter.limit(_chat_rate)
 @router.post("", response_model=ChatResponse)
 async def chat(
+    request: Request,
     req: ChatRequest,
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),

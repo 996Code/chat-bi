@@ -8,11 +8,14 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.core.config import get_settings
 from app.core.security import create_access_token
+from app.core.rate_limit import get_limiter
+
+_limiter = get_limiter()
 
 router = APIRouter(prefix="/dev", tags=["dev"])
 
@@ -29,8 +32,14 @@ class DevTokenRequest(BaseModel):
     role: str = "admin"  # admin | user | read_only
 
 
+def _login_rate():
+    """登录限流值 (config.rate_limit_login_per_minute)。"""
+    return f"{get_settings().rate_limit_login_per_minute}/minute"
+
+
+@_limiter.limit(_login_rate)
 @router.post("/token")
-async def get_dev_token(body: DevTokenRequest):
+async def get_dev_token(request: Request, body: DevTokenRequest):
     """获取开发 token。仅 DEBUG 模式可用 (生产自动 404)。"""
     settings = get_settings()
     if not settings.debug:

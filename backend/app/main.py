@@ -88,6 +88,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # 限流 (slowapi, 对标 config rate_limit_*)
+    from slowapi import _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from app.core.rate_limit import get_limiter
+    limiter = get_limiter()
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     # Health check
     @app.get("/health")
     async def health():
