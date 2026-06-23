@@ -10,7 +10,12 @@ JWT contains: user_id, email, tenant_id, role (对标 v1 经验教训 #3)
   对标: v1 经验教训 #48 — 多租户隔离应是默认行为
 
   NOTE: 当前为"半自动"（需调用方显式 filter），非 session event 全局自动注入。
-  全局 session event 自动注入待 T014 (CRUD API) 时补 —— 届时有真实查询场景验证。
+  设计决策: 不引入全局 session event 自动注入。
+    理由: (1) 影响 all queries, bug 会导致全系统隔离失效, 风险 > 收益;
+          (2) 业务库 SQL 执行(T031)不走 ORM, session event 对它无效;
+          (3) 多租户隔离靠 data_source 归属: chat 路径查 DataSource 用 tenant_filter,
+              data_source_id 来自本租户 → 业务库连库天然隔离。
+    所有 API 端点已显式 .where(tenant_filter()) (data_sources/semantic_models/chat)。
 """
 from __future__ import annotations
 

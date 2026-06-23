@@ -64,9 +64,19 @@ def _build_datatype_constraint_section(schema_context: str) -> str:
     return f"【schema 与类型约束】\n{schema_context}\n注意: 遵守 data_type, 数值聚合(SUM/AVG)只能用于数值类型列。"
 
 
-def _build_dynamic_context(fewshot: str | None, history: str | None, question: str) -> str:
-    """构建动态 prompt 段 (每次查询都变)。"""
+def _build_dynamic_context(
+    fewshot: str | None,
+    history: str | None,
+    question: str,
+    skills: str | None = None,
+) -> str:
+    """构建动态 prompt 段 (每次查询都变)。
+
+    skills: 业务规则文本 (Phase 6 Skills 系统产出, 如 GMV 定义/特殊计算口径)。
+    """
     parts = []
+    if skills:
+        parts.append(f"【业务规则 (Skills)】\n{skills}")
     if fewshot:
         parts.append(f"【参考示例】\n{fewshot}")
     if history:
@@ -94,6 +104,7 @@ async def generate_sql(
     llm_client,
     fewshot_examples: str | None = None,
     history: str | None = None,
+    skills: str | None = None,
 ) -> GenerateResult:
     """生成 SQL (prompt 分层 + 校验集成)。
 
@@ -119,7 +130,7 @@ async def generate_sql(
     cache.set_static("system_rules", lambda: _SYSTEM_PROMPT)
     cache.set_static("schema_type", lambda: _build_datatype_constraint_section(schema_context))
     cache.set_static("allowed_cols", lambda: _build_allowed_columns_section(allowed_columns))
-    cache.set_dynamic("context", lambda: _build_dynamic_context(fewshot_examples, history, question))
+    cache.set_dynamic("context", lambda: _build_dynamic_context(fewshot_examples, history, question, skills))
 
     sections = cache.assemble()
     # assemble 返回 [static..., BOUNDARY, dynamic...]
