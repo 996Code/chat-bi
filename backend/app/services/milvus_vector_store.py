@@ -81,37 +81,46 @@ class MilvusVectorStore(VectorStore):
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
-        """collection 不存在则创建 (id + vector + metadata + text)。"""
-        if self._client.has_collection(self._collection_name):
-            return
+        """collection 不存在则创建 (id + vector + metadata + text) + 建索引, 然后 load。
 
-        from pymilvus import CollectionSchema, DataType, FieldSchema
+        Milvus 查询/search 前必须 load collection (否则报 collection not loaded)。
+        """
+        if not self._client.has_collection(self._collection_name):
+            from pymilvus import CollectionSchema, DataType, FieldSchema
 
-        fields = [
-            FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=128),
-            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self._dim),
-            FieldSchema(name="metadata", dtype=DataType.JSON),
-            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-        ]
-        schema = CollectionSchema(fields=fields, auto_id=False, enable_dynamic_field=False)
+            fields = [
+                FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=128),
+                FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self._dim),
+                FieldSchema(name="metadata", dtype=DataType.JSON),
+                FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
+            ]
+            schema = CollectionSchema(fields=fields, auto_id=False, enable_dynamic_field=False)
 
-        self._client.create_collection(
-            collection_name=self._collection_name,
-            schema=schema,
-        )
-        # HNSW 索引 (对标 spec: HNSW 大规模性能优)
-        index_params = self._client.prepare_index_params()
-        index_params.add_index(
-            field_name="vector",
-            index_type="HNSW",
-            metric_type="IP",  # Inner Product (normalize 后 = 余弦相似度)
-            params={"M": 16, "efConstruction": 200},
-        )
-        self._client.create_index(
-            collection_name=self._collection_name,
-            index_params=index_params,
-        )
-        logger.info("Milvus collection created: %s (dim=%d)", self._collection_name, self._dim)
+            self._client.create_collection(
+                collection_name=self._collection_name,
+                schema=schema,
+            )
+            # HNSW 索引 (对标 spec: HNSW 大规模性能优)
+            index_params = self._client.prepare_index_params()
+            index_params.add_index(
+                field_name="vector",
+                index_type="HNSW",
+                metric_type="IP",  # Inner Product (normalize 后 = 余弦相似度)
+                params={"M": 16, "efConstruction": 200},
+            )
+            self._client.create_index(
+                collection_name=self._collection_name,
+                index_params=index_params,
+            )
+            logger.info("Milvus collection created: %s (dim=%d)", self._collection_name, self._dim)
+
+        # load collection (查询/search 前必须 load; 已 loaded 幂等, try/except 容错)
+        try:
+            self._client.load_collection(self._collection_name)
+            logger.info("Milvus collection loaded: %s", self._collection_name)
+        except Exception as e:
+            # 已 loaded 或其他非致命错误, 不阻塞 (search 时 Milvus 会再处理)
+            logger.debug("Milvus load_collection (可能已 loaded): %s", e)
 
     # ── upsert ────────────────────────────────────────────────
 

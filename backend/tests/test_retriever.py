@@ -55,11 +55,11 @@ class TestVectorRecall:
 
         result = await retrieve("销售额", store, embedder, llm_client=None)
 
-        # 阶段2 LLM=None 时直接返回阶段1结果 (但已过 0.5 阈值)
-        # store.search 被调用时传 score_threshold=0.5
+        # 阶段2 LLM=None 时直接返回阶段1结果 (score 阈值从 config 读, 适配 BGE)
         call = store.search.call_args
-        assert call.kwargs.get("score_threshold") == 0.5
-        assert call.kwargs.get("top_k") == 20
+        from app.core.config import get_settings
+        assert call.kwargs.get("score_threshold") == get_settings().rag_similarity_threshold
+        assert call.kwargs.get("top_k") == get_settings().rag_vector_top_k
 
     @pytest.mark.asyncio
     async def test_no_recall_returns_empty_with_reason(self):

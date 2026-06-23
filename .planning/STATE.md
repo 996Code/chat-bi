@@ -1,8 +1,8 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: chatbi-v2 / Phase 2 完成（T012-T018 全部，17/54），下一步 Phase 3
-- **状态**: Phase 2 收尾完成，准备规划 Phase 3（RAG 检索）
+- **阶段**: chatbi-v2 / Phase 3 完成（T019-T024 全部，23/54），下一步 Phase 4
+- **状态**: Phase 3 RAG 检索全链路打通，真实 Milvus 端到端验证通过
 
 ## Phase 进度
 
@@ -10,7 +10,7 @@
 |-------|------|------|
 | 1 | 基础设施 | ✅ 已完成（代码就绪，含质量改进 58 测试 / 覆盖率 87%） |
 | 2 | 语义层与知识图谱 | ✅ 已完成（T012-T018 全部，17/54） |
-| 3 | RAG 检索与向量化 | 待规划 |
+| 3 | RAG 检索与向量化 | ✅ 已完成（T019-T024 全部，23/54，213 测试 / 覆盖率 83%） |
 | 4 | Agent 执行引擎 | 待规划 |
 | 5 | 对话与上下文管理 | 待规划 |
 | 6 | Skills 与反馈系统 | 待规划 |
@@ -83,7 +83,8 @@
 - 2026-06-23: 最小可视化前端（LoginView + DataSourceView + SemanticView）+ dev-token 端点。修复扫描超时（asyncio.gather 并行 + 跳系统表，40s→7s）+ FK 冲突（dev_user→admin_user）+ 前端隐藏系统表退化提示
 - 2026-06-23: uv 依赖管理（uv.lock，93 包）+ pyproject 提到项目根 + start-backend.sh 清 shell 环境变量
 - 2026-06-23: Phase 2 收尾 — T016 知识图谱 AI 推断（name_pattern 0.6 + ai_inferred 0.7，去重不写回）+ T017 知识图谱演化（mine_implicit_relationships 频繁 JOIN 提升 + apply_feedback_signals 纠正/点赞三态，算法先行 e2e 留 Phase 6）。测试 108→134，覆盖率 83%
+- 2026-06-23: 清理环境配置错乱 — 删除根目录 v1 死 env 文件（.env/.env.home/.env.office 含真实密钥被提交 + 误污染 shell 环境）+ 修 gitignore + backend/.env.example 占位符化。config.py 审计：所有外部配置走 settings，无写死
+- 2026-06-23: **Phase 3 RAG 检索全链路打通（T019-T024）** — 本地 BGE-large-zh-v1.5（1024维离线 embedding，讯飞 xopkimik26 非标准协议调不通→改本地）+ VectorStore 抽象（Mock/Milvus 可切）+ MilvusVectorStore（HNSW+IP+JSON标量过滤+load）+ 扫描自动建索引(T020) + 语义层变更重建索引(T021) + 两阶段检索(T022: 向量召回top20+score≥0.35+LLM精筛, 宁缺毋滥, 假阳性声明, 无召回不fallback) + 语义缓存(T023: 相似问题复用SQL) + Few-shot(T024: 审核SQL注入prompt最多3条)。本地 docker infra (PG pgvector + Milvus v2.4.0 + etcd + minio)。真实 Milvus 端到端验证：13表索引13条，检索召回5条（销售额→biz_orders）。修复 Milvus collection load bug + score阈值适配 BGE(0.5→0.35)。测试 134→213 passed
 
 ## 下一步
-Phase 2 全部完成（T012-T018）。下一步规划 **Phase 3（RAG 检索与向量化，T019-T024）**。
-计划文档：`.planning/phases/chatbi-v2/02-PLAN.md`（已完成的 4 Wave）。
+Phase 3 全部完成（T019-T024）。下一步规划 **Phase 4（Agent 执行引擎，T025-T035）** — LangGraph StateGraph + while(true) 执行循环 + SQL 生成/校验/自愈。

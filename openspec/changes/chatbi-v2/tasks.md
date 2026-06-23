@@ -33,7 +33,16 @@
 - [x] T021: 语义层修改 → 增量更新索引 — ✅ rebuild_index (按 data_source 删旧+建新) 挂 rollback endpoint; 5 测试
 - [x] T022: 两阶段检索 (向量召回 top-20 → LLM 精筛) — ✅ retrieve (向量召回 score≥0.5 + LLM 精筛, prompt含假阳性声明, 宁缺毋滥, 无召回不fallback); 8 测试
 - [x] T023: 语义缓存 (余弦相似度 > 0.95 → 复用 SQL) — ✅ SemanticCache (用 VectorStore 抽象存 question→sql, 阈值0.95, 失败降级miss); 7 测试
-- [ ] T024: Few-shot 历史匹配 (最多 3 条审核通过的 SQL 注入 prompt)
+- [x] T024: Few-shot 历史匹配 (最多 3 条审核通过的 SQL 注入 prompt) — ✅ find_fewshot_examples (相似历史SQL召回, 阈值0.5, 最多3条) + format_fewshot_prompt; 7 测试
+
+## Phase 3 完成 ✅ (T019-T024 全部)
+- 本地 BGE-large-zh-v1.5 (1024维, 离线) embedding
+- VectorStore 抽象 (Mock/Milvus 可切) + MilvusVectorStore (HNSW+IP+JSON标量过滤)
+- 扫描自动建索引 (T020) + 语义层变更重建索引 (T021)
+- 两阶段检索: 向量召回 top-20 + LLM 精筛 (宁缺毋滥, 假阳性声明)
+- 语义缓存 (相似问题复用SQL) + Few-shot 历史匹配
+- 真实 Milvus 端到端验证: 13表索引13条, 检索召回5条 (销售额→biz_orders)
+- 测试 178→213 passed
 
 ## Phase 4: Agent 执行引擎（2 周）
 

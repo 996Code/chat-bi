@@ -27,10 +27,6 @@ from app.services.vector_store import SearchResult, VectorStore
 
 logger = logging.getLogger(__name__)
 
-# 对标 RAG-002 配置
-RECALL_TOP_K = 20
-RECALL_SCORE_THRESHOLD = 0.5
-
 
 @dataclass
 class RetrievalResult:
@@ -68,11 +64,15 @@ async def retrieve(
         logger.warning("retrieve embed 失败: %s", e)
         return RetrievalResult(no_match_reason="问题向量化失败, 无法检索")
 
+    # 从 config 读 RAG 参数 (对标 RAG-002, 可调适配不同 embedding 模型)
+    from app.core.config import get_settings
+    settings = get_settings()
+
     filter_expr = {"data_source_id": data_source_id} if data_source_id else None
     candidates = await store.search(
         query_vec,
-        top_k=RECALL_TOP_K,
-        score_threshold=RECALL_SCORE_THRESHOLD,
+        top_k=settings.rag_vector_top_k,
+        score_threshold=settings.rag_similarity_threshold,
         filter=filter_expr,
     )
 

@@ -104,7 +104,7 @@ class Settings(BaseSettings):
 
     # ── RAG ──────────────────────────────────────────────────
     rag_vector_top_k: int = 20
-    rag_similarity_threshold: float = 0.5
+    rag_similarity_threshold: float = 0.35  # BGE 中文分数分布偏低, 0.5 漏召回; 可调
     rag_max_fewshot_examples: int = 3
 
     # ── Rate Limiting ────────────────────────────────────────
