@@ -37,7 +37,8 @@ class TestCheckResult:
             columns=["name"],
             sql="SELECT name FROM orders WHERE status = 'nonexistent'",
         )
-        assert not result.ok
+        # 0行: 可疑但不阻断 (ok=True 带 issue), 让用户看到结果自行判断
+        assert result.ok
         assert result.issue == ResultIssue.ZERO_ROWS
 
     def test_cartesian_product_detected(self):

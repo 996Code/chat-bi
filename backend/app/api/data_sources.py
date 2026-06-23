@@ -217,14 +217,16 @@ async def scan_data_source_endpoint(
     )
     await db.commit()
 
-    # T020: 自动建向量索引 (扫描后触发, 对标 RAG-001)
+    # T020: 扫描后重建向量索引 (删旧+建新, 对标 RAG-001)
+    # 用 rebuild_index 而非 build_index: 语义层内容可能变了 (表增删/LLM推断变化),
+    # 旧索引要清掉, 否则已删表的索引残留 → 检索到不存在的表
     # 失败降级不阻塞扫描 (索引只是优化检索, 缺失时检索返回空)
     index_count = 0
     try:
-        from app.services.indexer import build_index
+        from app.services.indexer_update import rebuild_index
         from app.services.embedder import get_embedder
         from app.services.vector_store import get_vector_store
-        result = await build_index(
+        result = await rebuild_index(
             content=content,
             data_source_id=ds_id,
             store=get_vector_store(),

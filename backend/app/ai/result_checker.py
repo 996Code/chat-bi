@@ -95,13 +95,16 @@ def check_result(
     n_rows = len(rows)
     n_cols = len(columns)
 
-    # 1. 0 行 (明确异常; COUNT 返回 0 单独处理)
+    # 1. 0 行 — 标记可疑但不阻断 (ok=True)
+    # 设计: 0行有两种语义: (a) 查询逻辑错 (b) 数据里确实没有。
+    #   纯规则无法区分, 不该武断阻断 — 让用户看到 "0行 + 提示" 自行判断。
+    #   真正该阻断的是 ALL_NULL / CARTESIAN (明确的数据错误特征)。
     if n_rows == 0:
         return CheckResult(
-            ok=False,
+            ok=True,  # 不阻断, 让结果展示给用户
             issue=ResultIssue.ZERO_ROWS,
-            reason="查询返回 0 行, 可能过滤条件过严或逻辑错误",
-            suggestion="检查 WHERE 条件是否过严, 或换一个查询维度",
+            reason="查询返回 0 行, 可能过滤条件过严或数据中无匹配",
+            suggestion="如非预期, 检查 WHERE 条件或换查询维度",
         )
 
     # 2. 多数列全空 (JOIN 完全没匹配上的统计特征)
@@ -128,10 +131,10 @@ def check_result(
             suggestion="检查是否缺少 JOIN ON 条件或 WHERE 过滤",
         )
 
-    # 4. COUNT(*)=0 单行结果 (WHERE 过滤后无匹配, 偏可疑但非必然异常)
+    # 4. COUNT(*)=0 单行结果 — 可疑但不阻断 (同 0 行逻辑)
     if _is_count_zero(rows, sql):
         return CheckResult(
-            ok=False,
+            ok=True,
             issue=ResultIssue.SUSPICIOUS_ZERO,
             reason="COUNT 结果为 0, WHERE 过滤后可能无匹配数据",
             suggestion="确认过滤条件是否正确, 或数据是否符合预期",
