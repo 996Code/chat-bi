@@ -22,7 +22,12 @@
     <!-- 表列表 (左侧) + 详情 (右侧) -->
     <div v-loading="loading" v-if="model" class="content-layout">
       <el-card class="table-list">
-        <template #header><b>表 ({{ model.content.models.length }})</b></template>
+        <template #header>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <b>表 ({{ filteredModels.length }})</b>
+            <el-switch v-model="showSystemTables" size="small" active-text="系统表" inline-prompt style="--el-switch-on-color:#909399" />
+          </div>
+        </template>
         <el-input v-model="search" placeholder="搜索表名..." clearable size="small" style="margin-bottom: 12px" />
         <div
           v-for="m in filteredModels"
@@ -104,13 +109,22 @@ const model = ref<SemanticModel | null>(null)
 const selected = ref<SemanticTableModel | null>(null)
 const loading = ref(false)
 const search = ref('')
+const showSystemTables = ref(false) // 默认隐藏系统表 (ChatBI 元数据表, 用户不查)
+
+// 系统表: ChatBI 自己的元数据表, 业务用户不关心, 默认隐藏
+const SYSTEM_TABLES = new Set([
+  'tenants', 'users', 'data_sources', 'semantic_models',
+  'conversations', 'saved_queries', 'audit_logs', 'feedback',
+])
 
 const filteredModels = computed(() => {
   if (!model.value) return []
   const q = search.value.toLowerCase()
-  return model.value.content.models.filter(
-    m => m.name.toLowerCase().includes(q) || m.display_name.toLowerCase().includes(q),
-  )
+  return model.value.content.models.filter(m => {
+    // 默认隐藏系统表 (开关打开才显示)
+    if (!showSystemTables.value && SYSTEM_TABLES.has(m.name)) return false
+    return m.name.toLowerCase().includes(q) || m.display_name.toLowerCase().includes(q)
+  })
 })
 
 async function fetchData() {
@@ -121,7 +135,9 @@ async function fetchData() {
     const { data } = await semantic.current(dsId)
     model.value = data
     if (data && data.content.models.length > 0) {
-      selected.value = data.content.models[0]
+      // 默认选第一个业务表 (跳过系统表)
+      selected.value = data.content.models.find(m => !SYSTEM_TABLES.has(m.name))
+        ?? data.content.models[0]
     }
   } catch (e: any) {
     ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))

@@ -18,8 +18,8 @@ export const devAuth = {
       '/dev/token',
       {
         tenant_id: 'default_tenant',
-        user_id: 'dev_user',
-        email: 'dev@chatbi.local',
+        user_id: 'admin_user', // 必须是 users 表真实存在的用户 (audit_logs 有外键约束)
+        email: 'admin@chatbi.local',
         role: 'admin',
         ...params,
       },
