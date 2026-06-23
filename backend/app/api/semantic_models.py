@@ -177,6 +177,27 @@ async def rollback_to_version(
     )
     await db.commit()
     await db.refresh(new_sm)
+
+    # T021: 语义层变更 → 重建向量索引 (删旧 + 建新)
+    # 失败降级不阻塞回滚 (索引只是优化检索)
+    try:
+        from app.services.indexer_update import rebuild_index
+        from app.services.embedder import get_embedder
+        from app.services.vector_store import get_vector_store
+        from app.schemas.semantic_layer import SemanticModelContent
+        content = SemanticModelContent(**new_sm.content)
+        await rebuild_index(
+            content=content,
+            data_source_id=new_sm.data_source_id,
+            store=get_vector_store(),
+            embedder=get_embedder(),
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger("app.api.semantic_models").warning(
+            "回滚后重建索引失败, RAG 检索将降级: %s", e
+        )
+
     return SemanticModelOut(
         id=new_sm.id, tenant_id=new_sm.tenant_id, data_source_id=new_sm.data_source_id,
         version=new_sm.version, is_current=new_sm.is_current, content=new_sm.content,
