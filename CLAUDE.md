@@ -123,17 +123,38 @@ chat-bi/
 - **多租户**：框架级隔离（contextvars + TenantMixin），不靠手动 WHERE（v1 #48）
 - **审计三态**：success / fail / denied 全覆盖（v1 #41）
 
+## 环境搭建（首次 clone 后）
+
+```bash
+# 1. 安装 uv (若未装): https://docs.astral.sh/uv/
+#    macOS: brew install uv
+
+# 2. 创建虚拟环境 + 按 uv.lock 锁定的精确版本装依赖 (可复现)
+uv sync                    # 在项目根执行, 自动用 .python-version 选 Python
+
+# 3. 配置 .env (从 .env.example 复制后填真实值)
+cp backend/.env.example backend/.env
+# 必须填: SECRET_KEY / FERNET_KEY (生成: python -c "import secrets;print(secrets.token_urlsafe(32))")
+#         DATABASE_URL / LLM_URL / LLM_MODEL / LLM_API_KEY 等 (config.py 里 CHANGE_ME_ 的项)
+
+# 4. 前端依赖
+cd frontend && npm install
+```
+
+`pyproject.toml` + `uv.lock` 在项目根。`.python-version` 固定 3.12.13，`uv.lock` 锁定 93 个依赖包的精确版本——保证任何人 `uv sync` 后环境一致。`.venv/` 也在项目根（被 .gitignore 忽略）。
+
 ## 启动命令
 
 ```bash
-# 后端
-.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8999 &
+# 后端 (推荐用启动脚本, 自动隔离 shell 环境变量对 .env 的干扰)
+./start-backend.sh            # 或 ./start-backend.sh --reload (热重载)
+# 等效手动: uv run uvicorn app.main:app --host 0.0.0.0 --port 8999 --app-dir backend
 
 # 前端
 cd frontend && npx vite --host 0.0.0.0 --port 5173 &
 
 # 测试
-.venv/bin/python -m pytest backend/tests/ -v
+uv run pytest backend/tests/ -v
 ```
 
 ## 遗留技术债（进 Phase 2 前建议补）

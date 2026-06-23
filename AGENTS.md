@@ -23,10 +23,10 @@
 
 ```bash
 # 测试
-.venv/bin/python -m pytest backend/tests/ -q
+uv run pytest backend/tests/ -q
 
-# 启动后端
-.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8999
+# 启动后端 (推荐启动脚本, 自动隔离 shell 环境变量干扰)
+./start-backend.sh
 
 # 任务进度
 openspec list

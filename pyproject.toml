@@ -39,18 +39,23 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["backend/tests"]
 addopts = "--strict-markers"
+pythonpath = ["backend"]
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+include = ["app*"]
 
 [tool.coverage.run]
-source = ["app"]
+source = ["backend/app"]
 omit = [
-    "app/__init__.py",
+    "backend/app/__init__.py",
     # 客户端封装: 连接层，需真实 Redis/Milvus 才能测，留待集成测试
-    "app/core/redis_client.py",
-    "app/core/milvus_client.py",
+    "backend/app/core/redis_client.py",
+    "backend/app/core/milvus_client.py",
     # logging 配置: 副作用难单测，用日志行为覆盖
-    "app/core/logging.py",
+    "backend/app/core/logging.py",
 ]
 
 [tool.coverage.report]
@@ -65,6 +70,3 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
 ]
-
-[tool.setuptools.packages.find]
-include = ["app*", "tests*"]
