@@ -17,6 +17,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.ai.agent import AgentState, run_agent, AgentStage
+from app.schemas.semantic_layer import Column, Model, SemanticModelContent
+
+
+def _make_content():
+    """构造带列的语义层 (让 allowed_columns 非空)。"""
+    return SemanticModelContent(models=[
+        Model(name="biz_orders", display_name="订单", columns=[
+            Column(name="id", display_name="ID", data_type="INT"),
+            Column(name="total_amount", display_name="金额", data_type="DECIMAL"),
+        ]),
+    ])
 
 
 def _mock_intent(intent: str, confidence: float = 0.9, question: str = "x"):
@@ -32,7 +43,7 @@ class TestFullPipeline:
     @pytest.mark.asyncio
     async def test_full_success_pipeline(self):
         """完整成功流程, 最终 final(success)。"""
-        state = AgentState(question="本月销售额")
+        state = AgentState(question="本月销售额", semantic_content=_make_content())
         deps = MagicMock()
         deps.classify_intent = AsyncMock(return_value=_mock_intent("TEXT_TO_SQL", 0.9, "本月销售额"))
         deps.retrieve = AsyncMock(return_value=MagicMock(models=[{"name": "biz_orders", "score": 0.8}], no_match_reason=None))
@@ -112,20 +123,20 @@ class TestFailureRouting:
     @pytest.mark.asyncio
     async def test_execute_failure_triggers_self_heal(self):
         """执行失败 → 尝试自愈 (对标 while-true 循环)。"""
-        state = AgentState(question="销售额")
+        state = AgentState(question="销售额", semantic_content=_make_content())
         deps = MagicMock()
         deps.classify_intent = AsyncMock(return_value=_mock_intent("TEXT_TO_SQL"))
-        deps.retrieve = AsyncMock(return_value=MagicMock(models=[{"name": "t", "score": 0.8}], no_match_reason=None))
+        deps.retrieve = AsyncMock(return_value=MagicMock(models=[{"name": "biz_orders", "score": 0.8}], no_match_reason=None))
         deps.think = AsyncMock(return_value=MagicMock(error=None))
         deps.generate_sql = AsyncMock(return_value=MagicMock(
-            error=None, sql="SELECT bad FROM t", validation=MagicMock(ok=True),
+            error=None, sql="SELECT total_amount FROM biz_orders", validation=MagicMock(ok=True),
         ))
         # 第一次执行失败, 自愈后第二次执行成功 (side_effect 依次返回)
         fail_exec = MagicMock(error="Unknown column 'bad'", rows=[], columns=[])
         ok_exec = MagicMock(error=None, rows=[(1,)], columns=["id"])
         deps.execute_sql = AsyncMock(side_effect=[fail_exec, ok_exec])
         deps.heal_sql = AsyncMock(return_value=MagicMock(
-            success=True, sql="SELECT id FROM t", validation=MagicMock(ok=True),
+            success=True, sql="SELECT id FROM biz_orders", validation=MagicMock(ok=True),
         ))
         deps.should_ask_for_schema = MagicMock(return_value=None)
         deps.check_result = MagicMock(return_value=MagicMock(ok=True))
