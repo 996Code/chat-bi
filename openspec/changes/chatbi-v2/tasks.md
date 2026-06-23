@@ -28,7 +28,7 @@
 
 ## Phase 3: RAG 检索与向量化（1 周）
 
-- [ ] T019: Milvus 表结构 + BGE-large-zh Embedding 集成
+- [x] T019: Milvus 表结构 + BGE-large-zh Embedding 集成 — ✅ 本地 BGE-large-zh-v1.5 (1024维, 离线) + VectorStore 抽象 (Mock/Milvus 可切) + MilvusVectorStore (HNSW+IP, JSON标量过滤); 测试 11+18+6(真实模型slow)
 - [ ] T020: 语义层 → 向量索引构建 (数据源接入时自动触发)
 - [ ] T021: 语义层修改 → 增量更新索引
 - [ ] T022: 两阶段检索 (向量召回 top-20 → LLM 精筛)
