@@ -42,20 +42,21 @@ class ExecuteResult:
 
 
 def _inject_limit(sql: str, max_rows: int) -> str:
-    """无顶层 LIMIT 的 SELECT 自动加 LIMIT max_rows (防全表扫描 OOM)。
+    """无顶层 LIMIT 的 SELECT 自动加 LIMIT (max_rows + 1) (防全表扫描 + 截断检测)。
 
+    多查 1 行: 返回 > max_rows 行说明被截断 (truncated=True)。
     用 sqlglot AST 判断顶层是否有 Limit (对标 v1 教训 #46: 不用字符串检测)。
     子查询里的 LIMIT 不算 (外层仍可能全表扫描)。
     """
+    fetch_rows = max_rows + 1  # 多取 1 行用于判断是否截断
     try:
         import sqlglot
-        from sqlglot import exp
         stmt = sqlglot.parse_one(sql, read="postgres")
         # 顶层 Limit 直接挂在 stmt.args['limit'] (子查询的 Limit 不在这)
         if stmt.args.get("limit") is not None:
             return sql
         # 顶层无 Limit → 加
-        return stmt.limit(max_rows).sql(dialect="postgres")
+        return stmt.limit(fetch_rows).sql(dialect="postgres")
     except Exception:
         # parse 失败 (T030 应已拦截, 这里兜底) → 字符串兜底加
         sql_clean = sql.strip().rstrip(";").strip()

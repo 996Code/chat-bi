@@ -165,6 +165,14 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         state.stage = AgentStage.GENERATE_SQL
         allowed_columns = extract_allowed_columns(state.semantic_content, retrieved_names)
 
+        # 防御: 无语义层 → allowed_columns 空 → Layer3 白名单失效 (安全降级)
+        # 对标 fail-closed: 没有列约束信息时拒绝生成 SQL, 而非放行
+        if not allowed_columns:
+            state.stage = AgentStage.FINAL
+            state.success = False
+            state.error = "无语义层定义, 无法做白名单约束, 拒绝生成 SQL (请先扫描数据源)"
+            return state
+
         # 生成首版 SQL
         gen_result = await deps.generate_sql(
             question=question,

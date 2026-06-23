@@ -27,17 +27,23 @@ logger = logging.getLogger(__name__)
 
 # 危险函数黑名单 (对标 spec SEC-002 + v1 教训 #46)
 # 这些函数可读文件/写文件/制造 DoS, SELECT 里出现即拒绝
+# 覆盖 MySQL + PostgreSQL 方言 (v2 目标是 PG, 但 LLM 可能输出任一方言语法)
 _DANGEROUS_FUNCTIONS = frozenset({
-    "LOAD_FILE",      # 读任意文件
-    "SLEEP",          # DoS
-    "BENCHMARK",      # DoS
-    "GET_LOCK",       # DoS / 死锁
-    "RELEASE_LOCK",   # 配合 GET_LOCK
+    # 文件读写
+    "LOAD_FILE",       # MySQL 读文件
+    "PG_READ_FILE",    # PostgreSQL 读文件
+    "PG_READ_BINARY_FILE",
+    "LO_IMPORT",       # PostgreSQL 大对象导入
+    # DoS
+    "SLEEP",           # MySQL sleep
+    "PG_SLEEP",        # PostgreSQL sleep (v2 目标方言, 之前漏了)
+    "BENCHMARK",       # MySQL 压测
+    "GET_LOCK",        # 死锁
+    "RELEASE_LOCK",
+    # 命令执行
+    "SYSTEM",
+    "EXEC",
 })
-
-# 危险子句 (INTO OUTFILE / INTO DUMPFILE 写文件)
-_DANGEROUS_INTO = frozenset({"OUTFILE", "DUMPFILE"})
-
 
 def _collect_derivable_names(stmt: exp.Expression) -> set[str]:
     """收集 SQL 内部所有可派生的合法标识符 (非真实表列)。
@@ -161,13 +167,16 @@ def validate_sql(sql: str | None, allowed_columns: set[str] | None = None) -> Va
                 violated_layer="dangerous_function",
             )
 
-    # 检查 INTO OUTFILE / INTO DUMPFILE (sqlglot 里是 exp.IntoProperty 或类似)
-    sql_upper = sql.upper()
-    for dangerous in _DANGEROUS_INTO:
-        if f"INTO {dangerous}" in sql_upper:
+    # 检查 INTO OUTFILE / INTO DUMPFILE (写文件)
+    # 注意: PG 方言不认 INTO OUTFILE (MySQL 语法), 会在 Layer1 parse 失败已拒绝。
+    # 但防御性检查 Select.args["into"] (PG 的 SELECT INTO 变量, 如 SELECT INTO var)
+    into = stmt.args.get("into") if hasattr(stmt, "args") else None
+    if into is not None:
+        into_str = str(into).upper()
+        if "OUTFILE" in into_str or "DUMPFILE" in into_str:
             return ValidationResult(
                 ok=False,
-                reason=f"禁止使用 {dangerous} (可写文件)",
+                reason="禁止使用 INTO OUTFILE/DUMPFILE (可写文件)",
                 violated_layer="dangerous_function",
             )
 
