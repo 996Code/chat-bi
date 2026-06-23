@@ -1,15 +1,15 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: chatbi-v2 / Phase 1 已完成，准备进入 Phase 2
-- **状态**: Phase 1 代码就绪（11/11 任务实现，20 测试通过），待补 T006/T008 测试后进入 Phase 2
+- **阶段**: chatbi-v2 / Phase 1 已完成，Phase 2 计划已制定待执行
+- **状态**: Phase 1 代码就绪（11/11 任务，20 测试通过）；Phase 2 计划见 `.planning/phases/chatbi-v2/02-PLAN.md`，下一步 `/ai:do` 执行 T012
 
 ## Phase 进度
 
 | Phase | 名称 | 状态 |
 |-------|------|------|
 | 1 | 基础设施 | ✅ 已完成（代码就绪，20 测试通过） |
-| 2 | 语义层与知识图谱 | ⏳ 下一步（T012 起） |
+| 2 | 语义层与知识图谱 | ⏳ 计划已制定，待执行（T012 起，`/ai:do` 推进） |
 | 3 | RAG 检索与向量化 | 待规划 |
 | 4 | Agent 执行引擎 | 待规划 |
 | 5 | 对话与上下文管理 | 待规划 |
@@ -59,4 +59,6 @@
 - 2026-06-23: 核实状态、勾选 Phase 1、提交 git 基线
 
 ## 下一步
-进入 Phase 2 / T012：语义层 JSON Schema 定义（Model/Relationship/Metric/CalculatedField）。这是 Phase 2-4 的地基，零外部依赖。
+执行 Phase 2 / T012（语义层 JSON Schema 定义）—— `/ai:do` 推进。
+计划文档：`.planning/phases/chatbi-v2/02-PLAN.md`（4 Wave：T012 地基 → T013/T014 扫描+CRUD → T018 复合指标 → T015/T016/T017 前端+知识图谱）。
+顺带在 T014 清 Phase 1 遗留债（T006 多租户 + T008 审计测试）。
