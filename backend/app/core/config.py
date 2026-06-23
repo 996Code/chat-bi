@@ -57,7 +57,16 @@ class Settings(BaseSettings):
     llm_timeout: int = 60  # seconds
 
     # ── Embedding ────────────────────────────────────────────
-    # 占位符: url/model/key 全走 .env (model 也不写死, 不同部署可能不同)
+    # 决策: 本地 BGE-large-zh (离线、确定、不依赖讯飞非标准协议)
+    # embedding_backend: local=本地 sentence-transformers / api=外部 OpenAI 兼容
+    embedding_backend: str = "local"
+    # 本地模型路径 (项目内, 不入 git; 下载脚本 backend/scripts/download_embedding_model.py)
+    # 用绝对路径默认值, 开发期指 backend/models/bge-large-zh-v1.5/
+    embedding_model_path: str = str(
+        Path(__file__).resolve().parent.parent.parent / "models" / "bge-large-zh-v1.5"
+    )
+    embedding_dim: int = 1024  # BGE-large-zh-v1.5 维度, 对标 spec RAG-001
+    # api 模式备用 (embedding_backend="api" 时启用)
     embedding_url: str = "CHANGE_ME_EMBEDDING_URL"
     embedding_model: str = "CHANGE_ME_EMBEDDING_MODEL"
     embedding_api_key: str = "CHANGE_ME_EMBEDDING_API_KEY"

@@ -27,6 +27,10 @@ env/
 # 本地基础设施数据（docker/docker-compose.infra.yml 的 bind mount）
 docker/data/
 
+# ML 模型文件（本地 embedding 模型, ~1.3GB, 不入库）
+# 下载: uv run python backend/scripts/download_embedding_model.py
+backend/models/
+
 # IDE
 .vscode/
 .idea/

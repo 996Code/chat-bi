@@ -41,6 +41,20 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # Embedder: 本地 BGE 模型(T019); 启动时预热加载
+    # 加载失败不阻塞启动 (RAG 降级, 对标 Milvus/Redis fail-closed)
+    from app.services.embedder import get_embedder
+    try:
+        embedder = get_embedder()
+        import asyncio
+        # 触发实际模型加载 (embed 空列表不加载, 用单条探测)
+        await embedder.embed(["启动预热"])
+    except Exception as e:
+        import logging
+        logging.getLogger("app.main").warning(
+            "Embedder 加载失败, RAG 将降级: %s", e
+        )
+
     yield
 
     # Shutdown — 优雅释放连接池
