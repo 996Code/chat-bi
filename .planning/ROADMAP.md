@@ -14,6 +14,6 @@
 
 ## 进度指标
 
-- **已完成任务**: 11 / 54（Phase 1）
-- **测试**: 20 passed（`pytest backend/tests/`）
-- **当前焦点**: Phase 2 起步 — T012 语义层 JSON Schema 定义
+- **已完成任务**: 12 / 54（Phase 1 全部 + Phase 2 T012）
+- **测试**: 33 passed（`pytest backend/tests/`）
+- **当前焦点**: Phase 2 执行中 — 下一步 T013（数据源扫描）或 T018（复合指标）
