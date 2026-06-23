@@ -169,3 +169,55 @@ class MockVectorStore:
 
     async def count(self) -> int:
         return len(self._records)
+
+
+# ── 工厂 + 模块级单例 (对标 get_embedder / get_llm_client) ─────
+
+import logging
+
+_logger = logging.getLogger(__name__)
+
+_vector_store: VectorStore | None = None
+
+
+def get_vector_store(collection_name: str = "semantic_models") -> VectorStore:
+    """获取全局 VectorStore 单例 (按 config.vector_store_backend 选实现)。
+
+    milvus: MilvusVectorStore (生产)
+    mock:   MockVectorStore (测试/降级, 纯内存)
+    Milvus 连不上时降级到 mock (fail-closed, 对标 Redis/Milvus 降级模式)。
+    """
+    global _vector_store
+    if _vector_store is not None:
+        return _vector_store
+
+    from app.core.config import get_settings
+    settings = get_settings()
+    backend = settings.vector_store_backend
+
+    if backend == "milvus":
+        try:
+            from app.core.milvus_client import get_milvus_client
+            from app.services.milvus_vector_store import MilvusVectorStore
+            client = get_milvus_client()
+            _vector_store = MilvusVectorStore(
+                client=client,
+                collection_name=collection_name,
+                dim=settings.embedding_dim,
+            )
+            _logger.info("VectorStore: Milvus (collection=%s, dim=%d)",
+                         collection_name, settings.embedding_dim)
+        except Exception as e:
+            _logger.warning("Milvus 不可用, VectorStore 降级为 Mock: %s", e)
+            _vector_store = MockVectorStore(dim=settings.embedding_dim)
+    else:
+        _vector_store = MockVectorStore(dim=settings.embedding_dim)
+        _logger.info("VectorStore: Mock (backend=%s)", backend)
+
+    return _vector_store
+
+
+def reset_vector_store() -> None:
+    """重置单例 (测试用)。"""
+    global _vector_store
+    _vector_store = None

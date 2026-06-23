@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     # 占位符: url/token 走 .env (root:Milvus 是默认凭证, 不能写死)
     milvus_url: str = "CHANGE_ME_MILVUS_URL"
     milvus_token: str = "CHANGE_ME_MILVUS_TOKEN"
-    milvus_dim: int = 1024
+    # 向量存储后端: milvus(生产) / mock(测试/降级, 纯内存)
+    vector_store_backend: str = "milvus"
 
     # ── LLM ──────────────────────────────────────────────────
     # 占位符: v2 用 OpenAI 兼容协议 (讯飞 MAAS 等), url/model/key 走 .env
