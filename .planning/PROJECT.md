@@ -1,79 +1,20 @@
-# ChatBI
+# ChatBI v2
 
-## What This Is
+## 概述
 
-自然语言生成 BI 报表的 SaaS 产品 —— 用户用中文提问，系统自动生成 SQL、执行查询、渲染图表。第一阶段内部使用，第二阶段面向外部 SaaS 客户。
+ChatBI v2 是从零重构的自然语言转 BI 报表平台。核心转变：从 v1 的"一次问答出 SQL"到"Claude Code 式多轮交互 + Agent 反思"。
 
-## Core Value
+**技术栈**: Python 3.12 + FastAPI + LangGraph + PostgreSQL(Milvus) + Redis + Vue 3 + ECharts
 
-让不会 SQL 的人也能自助完成数据查询和可视化，减少数据团队重复取数工单。对话即报表 —— 用自然语言提问，3 秒内得到图表答案。
+**设计法则**（来自 Claude Code 源码分析）：
+1. 执行引擎是 while(true) 不是一次调用
+2. 安全默认是"否"（Fail-Closed）
+3. "问用户"就是普通 Tool
+4. 压缩是"压缩 + 状态补偿"
+5. Prompt 分层可缓存
 
-## Requirements
+## 当前状态（2026-06-23）
 
-### Validated
-
-(None yet — shipping to validate)
-
-### Active
-
-- [ ] 用户注册登录 + JWT 鉴权
-- [ ] 多租户隔离（tenant_id 共享表模式）
-- [ ] 连接 MySQL/PostgreSQL/Oracle/ClickHouse 数据源
-- [ ] 自动扫描数据库表结构
-- [ ] 语义层配置（模型别名、字段别名、关系、指标）
-- [ ] Java 注解导出元数据（POM 依赖）
-- [ ] 自然语言 → SQL 生成（LangGraph 工作流）
-- [ ] SQL AST 安全校验（仅 SELECT，拒绝写入）
-- SQL 自愈（错误分类 + 最多 3 轮重试）
-- [ ] 三层 RAG 索引（Schema + 语义 + 知识）
-- [ ] 多级缓存（Redis 精确 + 语义向量）
-- [ ] 流式输出（降低感知延迟）
-- [ ] 自动图表选择（规则引擎 + LLM 兜底）
-- [ ] ECharts 图表渲染 + 表格展示
-- [ ] Redis 缓存（精确匹配）
-- [ ] 审计日志（查询记录追踪）
-- [ ] 多轮对话上下文继承
-- [ ] 看板功能（图表组合）
-
-### Out of Scope
-
-- 实时数据推送（WebSocket 持续推送）— 复杂度高，v1 不需要（流式输出不同）
-- 移动端 App — Web-first，响应式适配即可
-- 视频/图片分析 — 纯结构化数据查询
-- 私有化部署 — SaaS 优先
-- AI Agent 自主操作数据库 — 只读查询，不执行写入
-
-## Context
-
-- **前端**: Vue3 + TypeScript + Element Plus + ECharts
-- **后端**: Python FastAPI + LangGraph + SQLGlot
-- **数据库**: MySQL, PostgreSQL, Oracle, ClickHouse
-- **AI 框架**: LangGraph（确定性工作流，非 LangChain/DeepAgents）
-- **重点竞品**: WrenAI（语义层+RAG+自愈闭环是标杆）
-  - 其他竞品：Vanna AI(RAG 方案)、DB-GPT(多 Agent)、SQLChat(反面教材)
-- **差异化**: Oracle 深度支持 + Java 生态集成 + 更轻量部署
-- **核心风险**: Schema Linking 准确率（29%-49% 错误来源）
-- **核心理念**: LLM 需要更好的上下文，不是更多数据（Context Engineering）
-- **关键数据**: 缓存命中率 30-50%、自愈成功率 30-60%、Column Pruning 减少 60-70% token
-
-## Constraints
-
-- **[Tech stack]**: Python 后端 + Vue3 前端 — 团队技术栈约束
-- **[Database]**: 必须支持 Oracle — 国内企业大量使用，是差异化优势
-- **[Security]**: 多租户强制隔离 — SaaS 产品基本要求
-- **[Phase 1]**: 仅 MySQL + 最小可用链路 — 控制范围快速验证
-
-## Key Decisions
-
-| Decision | Rationale | Outcome |
-|----------|-----------|---------|
-| LangGraph over LangChain | 确定性工作流、状态管理、回退机制 | ✓ Good |
-| MDL-style semantic layer | 解决 Schema Linking 核心问题 | ✓ Good |
-| SQLGlot for dialect conversion | 多方言支持、AST 解析 | ✓ Good |
-| Shared-table multi-tenancy | 运维成本低、适合 SaaS | — Pending |
-| Chroma for v1 vector DB | 轻量嵌入式，迁移成本低 | — Pending |
-| Java annotation + manual dual mode | 注解是目标，手动是过渡 | — Pending |
-
----
-
-*Last updated: 2026-05-01 after initial planning*
+- **Phase 1（基础设施）已完成**：11/11 任务实现，20 个单元测试通过
+- **下一步**：Phase 2（语义层与知识图谱），从 T012（语义层 JSON Schema）开始
+- 详见 `STATE.md`（状态详情）、`ROADMAP.md`（阶段进度）、`doc/chatbi-v2/tasks.md`（任务清单）

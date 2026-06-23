@@ -1,0 +1,77 @@
+"""
+ChatBI v2 — Security Utilities
+
+对标: Claude Code 安全默认 (Fail-Closed) + v1 security.py
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from jose import JWTError, jwt
+import bcrypt
+
+from app.core.config import get_settings
+
+# Password hashing (use bcrypt directly, passlib has compat issues with newer bcrypt)
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt."""
+    return bcrypt.hashpw(
+        password.encode("utf-8"),
+        bcrypt.gensalt(rounds=get_settings().bcrypt_rounds),
+    ).decode("utf-8")
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash."""
+    return bcrypt.checkpw(
+        plain_password.encode("utf-8"),
+        hashed_password.encode("utf-8"),
+    )
+
+
+# JWT
+def create_access_token(data: dict[str, Any]) -> str:
+    """Create a JWT access token with all required auth fields.
+
+    对标 v1 经验教训 #3: token 必须包含所有鉴权字段
+    """
+    settings = get_settings()
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
+    to_encode.update({"exp": expire, "type": "access"})
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.jwt_algorithm)
+
+
+def create_refresh_token(data: dict[str, Any]) -> str:
+    """
+    Create a JWT refresh token — must contain ALL same auth fields as access token.
+
+    对标 v1 经验教训 #20: refresh token payload 需包含所有鉴权字段
+    """
+    settings = get_settings()
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_expire_days)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.jwt_algorithm)
+
+
+def decode_token(token: str) -> dict[str, Any]:
+    """Decode and validate a JWT token. Raises JWTError on failure."""
+    settings = get_settings()
+    return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
+
+
+# SQL Safety (placeholder — to be expanded in Phase 4)
+def validate_sql_select_only(sql: str) -> bool:
+    """Check that SQL is a SELECT statement only (keyword-level quick check)."""
+    import re
+
+    sql_upper = f" {sql.upper().strip()} "
+    forbidden = [
+        " DROP ", " TRUNCATE ", " DELETE ", " UPDATE ", " ALTER ", " INSERT ",
+        " CREATE ", " REPLACE ", " GRANT ", " REVOKE ",
+    ]
+    return not any(kw in sql_upper for kw in forbidden)
