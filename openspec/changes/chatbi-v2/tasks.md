@@ -31,7 +31,7 @@
 - [x] T019: Milvus 表结构 + BGE-large-zh Embedding 集成 — ✅ 本地 BGE-large-zh-v1.5 (1024维, 离线) + VectorStore 抽象 (Mock/Milvus 可切) + MilvusVectorStore (HNSW+IP, JSON标量过滤); 测试 11+18+6(真实模型slow)
 - [x] T020: 语义层 → 向量索引构建 (数据源接入时自动触发) — ✅ build_index (model/metric→text→embed→upsert) 挂 scan endpoint; 端到端验证 13 表索引 13 条
 - [x] T021: 语义层修改 → 增量更新索引 — ✅ rebuild_index (按 data_source 删旧+建新) 挂 rollback endpoint; 5 测试
-- [ ] T022: 两阶段检索 (向量召回 top-20 → LLM 精筛)
+- [x] T022: 两阶段检索 (向量召回 top-20 → LLM 精筛) — ✅ retrieve (向量召回 score≥0.5 + LLM 精筛, prompt含假阳性声明, 宁缺毋滥, 无召回不fallback); 8 测试
 - [ ] T023: 语义缓存 (余弦相似度 > 0.95 → 复用 SQL)
 - [ ] T024: Few-shot 历史匹配 (最多 3 条审核通过的 SQL 注入 prompt)
 
