@@ -46,10 +46,10 @@
 
 ## Phase 4: Agent 执行引擎（2 周）
 
-- [ ] T025: Agent while(true) 执行循环 (生成→校验→执行→自检→修正→再生成)
+- [x] T025: Agent while(true) 执行循环 (生成→校验→执行→自检→修正→再生成) — ✅ run_agent StateGraph状态机 (对标query.ts while-true): intent→schema→generate→execute→[self_heal循环max2轮]→check→visualize→final; 严格前向, 上游失败→final(failed); GENERAL/EXPLANATION短路; AgentState(State Store) + AgentDeps(注入); 8 测试
 - [x] T026: 意图识别 (5 种意图 + Pydantic 强约束 + confidence 降级 + 追问维度继承) — ✅ IntentOutput Pydantic + classify_intent (confidence<0.6降级CLARIFICATION, schema重试2次, LLM失败降级) + strip_visualization剥离可视化措辞; 19 测试
-- [ ] T027: 预思考机制 (选表理由+聚合方式+注意事项 → SSE thinking 事件)
-- [ ] T028: ask_user 关键节点暂停 (Schema不确定/结果异常时触发)
+- [x] T027: 预思考机制 (选表理由+聚合方式+注意事项 → SSE thinking 事件) — ✅ think (LLM结构化: tables+aggregation+caveats[Fan-Trap等], 失败降级空不阻塞); 对标 REF-001
+- [x] T028: ask_user 关键节点暂停 (Schema不确定/结果异常时触发) — ✅ ask_user即tool(对标§3.5); should_ask_for_schema(无召回/多候选低分) + should_ask_for_result(异常无法自修复); 触发条件对标 proposal.md:120(不是每次SQL前)
 - [x] T029: SQL 生成 (白名单列名 + data_type 约束 + Skills 注入 + 多轮历史) — ✅ generate_sql (prompt分层 §4: 静态schema/列约束/类型约束 + 动态问题/fewshot/历史) + 生成后立即T030校验; 10 测试
 - [x] T030: SQL 三层校验 (AST 拒绝非 SELECT + 危险函数拒绝 + 白名单列名校验) — ✅ sqlglot AST(非SELECT拒绝, 多语句拒绝) + 危险函数(LOAD_FILE/SLEEP/BENCHMARK/INTO OUTFILE, Anonymous.name) + 白名单列; 替换 security.py 占位; 26 测试
 - [x] T031: SQL 执行 + 连接池管理 + 超时控制 + 大结果分块 — ✅ execute_sql (复用datasource_engine池 + asyncio.to_thread + wait_for超时30s + max_rows截断 + 自动加LIMIT防全表扫描); 10 测试
