@@ -23,7 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
 
 from app.db.session import Base
 
@@ -34,6 +34,24 @@ def new_uuid() -> str:
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ── Multi-tenant mixin (对标 v1 #48: 隔离应是默认行为) ────────
+#
+# TenantMixin 提供 tenant_filter() — 所有 tenant-scoped 模型继承它，
+# 让查询代码用 Model.tenant_filter(tid) 显式过滤，而非手动写 .where(tenant_id==)。
+# （自动注入的 session event 在 Phase 2 CRUD 时再加；这里先保证 filter API 可用）
+
+
+class TenantMixin:
+    """Mixin for tenant-scoped models. Provides tenant_filter() helper."""
+
+    tenant_id: declared_attr
+
+    @classmethod
+    def tenant_filter(cls, tenant_id: str):
+        """Return the SQLAlchemy filter for this tenant."""
+        return cls.tenant_id == tenant_id
 
 
 # ── Tenant ────────────────────────────────────────────────────
@@ -54,7 +72,7 @@ class Tenant(Base):
 
 # ── User ──────────────────────────────────────────────────────
 
-class User(Base):
+class User(TenantMixin, Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
@@ -81,7 +99,7 @@ class User(Base):
 
 # ── DataSource ────────────────────────────────────────────────
 
-class DataSource(Base):
+class DataSource(TenantMixin, Base):
     __tablename__ = "data_sources"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
@@ -106,7 +124,7 @@ class DataSource(Base):
 
 # ── Semantic Model ────────────────────────────────────────────
 
-class SemanticModel(Base):
+class SemanticModel(TenantMixin, Base):
     """Versioned semantic layer definition (JSON)."""
     __tablename__ = "semantic_models"
 
@@ -129,7 +147,7 @@ class SemanticModel(Base):
 
 # ── Conversation ──────────────────────────────────────────────
 
-class Conversation(Base):
+class Conversation(TenantMixin, Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
@@ -150,7 +168,7 @@ class Conversation(Base):
 
 # ── Saved Query ───────────────────────────────────────────────
 
-class SavedQuery(Base):
+class SavedQuery(TenantMixin, Base):
     __tablename__ = "saved_queries"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
@@ -172,7 +190,7 @@ class SavedQuery(Base):
 
 # ── Audit Log ─────────────────────────────────────────────────
 
-class AuditLog(Base):
+class AuditLog(TenantMixin, Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
@@ -199,7 +217,7 @@ class AuditLog(Base):
 
 # ── Feedback ──────────────────────────────────────────────────
 
-class Feedback(Base):
+class Feedback(TenantMixin, Base):
     __tablename__ = "feedback"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)

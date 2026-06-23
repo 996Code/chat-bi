@@ -8,7 +8,7 @@
 
 | Phase | 名称 | 状态 |
 |-------|------|------|
-| 1 | 基础设施 | ✅ 已完成（代码就绪，20 测试通过） |
+| 1 | 基础设施 | ✅ 已完成（代码就绪，含质量改进 58 测试 / 覆盖率 87%） |
 | 2 | 语义层与知识图谱 | ⏳ 执行中（T012 完成，12/54） |
 | 3 | RAG 检索与向量化 | 待规划 |
 | 4 | Agent 执行引擎 | 待规划 |
@@ -34,17 +34,26 @@
 **前端** (`frontend/src/`) — 骨架就绪
 - `main.ts` / `App.vue` / `router/` / `ChatView.vue`（占位）/ `api/client.ts`（JWT 拦截器）
 
-**测试** — 20 passed (`pytest backend/tests/`)
+**测试** — 58 passed，覆盖率 87% (`pytest backend/tests/ --cov=app`)
 - `test_core.py` — 配置/密钥安全/JWT/SQL 校验/健康检查（9 个）
 - `test_infrastructure.py` — 模型/Checkpointer/记忆/缓存（11 个）
+- `test_semantic_schema.py` — 语义层 JSON Schema（13 个，T012）
+- `test_auth.py` — JWT 依赖/RBAC/多租户隔离/审计写入（16 个，T006/T008 补齐）
+- `test_integration.py` — HTTP 层 + auth 端到端 + DB 集成（9 个）
+
+**质量保证**
+- 覆盖率门禁 75% (`pytest --cov --cov-fail-under=75`)
+- auth.py 覆盖率从 0% → 90%（安全盲区消除）
 
 **基础设施**
 - `docker-compose.yml` + `deploy/`（Nginx + .env.example）+ `deploy.sh`
 - 数据库已初始化（192.168.99.22，8 张表 + default_tenant + admin 用户）
 
-## 遗留技术债（进入 Phase 2 前建议补）
-- **T006 多租户隔离** + **T008 审计日志**：代码已实现，但缺单元测试（当前只测了模型字段，未验证框架级隔离和写入行为）
+## 遗留技术债
+- **TenantMixin 死代码已修复**：Phase 1 的 TenantMixin 定义在 auth.py 但 7 个模型都没继承 → 已迁移到 models.py 并让所有 tenant-scoped 模型继承（对标 v1 #48）
 - 前端仅占位，认证/数据源 UI 待 Phase 7
+- SQL 危险函数校验（INTO OUTFILE/LOAD_FILE）未实现，留 Phase 4 T030（v1 #46 的另一半）
+- **端到端业务链路测试**待 Phase 2 API 实现后补（注册→登录→数据源→扫描→语义层，已在 test_integration.py 预留）
 
 ## OpenSpec 关联
 - **Change**: chatbi-v2
@@ -57,6 +66,9 @@
 - 2026-06-05: /ai:spec 完成 — 基于 Claude Code 源码深度解读的完整规格
 - 2026-06-08: Phase 1 实现（11 任务 + 20 测试 + 数据库初始化）
 - 2026-06-23: 核实状态、勾选 Phase 1、提交 git 基线
+- 2026-06-23: 文档结构整改（CLAUDE.md 重写 v2 版 + v1 归档 + tasks 单源）
+- 2026-06-23: Phase 2 T012 语义层 JSON Schema（Pydantic v2，13 测试）
+- 2026-06-23: 质量改进 — pytest-cov 门禁 75% + 补 auth 测试（T006/T008）+ 修复 TenantMixin 死代码（7 模型未继承，对标 v1 #48）+ 集成测试骨架。测试 33→58，覆盖率 87%
 
 ## 下一步
 执行 Phase 2 / T012（语义层 JSON Schema 定义）—— `/ai:do` 推进。

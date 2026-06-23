@@ -15,11 +15,9 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import event, select
-from sqlalchemy.orm import declared_attr
 
 from app.core.security import decode_token
-from app.db.models import AuditLog, User
+from app.db.models import AuditLog, TenantMixin, User
 
 logger = logging.getLogger(__name__)
 
@@ -139,15 +137,9 @@ def get_current_tenant() -> str | None:
     return _current_tenant_id.get()
 
 
-# Tenant-aware mixin for models
-class TenantMixin:
-    """Mixin for tenant-scoped models. Provides automatic tenant_id filtering."""
-    tenant_id: declared_attr
-
-    @classmethod
-    def tenant_filter(cls, tenant_id: str):
-        """Return the SQLAlchemy filter for this tenant."""
-        return cls.tenant_id == tenant_id
+# TenantMixin 现定义于 app.db.models (纯 ORM 基类，避免循环依赖)
+# auth.py 通过 re-export 保持向后兼容
+__all__ = ["TenantMixin"]
 
 
 # ── Audit Helpers ──────────────────────────────────────────────

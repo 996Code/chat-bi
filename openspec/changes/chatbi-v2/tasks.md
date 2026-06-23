@@ -9,9 +9,9 @@
 - [x] T003: Docker Compose (PostgreSQL + Milvus + Redis + Python + Vue + Nginx + supervisord) — ✅ docker-compose.yml + deploy/
 - [x] T004: 数据库模型 (Tenant/User/DataSource/SemanticModel/Conversation/AuditLog/SavedQuery/Feedback) — ✅ 测试覆盖 (test_infrastructure.TestDatabaseModels)
 - [x] T005: JWT 认证 + RBAC (admin/user/read_only) — ✅ 测试覆盖 (test_core.TestSecurity: JWT roundtrip/refresh token)
-- [x] T006: 多租户框架级隔离 (SQLAlchemy session event 自动注入 tenant_id) — ⚠️ 已实现 (auth.py: contextvars + TenantMixin)，**缺单元测试**
+- [x] T006: 多租户框架级隔离 (SQLAlchemy session event 自动注入 tenant_id) — ✅ 测试覆盖 (test_auth.py::TestMultiTenantIsolation, 负向越权测试; 并修复 TenantMixin 死代码 → 7 模型继承)
 - [x] T007: 密钥安全 (启动时检测 CHANGE_ME 占位符 → 拒绝启动) — ✅ 测试覆盖 (test_core.test_secret_key_is_not_default_in_production_ctx)
-- [x] T008: 审计日志 (覆盖成功+失败+拒绝，统一字段) — ⚠️ 已实现 (auth.py:write_audit_log + models.AuditLog)，**缺单元测试**
+- [x] T008: 审计日志 (覆盖成功+失败+拒绝，统一字段) — ✅ 测试覆盖 (test_auth.py::TestWriteAuditLog, 三态 + audit_enabled 开关 + sql_text 记录)
 - [x] T009: Checkpointer 会话持久化 (PostgreSQL, 写入简单 恢复时重建，对标 Claude Code JSONL 思路) — ✅ 测试覆盖 (test_infrastructure.TestCheckpointer)
 - [x] T010: Agent 记忆文件化基础设施 (每条记忆 .md + MEMORY.md 索引，对标 Claude Code memdir) — ✅ 测试覆盖 (test_infrastructure.TestAgentMemory)
 - [x] T011: Prompt 分层缓存基础设施 (静态段/动态段 boundary + section 级缓存，对标 Claude Code systemPromptSections) — ✅ 测试覆盖 (test_infrastructure.TestPromptCache)

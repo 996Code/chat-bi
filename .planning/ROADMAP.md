@@ -15,5 +15,5 @@
 ## 进度指标
 
 - **已完成任务**: 12 / 54（Phase 1 全部 + Phase 2 T012）
-- **测试**: 33 passed（`pytest backend/tests/`）
+- **测试**: 58 passed，覆盖率 87%（门禁 75%，`pytest --cov`）
 - **当前焦点**: Phase 2 执行中 — 下一步 T013（数据源扫描）或 T018（复合指标）
