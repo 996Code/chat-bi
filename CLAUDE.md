@@ -1,128 +1,146 @@
-# ChatBI — Claude Code 项目说明
+# ChatBI v2 — 项目说明（Agent 必读）
 
 > 自然语言转 SQL 的 BI 平台 — 让不会 SQL 的人也能自助完成数据查询和可视化
 >
-> 新成员接手项目前请**先按顺序读完以下文档**。
+> **v2 从零重构**，基于 Claude Code 源码深度解读 + 海泰 ChatBI 代码分析 + v1 的 48 条经验教训。
 
 ---
+
+## ⚡ 快速上手（Agent 第一件事）
+
+```bash
+# 了解当前状态（唯一真相源）
+cat .planning/STATE.md
+
+# 跑测试确认环境 OK
+.venv/bin/python -m pytest backend/tests/ -q
+
+# 看任务进度
+openspec list                    # 显示 N/54 tasks
+cat openspec/changes/chatbi-v2/tasks.md
+```
+
+## 当前状态
+
+- **Phase 1（基础设施）已完成**：11/11 任务，20 测试通过
+- **下一步**：Phase 2（语义层），从 T012 开始
+- 详见 `.planning/STATE.md`（唯一状态真相源）
+
+---
+
+## 开发工作流：`/ai:*` 命令
+
+本项目用一套自定义斜杠命令驱动 spec-driven 开发：
+
+```
+/ai:spec  →  /ai:plan  →  /ai:do  →  /ai:check  →  /ai:resume / /ai:debug
+ 需求定义     规划        执行       全面审查       恢复/调试
+```
+
+- 命令定义在 `.claude/commands/ai/`
+- 规格产出在 `openspec/changes/chatbi-v2/`（OpenSpec 方法论）
+- 执行计划在 `.planning/phases/chatbi-v2/`（GSD 结构）
+- **任务清单的真相源**：`openspec/changes/chatbi-v2/tasks.md`（不是 doc/ 版）
 
 ## 必读文档（按优先级）
 
-| 优先级 | 文档 | 读它的原因 |
-|--------|------|-----------|
-| P0 | `doc/项目概览.md` | 产品核心价值、技术栈、架构决策 |
-| P0 | `doc/需求文档.md` | 所有开发的依据，88 个 v1 需求清单 |
-| P0 | `doc/路线图.md` | 4 个 Phase 规划、当前进度、依赖关系 |
-| P1 | `doc/规划文档.md` | 详细架构设计、数据库表设计、API 规范 |
-| P1 | `doc/经验教训.md` | 开发过程中的坑和解决方案（执行阶段 21 条实战经验） |
-| P1 | `doc/方法论.md` | 从 0 做项目的完整方法论（规划 → 执行 → 交付） |
-| P2 | `doc/检查清单.md` | 各 Phase 验收检查项 |
-| P2 | `doc/测试用例.md` | 测试策略和场景清单 |
-| P2 | `doc/项目状态.md` | 当前项目状态 |
-| P2 | `doc/操作手册.md` | 部署、配置、API 文档、故障排查、Docker 部署指南 |
-| P2 | `README.md` | 项目文档索引、需求追溯矩阵 |
+| 优先级 | 文档 | 为什么读 |
+|--------|------|---------|
+| P0 | `.planning/STATE.md` | 当前状态、已完成、遗留债、下一步（**唯一状态真相源**） |
+| P0 | `doc/chatbi-v2/proposal.md` | 5 条设计法则 + P0/P1/P2 目标 + 关键决策 |
+| P0 | `doc/chatbi-v2/design.md` | Leader-Worker 架构 + Agent 7 步执行流程 + State Store + Prompt 分层 |
+| P1 | `doc/Claude-Code-源码深度解读.md` | 设计法则来源（while-true/Fail-Closed/ask_user/压缩/Prompt分层） |
+| P1 | `doc/海泰ChatBI完整代码分析.md` | BI 领域打法（Stage状态机/复合指标/两阶段RAG/Skills分层） |
+| P1 | `doc/经验教训.md` | v1 的 48 条坑，**别重蹈覆辙**（尤其"安全降级无声"根本模式） |
+| P2 | `doc/chatbi-v2/specs/*/spec.md` | 11 个领域规格（按 Phase 需要时读） |
 
-## 评审与审计文档（按需查阅）
-
-| 文档 | 说明 |
-|------|------|
-| `doc/backend/代码评审-最终.md` | 代码质量审计 |
-| `doc/安全审计-最新.md` | 安全合规审计 |
-| `doc/架构评审-最新.md` | 架构质量评审 |
-| `doc/前端评审-最新.md` | 前端代码评审 |
-
-## 每日开发记录
-
-`doc/开发记录-*.md` — 每日工作会话记录。
+> ⚠️ v1 文档已归档到 `doc/v1-archive/`，**不是当前开发依据**。需要对照 v1 历史时再翻。
 
 ---
 
-## 项目结构速览
+## 5 条设计法则（不可妥协）
+
+1. **执行引擎是 while(true) 不是一次调用** — 生成 SQL → 执行 → 自愈 → 自检 → 修正 → 再生成
+2. **安全默认是"否"（Fail-Closed）** — 出问题时显式失败，绝不静默放行（v1 教训根本模式）
+3. **"问用户"就是普通 Tool** — ask_user 不是特殊机制，Agent 不确定时自己决定暂停
+4. **压缩 = 压缩 + 状态补偿** — 压缩后补回语义层 + 当前 SQL + 筛选条件 + Skills
+5. **Prompt 分层可缓存** — 语义层/Skills 放 boundary 前（可缓存），用户问题/历史放后面
+
+## BI 领域关键原则（来自海泰 + v1 教训）
+
+- **宁缺毋滥**：检索/匹配失败返回空 + 明确提示，**禁止 prompt 出现"不要返回空"**（v1 #29 幻觉根源）
+- **单次执行硬约束**：execute_sql 最多 1 次 + 自愈最多 2 轮
+- **SQL 三层校验**：AST 拒绝非 SELECT + 危险函数拒绝 + 白名单列名（v1 #46 只做了一半）
+- **追问维度继承**：normalized_question = 锚点未重写维度 + 本轮新增维度
+
+---
+
+## 项目结构
 
 ```
 chat-bi/
-├── backend/
-│   ├── app/
-│   │   ├── main.py              # FastAPI 入口
-│   │   ├── api/                 # API 路由（auth, datasource, query 等 9 个模块）
-│   │   ├── ai/                  # LangGraph AI 管道（intent → schema → sql → execute → self-heal）
-│   │   ├── core/                # 配置、安全、日志、限流
-│   │   ├── db/                  # SQLAlchemy 模型、会话
-│   │   └── services/            # 业务服务层
-│   ├── tests/                   # 191 个测试用例
-│   ├── seed.py                  # 业务数据初始化（可重复运行）
-│   └── .env.example             # 环境变量模板
-├── frontend/
-│   └── src/
-│       ├── views/               # 页面（ChatView, DataModelView, DataSource 等）
-│       ├── components/          # 组件（ChartRenderer, DataDictionary）
-│       ├── stores/              # Pinia 状态管理
-│       └── api/                 # Axios 封装
-├── doc/                       # 统一文档目录（规划、评审、审计、部署）
-├── .planning/                   # 仅保留 PROJECT.md
-├── deploy/                      # Docker 部署配置
-├── deploy.sh                    # 一键部署脚本
-├── docker-compose.yml           # 容器编排
-├── Dockerfile                   # 单容器镜像构建
-└── README.md                   # 项目入口文档
+├── backend/app/
+│   ├── main.py              # FastAPI 入口 + lifespan
+│   ├── api/                 # API 路由（目前只有 /ping、/health）
+│   ├── core/                # config / security / auth / checkpointer /
+│   │                        # agent_memory / prompt_cache / logging / redis / milvus
+│   ├── db/                  # models（8 张表）/ session（懒加载引擎）
+│   ├── ai/ models/ schemas/ services/   # Phase 2+ 占位
+│   └── tests/               # 20 passed
+├── frontend/src/            # Vue3 + TS 骨架（ChatView 占位 + api client JWT 拦截器）
+├── openspec/changes/chatbi-v2/   # ★ OpenSpec 规格（任务真相源）
+├── .planning/                    # ★ GSD 状态（STATE/ROADMAP/PROJECT + phases/）
+├── doc/
+│   ├── chatbi-v2/               # v2 方案文档（proposal/design/specs）
+│   ├── Claude-Code-源码深度解读.md   # 设计法则来源
+│   ├── 海泰ChatBI完整代码分析.md     # BI 领域打法来源
+│   ├── 经验教训.md                  # v1 48 条坑
+│   └── v1-archive/               # v1 历史文档（非当前依据）
+└── .claude/commands/ai/         # /ai:* 工作流命令
 ```
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
-| 后端 | Python 3.12, FastAPI, SQLAlchemy async (aiomysql) |
-| AI | LangGraph, LangChain, OpenAI-compatible API |
-| 数据库 | MySQL 9.4 |
-| 缓存 | Redis 7（查询缓存、限流、登录锁） |
-| 前端 | Vue 3, TypeScript, Element Plus, ECharts, Pinia, Vue Router |
-| 安全 | JWT(HS256), bcrypt, Fernet 加密, SQLGlot AST 校验 |
-| 部署 | Docker + docker-compose + nginx + supervisord |
+| 后端 | Python 3.12, FastAPI, SQLAlchemy async (asyncpg) |
+| AI | LangGraph + 自建 Agent 封装（取 deepagents 思路） |
+| 元数据库 | **PostgreSQL**（业务 + Checkpointer + Store） |
+| 向量库 | Milvus + BGE-large-zh-v1.5 (1024 维) |
+| 缓存 | Redis 7 |
+| SQL 校验 | SQLGlot（AST） |
+| 前端 | Vue 3, TypeScript, ECharts, Pinia |
 
-## 开发规范
+## 开发规范（硬约束）
 
-- **测试**：每次变更后运行 `.venv/bin/python -m pytest tests/ -x -q`，191 passed 为底线
-- **配置**：所有魔法数字集中在 `app/core/config.py`，通过环境变量控制
-- **API 前缀**：统一使用 `settings.api_prefix`（默认 `/chat-bi/api/v1`）
-- **端口**：后端默认 8999（Docker 28080），前端 dev 5173
-- **测试隔离**：conftest.py 强制使用 SQLite in-memory，不碰真实数据库
-- **seed 脚本**：必须支持重复运行（truncate + insert），UUID 固定
+- **测试**：`.venv/bin/python -m pytest backend/tests/ -q`，20 passed 为底线，**变更后必跑**
+- **Python 3.12+**：用 `X | None`，不用 `Optional[X]`
+- **配置集中**：所有魔法数字/超时/阈值在 `app/core/config.py`，环境变量控制（v1 #1）
+- **API 前缀**：`settings.api_prefix`（默认 `/chat-bi/api/v1`）
+- **测试隔离**：conftest.py 用 SQLite in-memory，不碰真实数据库（v1 #5）
+- **JWT 四字段**：user_id / email / tenant_id / role（v1 #3/#20）
+- **密钥安全**：启动时检测 `CHANGE_ME` 占位符拒绝启动（v1 #44）
+- **多租户**：框架级隔离（contextvars + TenantMixin），不靠手动 WHERE（v1 #48）
+- **审计三态**：success / fail / denied 全覆盖（v1 #41）
 
-## Docker 部署
-
-```bash
-cp deploy/.env.example deploy/.env   # 首次：编辑配置
-./deploy.sh                          # 一键部署
-```
-
-详细部署指南见 `doc/操作手册.md` 第 11 章。
-
-## 核心 AI 查询流程
-
-```
-用户提问 → 意图识别 → 上下文补全 → Schema 选择(LLM两步) → SQL 生成 → 执行查询 → SQL 自愈(最多2轮) → 图表推断 → 返回结果
-```
-
-## 环境切换
-
-项目根目录有 `.env.home` 和 `.env.office` 两套环境配置模板，根目录 `.env` 是实际生效的配置文件。切换时：
+## 启动命令
 
 ```bash
-cp .env.home .env     # 切换到 home（192.168.3.110）
-cp .env.office .env   # 切换到 office
+# 后端
+.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8999 &
+
+# 前端
+cd frontend && npx vite --host 0.0.0.0 --port 5173 &
+
+# 测试
+.venv/bin/python -m pytest backend/tests/ -v
 ```
 
-后端和前端通过符号链接读取根目录 `.env`，无需分别修改。
+## 遗留技术债（进 Phase 2 前建议补）
 
-## 注意事项
-
-1. **不要跳过测试** — 191 个测试覆盖认证、数据源、查询、审计等核心功能
-2. **不要硬编码配置** — 所有超时、阈值、密钥走 `config.py`
-3. **不要直接操作数据库** — 通过 SQLAlchemy ORM，测试用 SQLite
-4. **API 路径统一** — 走 `/chat-bi/api/v1` 前缀
-5. **数据源必须真实可连** — seed 数据必须指向真实数据库，不能用假库名
-6. **JWT 必须包含所有鉴权字段** — user_id、email、tenant_id、role
+- **T006 多租户隔离** + **T008 审计日志**：代码已实现但缺单元测试（只测了模型字段，没验证框架级行为）
+- 建议在 Phase 2 引入 CRUD API 后一起补（需要 HTTP 层 + 认证中间件）
 
 ---
 
-*最后更新: 2026-05-07*
+*最后更新: 2026-06-23*
