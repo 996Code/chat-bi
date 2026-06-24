@@ -68,11 +68,11 @@
 ## Phase 6: Skills 与反馈系统（1 周）
 
 - [x] T040: Skills 加载 (SKILL.md 解析 + System Prompt 注入 + 热更新) — ✅ Skill.from_file (frontmatter+正文) + SkillsLoader (缓存+invalidate热更新) + format_for_prompt; 接入sql_agent; 8 测试 + 示例SKILL.md
-- [ ] T041: Skills 编辑器 UI (在线编辑 + 预览效果 + 版本管理)
-- [ ] T042: 反馈收集 (点赞/点踩 + 改 SQL + 纠正图表 + 写评论)
-- [ ] T043: 负面信号检测 (关键词匹配 + 连续点踩 → 触发反馈表单)
-- [ ] T044: 反馈审核队列 (admin 审核 → 回流知识库 or 拒绝)
-- [ ] T045: Agent 记忆管理 UI (查看/编辑/删除记忆 对标 Claude Code MemoryFileSelector)
+- [ ] T041: Skills 编辑器 UI (在线编辑 + 预览效果 + 版本管理) — *延后到 Phase 7 前端集中* — 后端 T040 已就绪
+- [x] T042: 反馈收集 (点赞/点踩 + 改 SQL + 纠正图表 + 写评论) — ✅ POST/feedback (CRUD + 审核状态) + 审核 API
+- [x] T043: 负面信号检测 (关键词匹配 + 连续点踩 → 触发反馈表单) — ✅ detect_negative_signal + check_consecutive_dislikes; 3 测试
+- [x] T044: 反馈审核队列 (admin 审核 → 回流知识库 or 拒绝) — ✅ GET/feedback/pending + POST/{id}/review (三态 pending/approved/rejected)
+- [ ] T045: Agent 记忆管理 UI (查看/编辑/删除记忆 对标 Claude Code MemoryFileSelector) — *延后到 Phase 7* — 后端 agent_memory 已就绪
 
 ## Phase 7: 前端与交付（1 周）
 
