@@ -30,6 +30,18 @@ const router = createRouter({
       component: () => import('../views/SemanticView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/observability',
+      name: 'Observability',
+      component: () => import('../views/ObservabilityView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/history',
+      name: 'History',
+      component: () => import('../views/HistoryView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

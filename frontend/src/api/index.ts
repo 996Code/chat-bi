@@ -179,4 +179,25 @@ export const chat = {
   },
 }
 
+// ── 可观测性 + 审计 ───────────────────────────────────────
+
+export const observability = {
+  /** 系统状态 (T050) */
+  healthDetail() {
+    return apiClient.get('/health/detail')
+  },
+  /** 审计日志 (T052) */
+  auditLogs(params?: { limit?: number; resource_type?: string }) {
+    return apiClient.get('/audit-logs', { params })
+  },
+  /** 对话列表 (T052) */
+  conversations() {
+    return apiClient.get('/conversations')
+  },
+  /** 对话详情 (T052) */
+  conversationDetail(convId: string) {
+    return apiClient.get(`/conversations/${convId}`)
+  },
+}
+
 export { default as apiClient } from './client'
