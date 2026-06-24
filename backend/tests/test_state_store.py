@@ -50,8 +50,8 @@ class TestConversationState:
 class TestStateStore:
     """State Store: save/load/restore (对标 AEE-005 Checkpointer)。"""
 
-    def test_save_and_load(self):
-        store = StateStore(base_dir="/tmp/test_state_store")
+    def test_save_and_load(self, tmp_path):
+        store = StateStore(base_dir=str(tmp_path / "state"))
         state = ConversationState(
             current_tables=["biz_orders"],
             current_sql="SELECT COUNT(*) FROM biz_orders",
@@ -66,13 +66,13 @@ class TestStateStore:
         assert loaded.current_sql == "SELECT COUNT(*) FROM biz_orders"
         assert loaded.current_filters == {"status": "paid"}
 
-    def test_load_nonexistent_returns_none(self):
-        store = StateStore(base_dir="/tmp/test_state_store")
+    def test_load_nonexistent_returns_none(self, tmp_path):
+        store = StateStore(base_dir=str(tmp_path / "state"))
         assert store.load("tenant1", "nonexistent") is None
 
-    def test_multi_turn_latest_wins(self):
+    def test_multi_turn_latest_wins(self, tmp_path):
         """多轮对话, load 返回最后一轮状态。"""
-        store = StateStore(base_dir="/tmp/test_state_store2")
+        store = StateStore(base_dir=str(tmp_path / "state"))
         s1 = ConversationState(current_sql="SELECT 1", current_tables=["t1"])
         s2 = ConversationState(current_sql="SELECT 2", current_tables=["t2"])
         store.save("t", "c", 1, s1)
@@ -80,9 +80,9 @@ class TestStateStore:
         loaded = store.load("t", "c")
         assert loaded.current_sql == "SELECT 2"
 
-    def test_tenant_isolation(self):
+    def test_tenant_isolation(self, tmp_path):
         """不同租户的状态隔离。"""
-        store = StateStore(base_dir="/tmp/test_state_store3")
+        store = StateStore(base_dir=str(tmp_path / "state"))
         store.save("t1", "c", 1, ConversationState(current_sql="SELECT 1"))
         store.save("t2", "c", 1, ConversationState(current_sql="SELECT 2"))
         assert store.load("t1", "c").current_sql == "SELECT 1"

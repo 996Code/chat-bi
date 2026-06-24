@@ -23,17 +23,43 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class DecisionPoint:
+    """关键决策点 (对标 CMP-003: 用户确认过的决策不丢失)。
+
+    type: table_confirm(确认表) / sql_modify(改SQL) / filter_change(改筛选)
+    """
+    type: str = ""
+    description: str = ""
+    detail: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": self.type, "description": self.description, "detail": self.detail}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "DecisionPoint":
+        return cls(
+            type=d.get("type", ""),
+            description=d.get("description", ""),
+            detail=d.get("detail", {}),
+        )
+
+
+@dataclass
 class ConversationState:
     """一轮对话的结构化状态 (对标 AEE-005)。
 
     每轮 run_agent 后存储; 追问时恢复 + 继承。
     压缩后状态补偿从这里读 (T038)。
+    压缩摘要 + 关键决策点 (T039)。
     """
     current_tables: list[str] = field(default_factory=list)
     current_sql: str = ""
     current_filters: dict[str, Any] = field(default_factory=dict)
     result_summary: dict[str, Any] = field(default_factory=dict)
     chart_type: str | None = None
+    # T039: 压缩摘要 (旧轮次的一句话总结) + 关键决策
+    compressed_summary: str = ""
+    decisions: list[DecisionPoint] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +68,8 @@ class ConversationState:
             "current_filters": self.current_filters,
             "result_summary": self.result_summary,
             "chart_type": self.chart_type,
+            "compressed_summary": self.compressed_summary,
+            "decisions": [d.to_dict() for d in self.decisions],
         }
 
     @classmethod
@@ -52,6 +80,8 @@ class ConversationState:
             current_filters=d.get("current_filters", {}),
             result_summary=d.get("result_summary", {}),
             chart_type=d.get("chart_type"),
+            compressed_summary=d.get("compressed_summary", ""),
+            decisions=[DecisionPoint.from_dict(dp) for dp in d.get("decisions", [])],
         )
 
     def inherit_filters(self, new_filters: dict[str, Any]) -> dict[str, Any]:
@@ -115,3 +145,27 @@ class StateStore:
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning("State load failed: %s", e)
             return None
+
+    def list_turns(self, tenant_id: str, conversation_id: str) -> list[dict[str, Any]]:
+        """列出所有轮次 (供前端展开查看摘要 + 决策, T039)。
+
+        Returns:
+            [{turn, timestamp, state_dict}, ...] 按轮次顺序
+        """
+        path = self._path(tenant_id, conversation_id)
+        if not path.exists():
+            return []
+        turns = []
+        for line in path.read_text(encoding="utf-8").strip().split("\n"):
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                turns.append({
+                    "turn": entry.get("turn", 0),
+                    "timestamp": entry.get("timestamp", ""),
+                    "state": entry.get("state", {}),
+                })
+            except json.JSONDecodeError:
+                continue
+        return turns
