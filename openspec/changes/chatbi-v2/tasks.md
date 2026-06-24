@@ -60,7 +60,7 @@
 
 ## Phase 5: 对话与上下文管理（1 周）
 
-- [ ] T036: State Store (结构化状态存储: current_tables/sql/filters/result_summary)
+- [x] T036: State Store (结构化状态存储: current_tables/sql/filters/result_summary) — ✅ ConversationState + StateStore (JSONL持久化, 追问维度继承inherit_filters); 接入/chat; 9 测试
 - [ ] T037: Relevant Recall (按需召回最多 5 条 Agent 记忆，不全量灌入 prompt)
 - [ ] T038: 上下文压缩 (Token 阈值 70% 触发 + 状态补偿 + 熔断器)
 - [ ] T039: 对话摘要保留 (可展开查看 + 关键决策点标注)

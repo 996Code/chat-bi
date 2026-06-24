@@ -198,25 +198,39 @@ async def chat(
     state = AgentState(question=req.question, semantic_content=content)
     state = await run_agent(state, deps)
 
-    # 持久化 Agent 状态到 Checkpointer (对标 AEE-005, 支持追问恢复)
+    # 追问时恢复上轮状态 (T036 State Store, 对标 AEE-005)
     import uuid
     conversation_id = req.conversation_id or str(uuid.uuid4()).replace("-", "")[:32]
+    prev_state = None
+    if req.conversation_id:
+        try:
+            from app.ai.state_store import StateStore
+            prev_state = StateStore().load(user.tenant_id, conversation_id)
+        except Exception:
+            pass  # 恢复失败不阻塞, 当新对话处理
+
+    # 运行 Agent
+    state = AgentState(question=req.question, semantic_content=content)
+    state = await run_agent(state, deps)
+
+    # 持久化结构化状态到 StateStore (T036, 支持追问恢复)
     try:
-        from app.core.checkpointer import get_checkpointer
-        get_checkpointer().save_turn(
-            tenant_id=user.tenant_id,
-            conversation_id=conversation_id,
-            turn_data={
-                "question": req.question,
-                "intent": state.intent_output.intent if state.intent_output else None,
-                "sql": state.sql,
+        from app.ai.state_store import ConversationState, StateStore
+        exec_result = state.execute_result
+        conv_state = ConversationState(
+            current_tables=[m.get("name", "") for m in state.retrieved_models if m.get("name")],
+            current_sql=state.sql or "",
+            current_filters={},  # Phase 5 后续从 intent 提取
+            result_summary={
+                "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
                 "success": state.success,
-                "error": state.error,
-                "stage": state.stage.value,
-            },
+            } if exec_result or state.success else {},
+            chart_type=state.chart_option.get("series", [{}])[0].get("type") if state.chart_option else None,
         )
+        turn_number = (prev_state.turn + 1) if hasattr(prev_state, "turn") and prev_state else 1
+        StateStore().save(user.tenant_id, conversation_id, turn_number, conv_state)
     except Exception as e:
-        logger.warning("Checkpointer 持久化失败 (不阻塞): %s", e)
+        logger.warning("StateStore 持久化失败 (不阻塞): %s", e)
 
     # 审计
     await write_audit_log(
