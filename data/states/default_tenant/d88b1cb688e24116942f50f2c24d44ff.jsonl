@@ -1,0 +1,1 @@
+{"turn": 1, "timestamp": "2026-06-24T01:49:10.390727+00:00", "state": {"current_tables": ["biz_orders"], "current_sql": "SELECT status, COUNT(*) AS count\nFROM biz_orders\nGROUP BY status", "current_filters": {}, "result_summary": {"row_count": 4, "success": true}, "chart_type": "pie", "compressed_summary": "", "decisions": []}}

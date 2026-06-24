@@ -86,6 +86,13 @@ async def build_agent_deps(
     llm = get_llm_client()
     store = get_vector_store()
 
+    # Skills: 加载业务规则注入 prompt (T040)
+    try:
+        from app.services.skills_loader import get_skills_loader
+        skills_text = get_skills_loader().format_for_prompt()
+    except Exception:
+        skills_text = ""
+
     # 取数据源的语义层 content (白名单列/schema context 来源)
     sm = (
         await db.execute(
@@ -116,6 +123,7 @@ async def build_agent_deps(
         generate_sql=lambda question, schema_context, allowed_columns, llm_client=None, **kw: generate_sql(
             question=question, schema_context=schema_context,
             allowed_columns=allowed_columns, llm_client=llm,
+            skills=skills_text,
         ),
         execute_sql=lambda sql: execute_sql(sql, data_source_id, url, get_engine_pool()),
         heal_sql=lambda sql, error, allowed_columns, schema_context, **kw: heal_sql(

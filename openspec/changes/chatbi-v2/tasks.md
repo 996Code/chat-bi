@@ -67,7 +67,7 @@
 
 ## Phase 6: Skills 与反馈系统（1 周）
 
-- [ ] T040: Skills 加载 (SKILL.md 解析 + System Prompt 注入 + 热更新)
+- [x] T040: Skills 加载 (SKILL.md 解析 + System Prompt 注入 + 热更新) — ✅ Skill.from_file (frontmatter+正文) + SkillsLoader (缓存+invalidate热更新) + format_for_prompt; 接入sql_agent; 8 测试 + 示例SKILL.md
 - [ ] T041: Skills 编辑器 UI (在线编辑 + 预览效果 + 版本管理)
 - [ ] T042: 反馈收集 (点赞/点踩 + 改 SQL + 纠正图表 + 写评论)
 - [ ] T043: 负面信号检测 (关键词匹配 + 连续点踩 → 触发反馈表单)
