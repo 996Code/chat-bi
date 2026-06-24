@@ -62,7 +62,7 @@
 
 - [x] T036: State Store (结构化状态存储: current_tables/sql/filters/result_summary) — ✅ ConversationState + StateStore (JSONL持久化, 追问维度继承inherit_filters); 接入/chat; 9 测试
 - [x] T037: Relevant Recall (按需召回最多 5 条 Agent 记忆) — ✅ recall_memories (关键词相关性排序, max 5, 宁缺毋滥); format_memories_for_prompt; 7 测试
-- [ ] T038: 上下文压缩 (Token 阈值 70% 触发 + 状态补偿 + 熔断器)
+- [x] T038: 上下文压缩 (Token 阈值 70% 触发 + 状态补偿 + 熔断器) — ✅ estimate_tokens + should_compress(70%) + compact_history(LLM摘要+保留3轮) + CompressionCircuitBreaker(三态); 对标 §6; 14 测试
 - [ ] T039: 对话摘要保留 (可展开查看 + 关键决策点标注)
 
 ## Phase 6: Skills 与反馈系统（1 周）
