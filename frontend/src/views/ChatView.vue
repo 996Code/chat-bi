@@ -1,30 +1,248 @@
 <template>
   <div class="chat-view">
-    <h1>ChatBI v2</h1>
-    <p>Welcome to ChatBI v2 — Natural Language to SQL BI Platform</p>
-    <p class="version">Phase 1: Infrastructure (in progress)</p>
+    <div class="chat-header">
+      <el-button :icon="ArrowLeft" text @click="$router.push('/datasources')">数据源</el-button>
+      <span class="title">ChatBI 问答</span>
+      <el-select v-model="selectedDsId" placeholder="选择数据源" size="small" style="width: 200px">
+        <el-option v-for="ds in dataSources" :key="ds.id" :label="ds.name" :value="ds.id" />
+      </el-select>
+    </div>
+
+    <!-- 对话区 -->
+    <div class="chat-body" ref="chatBody">
+      <div v-if="!messages.length" class="empty-hint">
+        <el-empty description="输入问题开始查询，如「各类目商品数量」「消费最高的用户」">
+        </el-empty>
+      </div>
+
+      <div v-for="(msg, idx) in messages" :key="idx" class="message" :class="msg.role">
+        <div class="msg-content">
+          <!-- 用户消息 -->
+          <template v-if="msg.role === 'user'">
+            <div class="user-q">{{ msg.text }}</div>
+          </template>
+          <!-- Agent 回复 -->
+          <template v-else>
+            <div v-if="msg.error" class="error-box">
+              <el-alert :title="msg.error" type="error" :closable="false" show-icon />
+            </div>
+            <template v-else>
+              <!-- SQL -->
+              <div v-if="msg.sql" class="sql-box">
+                <div class="sql-label">SQL</div>
+                <pre><code>{{ msg.sql }}</code></pre>
+              </div>
+              <!-- 结果表格 -->
+              <div v-if="msg.columns?.length" class="result-box">
+                <div class="result-meta">
+                  {{ msg.rowCount }} 行{{ msg.truncated ? ' (已截断)' : '' }}
+                </div>
+                <el-table :data="msg.rows" size="small" border max-height="400">
+                  <el-table-column
+                    v-for="col in msg.columns" :key="col"
+                    :prop="String(col)" :label="String(col)" min-width="100"
+                  />
+                </el-table>
+              </div>
+              <!-- 图表 -->
+              <div v-if="msg.chart" class="chart-box">
+                <div :ref="(el: any) => setChartRef(el, idx)" style="width: 100%; height: 350px"></div>
+              </div>
+              <!-- ask_user 确认 -->
+              <div v-if="msg.askUser" class="ask-user-box">
+                <el-alert :title="msg.askUser.question" type="warning" :closable="false" show-icon />
+              </div>
+              <!-- 过程信息 -->
+              <div class="meta-info">
+                <el-tag size="small" type="info">{{ msg.stage }}</el-tag>
+                <el-tag size="small">LLM {{ msg.llmCalls }}次</el-tag>
+                <el-tag v-if="msg.healRounds" size="small" type="warning">自愈{{ msg.healRounds }}轮</el-tag>
+              </div>
+            </template>
+          </template>
+        </div>
+      </div>
+
+      <!-- 加载中 -->
+      <div v-if="loading" class="message assistant">
+        <div class="msg-content">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span style="margin-left: 8px">思考中...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 输入区 -->
+    <div class="chat-input">
+      <el-input
+        v-model="input"
+        type="textarea"
+        :rows="2"
+        placeholder="输入问题... (Enter 发送, Shift+Enter 换行)"
+        @keydown.enter.exact.prevent="send"
+        :disabled="loading || !selectedDsId"
+      />
+      <el-button type="primary" :loading="loading" :disabled="!input.trim() || !selectedDsId" @click="send">
+        发送
+      </el-button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-// ChatView — main chat interface (Phase 7 will build the full UI)
+import { nextTick, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { ArrowLeft, Loading } from '@element-plus/icons-vue'
+import { chat, datasource, type ChatResponse } from '@/api'
+import * as echarts from 'echarts'
+
+interface Message {
+  role: 'user' | 'assistant'
+  text?: string
+  sql?: string
+  columns?: string[]
+  rows?: Record<string, any>[]
+  rowCount?: number
+  truncated?: boolean
+  chart?: Record<string, any> | null
+  error?: string
+  askUser?: { question: string; options: string[] | null } | null
+  stage?: string
+  llmCalls?: number
+  healRounds?: number
+}
+
+const input = ref('')
+const messages = ref<Message[]>([])
+const loading = ref(false)
+const conversationId = ref<string | null>(null)
+const dataSources = ref<{ id: string; name: string }[]>([])
+const selectedDsId = ref<string>('')
+const chatBody = ref<HTMLElement>()
+const chartRefs: Record<number, HTMLElement> = {}
+
+function setChartRef(el: any, idx: number) {
+  if (el) chartRefs[idx] = el
+}
+
+async function fetchDataSources() {
+  try {
+    const { data } = await datasource.list()
+    dataSources.value = data.map((d: any) => ({ id: d.id, name: d.name }))
+    if (dataSources.value.length && !selectedDsId.value) {
+      selectedDsId.value = dataSources.value[0].id
+    }
+  } catch {
+    ElMessage.error('加载数据源失败')
+  }
+}
+
+async function send() {
+  const q = input.value.trim()
+  if (!q || loading.value || !selectedDsId.value) return
+
+  messages.value.push({ role: 'user', text: q })
+  input.value = ''
+  loading.value = true
+  await scrollToBottom()
+
+  try {
+    const { data } = await chat.ask({
+      question: q,
+      data_source_id: selectedDsId.value,
+      conversation_id: conversationId.value || undefined,
+    })
+    conversationId.value = data.conversation_id
+
+    // 表格行数据转 prop 格式
+    const rows = data.rows.map((row) => {
+      const obj: Record<string, any> = {}
+      data.columns.forEach((col, i) => { obj[col] = row[i] })
+      return obj
+    })
+
+    messages.value.push({
+      role: 'assistant',
+      sql: data.sql || undefined,
+      columns: data.columns,
+      rows,
+      rowCount: data.row_count,
+      truncated: data.truncated,
+      chart: data.chart,
+      error: data.success ? undefined : (data.error || '查询失败'),
+      askUser: data.ask_user,
+      stage: data.stage,
+      llmCalls: data.llm_calls,
+      healRounds: data.self_heal_rounds,
+    })
+    await scrollToBottom()
+
+    // 渲染图表 (nextTick 后 DOM 才更新)
+    await nextTick()
+    renderLastChart()
+  } catch (e: any) {
+    messages.value.push({
+      role: 'assistant',
+      error: e.response?.data?.detail || e.message || '网络错误',
+    })
+  } finally {
+    loading.value = false
+    await scrollToBottom()
+  }
+}
+
+function renderLastChart() {
+  const lastIdx = messages.value.length - 1
+  const msg = messages.value[lastIdx]
+  if (!msg?.chart) return
+  const el = chartRefs[lastIdx]
+  if (!el) return
+  const chart = echarts.init(el)
+  chart.setOption(msg.chart)
+}
+
+async function scrollToBottom() {
+  await nextTick()
+  if (chatBody.value) {
+    chatBody.value.scrollTop = chatBody.value.scrollHeight
+  }
+}
+
+onMounted(fetchDataSources)
 </script>
 
 <style scoped>
-.chat-view {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #333;
+.chat-view { display: flex; flex-direction: column; height: 100vh; max-height: 100vh; }
+.chat-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px; border-bottom: 1px solid #ebeef5; background: #fff;
 }
-.chat-view h1 {
-  font-size: 2rem;
-  margin-bottom: 0.5rem;
+.title { font-size: 1.1rem; font-weight: bold; flex: 1; }
+.chat-body { flex: 1; overflow-y: auto; padding: 20px; }
+.empty-hint { display: flex; align-items: center; justify-content: center; height: 100%; }
+.message { margin-bottom: 20px; }
+.message.user { text-align: right; }
+.msg-content { display: inline-block; max-width: 85%; text-align: left; }
+.user-q {
+  background: #409eff; color: #fff; padding: 10px 16px;
+  border-radius: 12px 12px 2px 12px; display: inline-block;
 }
-.version {
-  color: #999;
-  font-size: 0.9rem;
+.message.assistant .msg-content { width: 100%; }
+.sql-box {
+  background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 6px;
+  padding: 10px 14px; margin-bottom: 12px; overflow-x: auto;
 }
+.sql-label { font-size: 0.75rem; color: #909399; margin-bottom: 4px; }
+.sql-box pre { margin: 0; font-size: 0.85rem; }
+.result-box { margin-bottom: 12px; }
+.result-meta { font-size: 0.8rem; color: #909399; margin-bottom: 6px; }
+.chart-box { margin-bottom: 12px; }
+.ask-user-box { margin-bottom: 12px; }
+.error-box { margin-bottom: 8px; }
+.meta-info { display: flex; gap: 6px; flex-wrap: wrap; }
+.chat-input {
+  display: flex; gap: 10px; padding: 16px 20px;
+  border-top: 1px solid #ebeef5; background: #fff;
+}
+.chat-input .el-button { align-self: flex-end; }
 </style>

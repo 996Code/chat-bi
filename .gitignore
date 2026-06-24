@@ -59,3 +59,4 @@ alembic/versions/__pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+data/states/

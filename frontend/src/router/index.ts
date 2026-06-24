@@ -5,12 +5,18 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/datasources',
+      redirect: '/chat',
     },
     {
       path: '/login',
       name: 'Login',
       component: () => import('../views/LoginView.vue'),
+    },
+    {
+      path: '/chat',
+      name: 'Chat',
+      component: () => import('../views/ChatView.vue'),
+      meta: { requiresAuth: true },
     },
     {
       path: '/datasources',

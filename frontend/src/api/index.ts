@@ -146,4 +146,37 @@ export const semantic = {
   },
 }
 
+// ── 聊天问答 ──────────────────────────────────────────────
+
+export interface ChatRequest {
+  question: string
+  data_source_id?: string
+  conversation_id?: string
+}
+
+export interface ChatResponse {
+  success: boolean
+  conversation_id: string | null
+  intent: string | null
+  question: string | null
+  sql: string | null
+  columns: string[]
+  rows: (string | number | null)[][]
+  row_count: number
+  truncated: boolean
+  chart: Record<string, any> | null
+  error: string | null
+  ask_user: { reason: string; question: string; options: string[] | null } | null
+  stage: string
+  llm_calls: number
+  self_heal_rounds: number
+}
+
+export const chat = {
+  /** 自然语言问答 → Agent 全流程 */
+  ask(req: ChatRequest) {
+    return apiClient.post<ChatResponse>('/chat', req, { timeout: 120000 })
+  },
+}
+
 export { default as apiClient } from './client'

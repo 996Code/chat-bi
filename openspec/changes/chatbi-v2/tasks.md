@@ -76,7 +76,7 @@
 
 ## Phase 7: 前端与交付（1 周）
 
-- [ ] T046: 聊天主界面 (SSE 流式 + 思考链展开 + 表格/图表渲染)
+- [x] T046: 聊天主界面 (SSE 流式 + 思考链展开 + 表格/图表渲染) — ✅ ChatView (输入框+对话区+结果表格+ECharts图表+ask_user确认+过程信息标签); api加chat模块; 路由加/chat默认页
 - [ ] T047: Agent 暂停交互 UI (确认表单 + Agent 状态展示)
 - [ ] T048: 输入编排器 (arrow key history + slash command + Token 预算)
 - [ ] T049: Pipeline Trace 可视化 (Agent 调用链 + 每步耗时+token+状态)
