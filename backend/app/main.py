@@ -55,9 +55,22 @@ async def lifespan(app: FastAPI):
             "Embedder 加载失败, RAG 将降级: %s", e
         )
 
+    # 调度器: 定时任务 (DSO-02 健康检查 / DSO-04 元数据刷新 / PERF-03 任务清理)
+    # 启动失败降级 (fail-closed, 不阻塞应用)
+    from app.core.scheduler import start_scheduler, shutdown_scheduler
+    try:
+        await start_scheduler()
+    except Exception as e:
+        import logging
+        logging.getLogger("app.main").warning("调度器启动失败, 定时任务不可用: %s", e)
+
     yield
 
     # Shutdown — 优雅释放连接池
+    try:
+        shutdown_scheduler()
+    except Exception:
+        pass
     try:
         await close_redis()
     except Exception:

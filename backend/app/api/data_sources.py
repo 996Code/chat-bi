@@ -129,6 +129,111 @@ async def get_data_source(
     )
 
 
+class DataSourceToggle(BaseModel):
+    """数据源启停 (DSO-08)。禁用后不可查询, 对标 v1 经验教训 #18 Partial 陷阱。"""
+    is_active: bool
+
+
+@router.patch("/{ds_id}", response_model=DataSourceOut)
+async def toggle_data_source(
+    ds_id: str,
+    body: DataSourceToggle,
+    user: AuthUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """启用/禁用数据源 (admin only, DSO-08)。
+
+    禁用后: 列表不返回 (已过滤), 查询/扫描拒绝 (build_agent_deps 校验)。
+    审计三态: 记录 enable/disable 操作。
+    """
+    stmt = select(DataSource).where(
+        DataSource.id == ds_id,
+        DataSource.tenant_filter(user.tenant_id),
+    )
+    ds = (await db.execute(stmt)).scalar_one_or_none()
+    if ds is None:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    if ds.is_active == body.is_active:
+        raise HTTPException(status_code=400, detail=f"数据源已是 {'启用' if body.is_active else '禁用'} 状态")
+    ds.is_active = body.is_active
+    await db.flush()
+    await write_audit_log(
+        db, tenant_id=user.tenant_id, user_id=user.user_id,
+        resource_type="data_source",
+        action="enable" if body.is_active else "disable",
+        status="success", resource_id=ds.id, detail={"name": ds.name},
+    )
+    await db.commit()
+    await db.refresh(ds)
+    return DataSourceOut(
+        id=ds.id, tenant_id=ds.tenant_id, name=ds.name,
+        db_type=ds.db_type, host=ds.host, port=ds.port,
+        database=ds.database, username=ds.username, is_active=ds.is_active,
+    )
+
+
+# ── DSO-02: 数据源健康检查 ────────────────────────────────────
+
+@router.get("/{ds_id}/health")
+async def check_datasource_health(
+    ds_id: str,
+    user: AuthUser = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动检查单个数据源健康状态 (DSO-02)。
+
+    返回 {ok, latency_ms, error}。ping 失败不标记 error (只检查, 状态变更靠定时任务)。
+    """
+    ds = (
+        await db.execute(
+            select(DataSource).where(
+                DataSource.id == ds_id,
+                DataSource.tenant_filter(user.tenant_id),
+            )
+        )
+    ).scalar_one_or_none()
+    if ds is None:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+
+    from app.services.datasource_health import ping_datasource
+    result = await ping_datasource(ds)
+    return {
+        "ok": result.ok,
+        "latency_ms": result.latency_ms,
+        "error": result.error,
+    }
+
+
+@router.post("/health-check/all")
+async def check_all_health(
+    user: AuthUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发全量数据源健康检查 (admin, DSO-02)。
+
+    返回汇总 {checked, healthy, unhealthy, recovered, newly_error}。
+    """
+    from app.services.datasource_health import check_all_datasources_health
+    summary = await check_all_datasources_health(db)
+    await db.commit()
+    return summary
+
+
+@router.post("/refresh-metadata/all")
+async def refresh_all_metadata(
+    user: AuthUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发全量元数据刷新 (admin, DSO-04)。
+
+    检测所有数据源表结构变更, 有变更自动写新版本。
+    """
+    from app.services.metadata_refresher import detect_and_refresh_metadata
+    summary = await detect_and_refresh_metadata(db)
+    await db.commit()
+    return summary
+
+
 @router.post("/{ds_id}/scan", status_code=status.HTTP_200_OK)
 async def scan_data_source_endpoint(
     ds_id: str,
@@ -173,6 +278,30 @@ async def scan_data_source_endpoint(
         await _enrich_with_llm(content)
     except Exception:
         pass  # LLM 推断失败不阻塞扫描 (宁缺毋滥, 退化列名已可用)
+
+    # 知识图谱: LLM 推断实体关系 (对标 ARC-05: name_pattern + AI 推断)
+    # 补充外键扫描发现不了的隐式关系 (如 orders.user_id → users.id), 失败不阻塞
+    try:
+        from app.services.knowledge_graph import infer_knowledge_graph
+        from app.core.llm_client import get_llm_client
+        inferred_rels = await infer_knowledge_graph(content, use_llm=True, llm_client=get_llm_client())
+        if inferred_rels:
+            # 写回各 model 的 relationships (去重: infer_knowledge_graph 已保证不重复)
+            _apply_inferred_relationships(content, inferred_rels)
+            logger.info("知识图谱: LLM 推断 %d 条新关系", len(inferred_rels))
+    except Exception as e:
+        logger.debug("知识图谱 LLM 推断失败, 跳过: %s", e)
+
+    # 生成示例问题: 基于扫描到的表/列/关系, LLM 生成可问的 BI 问题
+    # 对标 V1: 扫描完告诉用户这个数据源可以问什么 (fail-closed, LLM 失败有规则降级)
+    try:
+        from app.ai.question_generator import generate_sample_questions
+        from app.core.llm_client import get_llm_client
+        content.sample_questions = await generate_sample_questions(
+            content.models, get_llm_client(),
+        )
+    except Exception:
+        pass  # 失败不阻塞扫描 (sample_questions 留空, 前端用硬编码兜底)
 
     # 版本管理: 新版本号 = max(version)+1, 旧版本 is_current=False
     max_version = (
@@ -254,6 +383,28 @@ _SYSTEM_TABLES = frozenset({
     "tenants", "users", "data_sources", "semantic_models",
     "conversations", "saved_queries", "audit_logs", "feedback",
 })
+
+
+def _apply_inferred_relationships(content, inferred_rels) -> None:
+    """把 LLM 推断的关系写回语义层 (原地 patch)。
+
+    对标 ARC-05: 补充外键扫描发现不了的隐式关系。
+    Relationship 的 name 格式为 "<from>_to_<to>", 从中解析来源表。
+    """
+    # 按 from_table 分组 (name 里解析: "<from>_to_<to>")
+    by_model: dict[str, list] = {}
+    for rel in inferred_rels:
+        from_table = rel.name.split("_to_")[0] if "_to_" in rel.name else ""
+        if from_table:
+            by_model.setdefault(from_table, []).append(rel)
+    # 写回对应 model 的 relationships (去重: target_model 不重复)
+    for model in content.models:
+        if model.name in by_model:
+            existing_targets = {r.target_model for r in model.relationships}
+            for rel in by_model[model.name]:
+                if rel.target_model not in existing_targets:
+                    model.relationships.append(rel)
+                    existing_targets.add(rel.target_model)
 
 
 async def _enrich_with_llm(content) -> None:

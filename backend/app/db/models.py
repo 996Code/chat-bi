@@ -210,6 +210,11 @@ class AuditLog(TenantMixin, Base):
     sql_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    # DSO-07: 慢查询标记 (SQL 执行耗时 + 是否慢查询, 可配置阈值判定)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_slow: Mapped[bool] = mapped_column(Boolean, default=False)
+    # DSO-05: 数据源归属 (按源聚合统计用, nullable 兼容旧记录)
+    data_source_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
@@ -248,3 +253,41 @@ class Feedback(TenantMixin, Base):
         String(32), ForeignKey("users.id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ── Query Task (异步查询, PERF-03) ────────────────────────────
+
+class QueryTask(TenantMixin, Base):
+    """异步查询任务 (PERF-03)。
+
+    大查询不阻塞对话流: POST 提交 → 后台跑 Agent → GET 轮询状态/结果。
+    状态机: pending → running → done/failed/cancelled
+    """
+    __tablename__ = "query_tasks"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id"), nullable=False
+    )
+    data_source_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("data_sources.id"), nullable=False
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Enum("pending", "running", "done", "failed", "cancelled", name="task_status"),
+        default="pending", nullable=False, index=True,
+    )
+    progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
+    current_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 结果采样 + chart
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
