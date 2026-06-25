@@ -1,0 +1,51 @@
+# ============================================================
+# ChatBI v2 — 业务服务（backend + frontend）
+#
+# 依赖 docker-compose.infra.yml（同目录），需配合使用：
+#   docker compose \
+#     -f docker/docker-compose.infra.yml \
+#     -f docker/docker-compose.app.yml up -d
+#
+# 服务:
+#   backend   FastAPI    :8999  (连 infra 的 postgres/redis/milvus)
+#   frontend  Vue+Nginx  :28080
+#
+# 数据: bind mount 到 ./data/<service>/（相对此文件目录）
+# ============================================================
+
+services:
+  # ── Backend (FastAPI) ────────────────────────────────────────
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: chatbi-backend
+    env_file:
+      - ../deploy/.env
+    ports:
+      - "8999:8999"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    volumes:
+      - ./data/backend/logs:/app/logs
+      - ./data/backend/data:/app/data
+    restart: unless-stopped
+
+  # ── Frontend (Vue 3 + Nginx) ────────────────────────────────
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: chatbi-frontend
+    ports:
+      - "28080:80"
+    depends_on:
+      - backend
+    volumes:
+      - ../deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
