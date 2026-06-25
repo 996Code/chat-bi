@@ -70,6 +70,10 @@ class LocalEmbedder:
         self._model_path = model_path
         self._dim = dim
         self._model = None  # 惰性加载
+        # 向量缓存: 同一文本不重复 encode (查询问题/fewshot 检索会反复 embed 相同问题)
+        # 用 dict 缓存 (文本→向量), LRU 淘汰防内存膨胀
+        self._cache: dict[str, list[float]] = {}
+        self._cache_max = 2048
 
     @property
     def dim(self) -> int:
@@ -100,27 +104,50 @@ class LocalEmbedder:
             ) from e
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """文本 → 向量。空列表直接返回空 (不触发加载)。"""
+        """文本 → 向量。空列表直接返回空 (不触发加载)。
+
+        带缓存: 相同文本复用已编码向量 (查询问题/fewshot 检索反复 embed 同一问题时不重算)。
+        """
         if not texts:
             return []
 
         self._ensure_loaded()
 
-        # sentence-transformers 的 encode 是 CPU 同步操作
-        # 用 asyncio.to_thread 不阻塞事件循环 (批量索引时尤其重要)
-        import asyncio
-        import numpy as np
+        # 分离已缓存 / 未缓存, 只 encode 未缓存的
+        results: list[list[float] | None] = [None] * len(texts)
+        to_encode: list[str] = []
+        to_encode_idx: list[int] = []
+        for i, t in enumerate(texts):
+            cached = self._cache.get(t)
+            if cached is not None:
+                results[i] = cached
+            else:
+                to_encode.append(t)
+                to_encode_idx.append(i)
 
-        def _encode() -> list[list[float]]:
-            # BGE 模型推荐 normalize=True (对标检索余弦相似度)
-            embeddings = self._model.encode(texts, normalize_embeddings=True)
-            # numpy array → list[list[float]]
-            if isinstance(embeddings, np.ndarray):
-                return embeddings.tolist()
-            # 兼容旧版返回 list[np.ndarray]
-            return [e.tolist() for e in embeddings]
+        if to_encode:
+            import asyncio
+            import numpy as np
 
-        return await asyncio.to_thread(_encode)
+            def _encode() -> list[list[float]]:
+                # BGE 模型推荐 normalize=True (对标检索余弦相似度)
+                embeddings = self._model.encode(to_encode, normalize_embeddings=True)
+                if isinstance(embeddings, np.ndarray):
+                    return embeddings.tolist()
+                return [e.tolist() for e in embeddings]
+
+            encoded = await asyncio.to_thread(_encode)
+            # 回填结果 + 写缓存
+            for idx, text, vec in zip(to_encode_idx, to_encode, encoded):
+                results[idx] = vec
+                # LRU 淘汰: 缓存满则清最早一半 (不依赖 OrderedDict, 简单可靠)
+                if len(self._cache) >= self._cache_max:
+                    drop_count = self._cache_max // 2
+                    for k in list(self._cache.keys())[:drop_count]:
+                        del self._cache[k]
+                self._cache[text] = vec
+
+        return results  # type: ignore[return-value]
 
 
 # ── 模块级单例 (对标 get_llm_client / get_milvus_client) ──────

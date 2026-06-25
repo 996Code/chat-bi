@@ -178,29 +178,39 @@ import logging
 _logger = logging.getLogger(__name__)
 
 _vector_store: VectorStore | None = None
+# 按 collection 缓存多个 store 实例 (支持 semantic_models + fewshot 等多 collection 并存)
+_vector_stores: dict[str, VectorStore] = {}
 
 
 def get_vector_store(collection_name: str = "semantic_models") -> VectorStore:
-    """获取全局 VectorStore 单例 (按 config.vector_store_backend 选实现)。
+    """获取 VectorStore 实例 (按 collection_name 缓存, 支持多 collection 并存)。
 
     milvus: MilvusVectorStore (生产)
     mock:   MockVectorStore (测试/降级, 纯内存)
     Milvus 连不上时降级到 mock (fail-closed, 对标 Redis/Milvus 降级模式)。
+
+    向后兼容: 无参调用 (默认 semantic_models) 仍走 _vector_store 单例,
+    避免现有代码行为变化。
     """
     global _vector_store
-    if _vector_store is not None:
+    # 向后兼容: 默认 collection 走原单例
+    if collection_name == "semantic_models" and _vector_store is not None:
         return _vector_store
+    # 多 collection 缓存
+    if collection_name in _vector_stores:
+        return _vector_stores[collection_name]
 
     from app.core.config import get_settings
     settings = get_settings()
     backend = settings.vector_store_backend
 
+    store: VectorStore
     if backend == "milvus":
         try:
             from app.core.milvus_client import get_milvus_client
             from app.services.milvus_vector_store import MilvusVectorStore
             client = get_milvus_client()
-            _vector_store = MilvusVectorStore(
+            store = MilvusVectorStore(
                 client=client,
                 collection_name=collection_name,
                 dim=settings.embedding_dim,
@@ -209,15 +219,19 @@ def get_vector_store(collection_name: str = "semantic_models") -> VectorStore:
                          collection_name, settings.embedding_dim)
         except Exception as e:
             _logger.warning("Milvus 不可用, VectorStore 降级为 Mock: %s", e)
-            _vector_store = MockVectorStore(dim=settings.embedding_dim)
+            store = MockVectorStore(dim=settings.embedding_dim)
     else:
-        _vector_store = MockVectorStore(dim=settings.embedding_dim)
-        _logger.info("VectorStore: Mock (backend=%s)", backend)
+        store = MockVectorStore(dim=settings.embedding_dim)
+        _logger.info("VectorStore: Mock (backend=%s, collection=%s)", backend, collection_name)
 
-    return _vector_store
+    _vector_stores[collection_name] = store
+    if collection_name == "semantic_models":
+        _vector_store = store
+    return store
 
 
 def reset_vector_store() -> None:
     """重置单例 (测试用)。"""
     global _vector_store
     _vector_store = None
+    _vector_stores.clear()

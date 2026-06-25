@@ -57,6 +57,8 @@ class AgentState:
     execute_result: Any = None
     check_result: Any = None
     chart_option: dict | None = None
+    # 自然语言回复 (GENERAL/EXPLANATION 意图, 或将来结果摘要的统一出口)
+    reply: str = ""
     # 语义层内容 (白名单列 + schema context 的权威来源, 对标 RAG-005)
     semantic_content: Any = None  # SemanticModelContent
     # 计数器 (对标 query.ts 循环保护)
@@ -64,6 +66,17 @@ class AgentState:
     self_heal_rounds: int = 0
     # ask_user 请求 (暂停时填充)
     ask_user_request: Any = None
+    # 是否持久化到对话历史 (纯闲聊 GENERAL 不入历史)
+    persist: bool = True
+    # 多轮对话历史文本 (对标 ARC-04: 追问时注入 intent/think/generate_sql)
+    # 由调用方 (chat.py/chat_stream.py) 从 StateStore 读取 + format_history_text 生成
+    history: str | None = None
+    # Few-shot 参考示例文本 (对标 RAG-004: 相似审核 SQL 注入 prompt)
+    # 由 run_agent 在 SQL 生成前检索填充
+    fewshot_text: str | None = None
+    # 上一轮的 SQL (对标 ARC-04: CHART_MODIFY 时复用上轮 SQL 不重新生成)
+    # 由调用方 (chat.py/chat_stream.py) 从 StateStore.prev_state 填充
+    prev_sql: str = ""
 
 
 @dataclass
@@ -80,6 +93,7 @@ class AgentDeps:
     heal_sql: Any = None
     check_result: Any = None
     generate_chart: Any = None
+    generate_reply: Any = None
     should_ask_for_schema: Any = None
     should_ask_for_result: Any = None
     # 配置 (从 settings 读, 测试可覆盖)
@@ -101,23 +115,51 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
     try:
         # ── Stage 1: 意图识别 ─────────────────────────────────
         state.stage = AgentStage.INTENT
-        state.intent_output = await deps.classify_intent(state.question)
+        state.intent_output = await deps.classify_intent(state.question, history=state.history)
         state.llm_call_count += 1
 
         intent = state.intent_output.intent
 
-        # GENERAL/EXPLANATION → 直接 final (AEE-006)
+        # GENERAL/EXPLANATION → 生成自然语言回复, 不走 SQL 管道 (AEE-006)
         if intent in ("GENERAL", "EXPLANATION"):
+            if deps.generate_reply is not None:
+                state.reply = await deps.generate_reply(state.question, intent)
+                state.llm_call_count += 1
+            state.persist = False  # 纯闲聊不入对话历史
             state.stage = AgentStage.FINAL
             state.success = True
             return state
 
-        # CHART_MODIFY → 只改图表不改 SQL, 需要上一轮上下文 (Phase 5 多轮对话)
-        # 当前无多轮状态恢复, 短路提示而非错误地重新生成 SQL
+        # CHART_MODIFY → 只改图表类型不改 SQL (对标 ARC-04: 复用上轮 SQL)
+        # Phase 5 多轮上下文已就绪: 从 prev_sql 取上轮 SQL → 执行 → 用新 chart_type_hint 出图
         if intent == "CHART_MODIFY":
+            if not state.prev_sql:
+                state.stage = AgentStage.FINAL
+                state.success = False
+                state.error = "图表修改需要对话上下文, 请先查询数据后再修改图表类型"
+                state.reply = '请先查询你想看的数据 (例如「各品类销量」), 然后再让我换图表类型。'
+                return state
+            # 复用上轮 SQL 执行
+            state.sql = state.prev_sql
+            chart_hint = state.intent_output.chart_type_hint if hasattr(state.intent_output, "chart_type_hint") else None
+            exec_result = await deps.execute_sql(state.sql)
+            state.execute_result = exec_result
+            if exec_result.error:
+                state.error = f"上轮 SQL 执行失败: {exec_result.error}"
+                state.stage = AgentStage.FINAL
+                return state
+            # 用新 chart_type_hint 生成图表
+            chart = await deps.generate_chart(
+                question=state.intent_output.normalized_question or state.question,
+                columns=exec_result.columns if hasattr(exec_result, "columns") else [],
+                rows=exec_result.rows if hasattr(exec_result, "rows") else [],
+                chart_type_hint=chart_hint,
+            )
+            state.llm_call_count += 1
+            state.chart_option = chart.option if hasattr(chart, "option") else None
+            state.reply = f"已将图表切换为 {chart_hint or '新'} 类型。"
             state.stage = AgentStage.FINAL
-            state.success = False
-            state.error = "图表修改需要对话上下文 (多轮对话 Phase 5 支持)"
+            state.success = True
             return state
 
         # CLARIFICATION → 需要 ask_user (低置信/追问)
@@ -135,6 +177,50 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # ── Stage 2: schema 检索 ───────────────────────────────
         state.stage = AgentStage.SCHEMA_SEARCH
         question = state.intent_output.normalized_question or state.question
+
+        # 语义缓存 (RAG-003): 相似问题复用 SQL, 命中则跳过 schema/sql 生成直接执行
+        # (重新执行而非返回旧结果, 因数据可能变化; 缓存 SQL 仍过白名单校验保安全)
+        cached_sql = await _check_semantic_cache(question)
+        if cached_sql:
+            from app.ai.schema_utils import extract_allowed_columns
+            allowed_columns = extract_allowed_columns(state.semantic_content)
+            if allowed_columns:
+                from app.core.sql_validator import validate_sql
+                validation = validate_sql(cached_sql, allowed_columns)
+                if not validation.ok:
+                    logger.warning("语义缓存 SQL 校验失败, 丢弃缓存: %s", validation.reason)
+                    cached_sql = ""
+
+        if cached_sql:
+            logger.info("语义缓存命中, 复用 SQL: %s", cached_sql[:80])
+            state.sql = cached_sql
+            state.stage = AgentStage.GENERATE_SQL
+            # 跳过 schema/sql 生成, 直接执行缓存 SQL → 自检 → 图表
+            exec_result = await deps.execute_sql(state.sql)
+            state.execute_result = exec_result
+            if exec_result.error:
+                state.error = f"缓存 SQL 执行失败: {exec_result.error}"
+                state.stage = AgentStage.FINAL
+                return state
+            # 自检 + 图表 (与正常流程 Stage 6/7 一致)
+            check = deps.check_result(
+                rows=exec_result.rows if hasattr(exec_result, "rows") else [],
+                columns=exec_result.columns if hasattr(exec_result, "columns") else [],
+                sql=state.sql,
+            )
+            state.check_result = check
+            chart = await deps.generate_chart(
+                question=question,
+                columns=exec_result.columns if hasattr(exec_result, "columns") else [],
+                rows=exec_result.rows if hasattr(exec_result, "rows") else [],
+                chart_type_hint=state.intent_output.chart_type_hint if hasattr(state.intent_output, "chart_type_hint") else None,
+            )
+            state.llm_call_count += 1
+            state.chart_option = chart.option if hasattr(chart, "option") else None
+            state.stage = AgentStage.FINAL
+            state.success = True
+            return state
+
         retrieval = await deps.retrieve(question)
         state.llm_call_count += 1
         state.retrieved_models = retrieval.models if hasattr(retrieval, "models") else []
@@ -157,21 +243,27 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
 
         # ── Stage 3: 预思考 ───────────────────────────────────
         # schema context + 白名单列从语义层取 (权威来源, 不靠检索文本正则猜)
-        from app.ai.schema_utils import build_schema_context, extract_allowed_columns
+        from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns
         retrieved_names = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
+        # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
+        # 如选中 biz_products, 沿外键补入 biz_order_items, 否则 JOIN 查询缺表
+        retrieved_names = expand_with_relationships(state.semantic_content, retrieved_names)
         schema_context = build_schema_context(state.semantic_content, retrieved_names)
         if not schema_context:
             # 语义层为空时退化用检索文本 (兜底)
             schema_context = _build_schema_context_fallback(state.retrieved_models)
         state.schema_context = schema_context
-        state.thinking = await deps.think(question, schema_context, state.retrieved_models)
+        state.thinking = await deps.think(question, schema_context, state.retrieved_models, history=state.history)
         state.llm_call_count += 1
 
         # ── Stage 4+5: SQL 生成/校验/执行/自愈 统一循环 (对标 while-true) ──
         # 设计: 生成→校验→执行, 任一步失败→自愈(改SQL)→重新校验+执行
         # (对标 Claude Code §2: 工具是循环延续; 不因单次失败终止)
         state.stage = AgentStage.GENERATE_SQL
-        allowed_columns = extract_allowed_columns(state.semantic_content, retrieved_names)
+        # 白名单列: 取整个语义层的全部列 (语义层本身是安全边界, 所有列都允许查询)
+        # retrieved_names 只影响 schema_context (给 LLM 的提示), 不限制白名单
+        # 否则 JOIN 一个未命中的关联表时, 其列不在白名单 → 误拒正确 SQL
+        allowed_columns = extract_allowed_columns(state.semantic_content)
 
         # 防御: 无语义层 → allowed_columns 空 → Layer3 白名单失效 (安全降级)
         # 对标 fail-closed: 没有列约束信息时拒绝生成 SQL, 而非放行
@@ -187,6 +279,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             schema_context=schema_context,
             allowed_columns=allowed_columns,
             llm_client=None,  # 实际由 deps 内部注入
+            history=state.history,
         )
         state.llm_call_count += 1
 
@@ -264,7 +357,34 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         )
         state.check_result = check
 
-        # 结果异常 + ask_user 触发 → 暂停问用户
+        # 结果异常 → 先尝试自动修正 (带 suggestion), 仍异常才 ask_user (AEE-003)
+        if not check.ok and check.suggestion:
+            # 用自检建议作纠正方向, 重新生成+执行 SQL (对标 AEE-003 自动修正回路)
+            logger.info("结果自检异常 (%s), 尝试自动修正: %s", check.issue, check.suggestion)
+            heal_result = await deps.heal_sql(
+                sql=state.sql, error=check.reason,
+                allowed_columns=allowed_columns, schema_context=schema_context,
+            )
+            state.llm_call_count += 1
+            if heal_result.success:
+                state.sql = heal_result.sql
+                state.self_heal_rounds += 1
+                # 重新执行修正后的 SQL
+                exec_result = await deps.execute_sql(state.sql)
+                state.execute_result = exec_result
+                if not exec_result.error:
+                    # 复检: 修正后是否正常
+                    recheck = deps.check_result(
+                        rows=exec_result.rows if hasattr(exec_result, "rows") else [],
+                        columns=exec_result.columns if hasattr(exec_result, "columns") else [],
+                        sql=state.sql,
+                    )
+                    state.check_result = recheck
+                    if recheck.ok:
+                        logger.info("结果自检自动修正成功")
+                        check = recheck  # 修正成功, 跳过 ask_user
+
+        # 仍异常 (自动修正失败或无 suggestion) → ask_user
         if not check.ok:
             ask_result = deps.should_ask_for_result(check)
             if ask_result is not None:
@@ -289,6 +409,12 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # ── Stage 8: final(success) ──────────────────────────
         state.stage = AgentStage.FINAL
         state.success = True
+        # ARC-02 追问主动优化: 有上轮 SQL 反思建议时, 附在回复里给用户
+        review = getattr(state.thinking, "prev_sql_review", "") if state.thinking else ""
+        if review and state.history:
+            state.reply = (state.reply + "\n\n" if state.reply else "") + f"💡 优化建议: {review}"
+        # 语义缓存写入 (RAG-003): 成功的 question→sql 存缓存, 下次相似问题复用
+        await _write_semantic_cache(question, state.sql)
         return state
 
     except Exception as e:
@@ -298,6 +424,38 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         state.success = False
         state.error = f"Agent 执行异常: {e}"
         return state
+
+
+async def _check_semantic_cache(question: str) -> str:
+    """语义缓存查询 (RAG-003): 相似问题命中则返回缓存的 SQL。
+
+    失败/无缓存返回空串 (降级不阻塞, 对标 fail-closed)。
+    """
+    try:
+        from app.services.semantic_cache import get_semantic_cache
+        cache = get_semantic_cache()
+        if cache is None:
+            return ""
+        return await cache.get(question) or ""
+    except Exception as e:
+        logger.debug("语义缓存查询失败, 跳过: %s", e)
+        return ""
+
+
+async def _write_semantic_cache(question: str, sql: str) -> None:
+    """语义缓存写入 (RAG-003): 成功的 question→sql 存缓存。
+
+    失败静默跳过 (不阻塞主流程)。
+    """
+    if not question or not sql:
+        return
+    try:
+        from app.services.semantic_cache import get_semantic_cache
+        cache = get_semantic_cache()
+        if cache is not None:
+            await cache.put(question, sql)
+    except Exception as e:
+        logger.debug("语义缓存写入失败, 跳过: %s", e)
 
 
 def _build_schema_context_fallback(models: list[dict]) -> str:

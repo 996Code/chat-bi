@@ -49,6 +49,67 @@ def extract_allowed_columns(
     return columns
 
 
+def expand_with_relationships(
+    content: SemanticModelContent | None,
+    selected_names: list[str],
+    max_depth: int = 2,
+) -> list[str]:
+    """沿着语义层关系定义扩展关联表 (对标 V1 _expand_via_relationships)。
+
+    V1 两阶段流程: 选表(表名级) → 关联扩展 → 生成 SQL(字段级)。
+    V2 向量检索替代了第一阶段(选表), 但需补这一步: 选完后沿关系图谱
+    把 JOIN 需要的关联表补进来, 否则 schema_context 缺关联表 → LLM 看不到
+    完整 JOIN 信息 (如选了 biz_products 但漏了 biz_order_items)。
+
+    设计原则: 用语义层结构化关系数据 (Relationship), 不硬编码命名规则。
+    语义层的关系由 _scan_relationships (外键) + knowledge_graph (LLM 推断) 产出,
+    这里只消费不推断。
+
+    Args:
+        content: 语义层内容 (含 relationships 定义)
+        selected_names: 检索命中的表名
+        max_depth: 关系扩展深度 (默认 2 跳, 防 A→B→C→... 全库扩散)
+
+    Returns:
+        扩展后的表名列表 (含原始命中 + 关联表)
+    """
+    if content is None or not content.models:
+        return list(selected_names)
+
+    # 构建双向邻接表 (正向: 表→关系目标; 反向: 被关系指向的表→源表)
+    # 只看正向会漏反向 JOIN: biz_order_items→biz_products (product_id),
+    # 但用户问 biz_products 时需要反向找到 biz_order_items
+    adjacency: dict[str, set[str]] = {}
+    for model in content.models:
+        for rel in model.relationships:
+            target = rel.target_model
+            if not target:
+                continue
+            # 正向边: model.name → target
+            adjacency.setdefault(model.name, set()).add(target)
+            # 反向边: target → model.name (双向图, JOIN 可从任一方向发起)
+            adjacency.setdefault(target, set()).add(model.name)
+
+    if not adjacency:
+        return list(selected_names)
+
+    # BFS 双向遍历 (限深度, 防全库扩散)
+    result_set = set(selected_names)
+    frontier = set(selected_names)
+    for _ in range(max_depth):
+        next_frontier = set()
+        for table_name in frontier:
+            for neighbor in adjacency.get(table_name, set()):
+                if neighbor not in result_set:
+                    result_set.add(neighbor)
+                    next_frontier.add(neighbor)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+
+    return list(result_set)
+
+
 def build_schema_context(
     content: SemanticModelContent | None,
     model_names: list[str] | None = None,

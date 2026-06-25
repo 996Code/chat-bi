@@ -21,7 +21,7 @@
 - [x] T012: 语义层 JSON Schema 定义 (Model/Relationship/Metric/Calculated Field + composite metrics) — ✅ 测试覆盖 (test_semantic_schema.py, 13 个)
 - [x] T013: 数据源自动扫描 → 生成初始语义层 JSON — ✅ 测试覆盖 (test_semantic_scan.py, 10 个) + 端到端真库验证 (njmind 5 张业务表, 列注释修复) (AI 自动推断 + confidence 标注)
 - [x] T014: 语义层 CRUD API + 版本管理 + 回滚 — ✅ 测试覆盖 (test_semantic_api.py, 13 个全 HTTP) + 端到端 e2e_scan.py 通过 (真实 PG 扫 13 表)
-- [ ] T015: 语义层编辑器 UI (查看/编辑/版本历史/diff) — *延后到前端集中 phase*
+- [x] T015: 语义层编辑器 UI (查看/编辑/版本历史/diff) — ✅ SemanticView (查看+版本+diff+回滚+行内编辑表/列语义 PATCH→新版本, 10 测试)
 - [x] T016: 知识图谱 AI 推断 (表结构推断 + 外键 + 字段命名模式) — ✅ 测试覆盖 (test_knowledge_graph.py, 13 个; name_pattern 0.6 + ai_inferred 0.7, 去重不写回)
 - [x] T017: 知识图谱演化 (历史查询挖掘 + 反馈回流 → 更新 confidence) — ✅ 算法 + 单元测试覆盖 (test_knowledge_graph_evolution.py, 13 个; e2e 留 Phase 6)
 - [x] T018: 复合指标支持 (子指标递归展开 + factor_metric_names，对标海泰 MetricContext) — ✅ 测试覆盖 (test_composite_metric.py, 8 个; 含 to_schema_context 序列化)
@@ -68,21 +68,21 @@
 ## Phase 6: Skills 与反馈系统（1 周）
 
 - [x] T040: Skills 加载 (SKILL.md 解析 + System Prompt 注入 + 热更新) — ✅ Skill.from_file (frontmatter+正文) + SkillsLoader (缓存+invalidate热更新) + format_for_prompt; 接入sql_agent; 8 测试 + 示例SKILL.md
-- [ ] T041: Skills 编辑器 UI (在线编辑 + 预览效果 + 版本管理) — *延后到 Phase 7 前端集中* — 后端 T040 已就绪
+- [x] T041: Skills 编辑器 UI (在线编辑 + 预览效果 + 版本管理) — ✅ SkillsView (CRUD + 预览标签: 用规则跑一次 SQL 生成验证, POST /skills/preview)
 - [x] T042: 反馈收集 (点赞/点踩 + 改 SQL + 纠正图表 + 写评论) — ✅ POST/feedback (CRUD + 审核状态) + 审核 API
 - [x] T043: 负面信号检测 (关键词匹配 + 连续点踩 → 触发反馈表单) — ✅ detect_negative_signal + check_consecutive_dislikes; 3 测试
 - [x] T044: 反馈审核队列 (admin 审核 → 回流知识库 or 拒绝) — ✅ GET/feedback/pending + POST/{id}/review (三态 pending/approved/rejected)
-- [ ] T045: Agent 记忆管理 UI (查看/编辑/删除记忆 对标 Claude Code MemoryFileSelector) — *延后到 Phase 7* — 后端 agent_memory 已就绪
+- [x] T045: Agent 记忆管理 UI (查看/编辑/删除记忆 对标 Claude Code MemoryFileSelector) — ✅ MemoryView (CRUD 完整)
 
 ## Phase 7: 前端与交付（1 周）
 
 - [x] T046: 聊天主界面 (SSE 流式 + 思考链展开 + 表格/图表渲染) — ✅ ChatView (输入框+对话区+结果表格+ECharts图表+ask_user确认+过程信息标签); api加chat模块; 路由加/chat默认页
-- [ ] T047: Agent 暂停交互 UI (确认表单 + Agent 状态展示)
-- [ ] T048: 输入编排器 (arrow key history + slash command + Token 预算)
-- [ ] T049: Pipeline Trace 可视化 (Agent 调用链 + 每步耗时+token+状态)
-- [ ] T050: 可观测性面板 (dump-prompts 导出 + /context token 统计)
-- [ ] T051: 数据源管理页面 + 看板页面
-- [ ] T052: 查询历史 + 审计日志页面
+- [x] T047: Agent 暂停交互 UI (确认表单 + Agent 状态展示) — ✅ ChatView ask_user 确认表单 (P0 已完成) + 暂停状态徽标 (当前阶段+已用token)
+- [x] T048: 输入编排器 (arrow key history + slash command + Token 预算) — ✅ ChatView (arrow-key history + slash command 菜单 /new|/clear|/history|/help + token 预算实时显示)
+- [x] T049: Pipeline Trace 可视化 (Agent 调用链 + 每步耗时+token+状态) — ✅ ChatView 内嵌 trace (每步 duration + 底部 token 汇总 🔥N tokens · N 次 LLM · N 轮自愈); 后端补 track_usage 全 7 节点 (OBS-002 token 精确)
+- [x] T050: 可观测性面板 (dump-prompts 导出 + /context token 统计) — ✅ ObservabilityView (组件状态 + token 用量统计卡 + dump-prompts 导出按钮 Blob 下载); 后端 prompt_capture.py (contextvar 请求级) + GET /conversations/{id}/trace (DEBUG 持久化)
+- [x] T051: 数据源管理页面 + 看板页面 — ✅ DataSourceView (数据源管理) + DashboardView (看板: 已保存查询图表网格, ECharts 渲染); 后端 GET /saved-queries 列表/详情
+- [x] T052: 查询历史 + 审计日志页面 — ✅ HistoryView (审计日志 + 对话历史 tab 切换, 已在上轮完成)
 - [x] T053: 一键部署脚本 + 操作手册 — ✅ doc/操作手册.md (快速开始+生产部署+常用操作+架构) + seed_meta.py (元数据初始化幂等脚本)
 - [x] T054: 端到端测试 (50 个 QA 对准确率测试 + 跨租户数据泄露测试) — ✅ e2e_qa_test.py (8题准确率88%>70%, Skills验证通过, 跨租户隔离通过)
 

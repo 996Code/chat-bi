@@ -72,9 +72,30 @@ class SkillsLoader:
     def __init__(self, base_dir: str = "skills"):
         self._base_dir = Path(base_dir)
         self._cache: list[Skill] | None = None
+        # 热更新: 记录上次加载时的目录 mtime, 变化则自动失效缓存重载
+        self._last_mtime: float = 0.0
+
+    def _current_dir_mtime(self) -> float:
+        """取 skills 目录下所有 SKILL.md 的最新 mtime (检测文件改动)。"""
+        if not self._base_dir.exists():
+            return 0.0
+        try:
+            return max(f.stat().st_mtime for f in self._base_dir.glob("*/SKILL.md"))
+        except (ValueError, OSError):
+            return 0.0
 
     def load_all(self) -> list[Skill]:
-        """加载所有 SKILL.md (带缓存, invalidate 后重新加载)。"""
+        """加载所有 SKILL.md (带缓存 + mtime 热更新)。
+
+        热更新 (对标 SKL-002): 每次调用比对目录 mtime, 文件改动自动重载,
+        无需重启也无需手动 invalidate (admin HTTP 编辑 / 直接改文件都生效)。
+        """
+        # mtime 变化 → 文件被改过, 失效缓存
+        current_mtime = self._current_dir_mtime()
+        if current_mtime != self._last_mtime:
+            self._cache = None
+            self._last_mtime = current_mtime
+
         if self._cache is not None:
             return self._cache
 

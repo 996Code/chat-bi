@@ -139,6 +139,55 @@ class TestDataSourceCRUD:
         assert names == ["ds_A"]
         assert "ds_B" not in names
 
+    async def test_toggle_disable_then_enable(self, http_client, admin_token, db_session):
+        """DSO-08: admin 启停数据源, 禁用后列表不返回。"""
+        # 创建
+        res = await http_client.post(
+            "/chat-bi/api/v1/data-sources",
+            json={"name": "toggle_ds", "db_type": "postgresql", "host": "h",
+                  "port": 5432, "database": "d", "username": "u", "password": "p"},
+            headers=_auth(admin_token),
+        )
+        ds_id = res.json()["id"]
+
+        # 禁用
+        res = await http_client.patch(
+            f"/chat-bi/api/v1/data-sources/{ds_id}",
+            json={"is_active": False},
+            headers=_auth(admin_token),
+        )
+        assert res.status_code == 200
+        assert res.json()["is_active"] is False
+
+        # 禁用后列表不返回 (list 过滤 is_active)
+        res = await http_client.get("/chat-bi/api/v1/data-sources", headers=_auth(admin_token))
+        assert ds_id not in [d["id"] for d in res.json()]
+
+        # 重新启用
+        res = await http_client.patch(
+            f"/chat-bi/api/v1/data-sources/{ds_id}",
+            json={"is_active": True},
+            headers=_auth(admin_token),
+        )
+        assert res.json()["is_active"] is True
+
+    async def test_toggle_idempotent_400(self, http_client, admin_token, db_session):
+        """已是当前状态再 toggle → 400 (避免无意义操作)。"""
+        res = await http_client.post(
+            "/chat-bi/api/v1/data-sources",
+            json={"name": "idem_ds", "db_type": "postgresql", "host": "h",
+                  "port": 5432, "database": "d", "username": "u", "password": "p"},
+            headers=_auth(admin_token),
+        )
+        ds_id = res.json()["id"]
+        # 已是启用状态, 再启用 → 400
+        res = await http_client.patch(
+            f"/chat-bi/api/v1/data-sources/{ds_id}",
+            json={"is_active": True},
+            headers=_auth(admin_token),
+        )
+        assert res.status_code == 400
+
 
 # ── 语义层查看 + 版本历史 + 回滚 + diff (HTTP) ─────────────────
 
@@ -260,6 +309,113 @@ class TestSemanticModelVersions:
         assert body["added_models"] == ["orders", "products"]  # v3 比 v1 多
         assert body["removed_models"] == []
         assert body["unchanged_models"] == ["users"]
+
+
+# ── T015: 语义层行内编辑 (PATCH) ────────────────────────────────
+
+class TestSemanticPatch:
+    """T015: 局部更新表/列语义 → append-only 新版本。"""
+
+    @pytest.fixture
+    async def seeded_model(self, db_session):
+        """插入一个带完整 columns 的语义层 (v1 is_current)。"""
+        ds = DataSource(
+            tenant_id="tenant_A", name="ds_patch", db_type="postgresql",
+            host="h", port=5432, database="d", username="u",
+            encrypted_password="enc", is_active=True,
+        )
+        db_session.add(ds)
+        await db_session.flush()
+        db_session.add(SemanticModel(
+            tenant_id="tenant_A", data_source_id=ds.id,
+            version=1, is_current=True,
+            content={
+                "version": 1,
+                "models": [{
+                    "name": "orders",
+                    "display_name": "Orders",
+                    "description": "",
+                    "source": "auto_inferred",
+                    "confidence": 0.8,
+                    "columns": [
+                        {"name": "amount", "display_name": "Amount", "data_type": "numeric",
+                         "semantic_type": None, "source": "auto_inferred", "confidence": 0.8},
+                        {"name": "status", "display_name": "Status", "data_type": "varchar",
+                         "semantic_type": "dimension", "source": "auto_inferred", "confidence": 0.8},
+                    ],
+                    "relationships": [],
+                }],
+            },
+        ))
+        await db_session.commit()
+        return ds.id
+
+    async def _get_current(self, client, token, ds_id):
+        cur = await client.get(
+            f"/chat-bi/api/v1/semantic-models?data_source_id={ds_id}",
+            headers=_auth(token),
+        )
+        return cur.json()["id"], cur.json()["version"]
+
+    async def test_patch_table_display_name(self, http_client, admin_token, seeded_model):
+        """改表 display_name → 新版本 + source=manual。"""
+        sm_id, _ = await self._get_current(http_client, admin_token, seeded_model)
+        res = await http_client.patch(
+            f"/chat-bi/api/v1/semantic-models/{sm_id}",
+            json={"table_name": "orders", "display_name": "订单表"},
+            headers=_auth(admin_token),
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["version"] == 2  # append-only 新版本
+        model = body["content"]["models"][0]
+        assert model["display_name"] == "订单表"
+        assert model["source"] == "manual"
+        assert model["confidence"] == 1.0
+
+    async def test_patch_column_semantic_type(self, http_client, admin_token, seeded_model):
+        """改列 semantic_type → 新版本。"""
+        sm_id, _ = await self._get_current(http_client, admin_token, seeded_model)
+        res = await http_client.patch(
+            f"/chat-bi/api/v1/semantic-models/{sm_id}",
+            json={"table_name": "orders", "column_name": "amount",
+                  "column_semantic_type": "measure"},
+            headers=_auth(admin_token),
+        )
+        assert res.status_code == 200
+        col = res.json()["content"]["models"][0]["columns"][0]
+        assert col["semantic_type"] == "measure"
+        assert col["source"] == "manual"
+
+    async def test_patch_invalid_semantic_type_422(self, http_client, admin_token, seeded_model):
+        """非法 semantic_type → 422。"""
+        sm_id, _ = await self._get_current(http_client, admin_token, seeded_model)
+        res = await http_client.patch(
+            f"/chat-bi/api/v1/semantic-models/{sm_id}",
+            json={"table_name": "orders", "column_name": "amount",
+                  "column_semantic_type": "invalid_type"},
+            headers=_auth(admin_token),
+        )
+        assert res.status_code == 422
+
+    async def test_patch_nonexistent_table_404(self, http_client, admin_token, seeded_model):
+        sm_id, _ = await self._get_current(http_client, admin_token, seeded_model)
+        res = await http_client.patch(
+            f"/chat-bi/api/v1/semantic-models/{sm_id}",
+            json={"table_name": "no_such_table", "display_name": "x"},
+            headers=_auth(admin_token),
+        )
+        assert res.status_code == 404
+
+    async def test_read_only_cannot_patch(self, http_client, read_only_token, seeded_model):
+        """read_only → 403 (fail-closed)。"""
+        sm_id, _ = await self._get_current(http_client, read_only_token, seeded_model)
+        res = await http_client.patch(
+            f"/chat-bi/api/v1/semantic-models/{sm_id}",
+            json={"table_name": "orders", "display_name": "x"},
+            headers=_auth(read_only_token),
+        )
+        assert res.status_code == 403
 
 
 # ── 多租户隔离 (HTTP 负向测试, 对标 v1 #48) ────────────────────

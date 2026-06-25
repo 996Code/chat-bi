@@ -157,6 +157,14 @@ async def _llm_refine(
         return RetrievalResult(models=_candidates_to_models(candidates), degraded=True)
 
     # LLM 选出的 name → 过滤候选
+    # 防御: LLM 可能返回数组 ["t1","t2"] 而非对象 {"models":[...]}
+    # 统一规整为 dict 结构, 避免类型不匹配崩溃 (对标健壮性: 不为特定 bug 写死)
+    if isinstance(parsed, list):
+        parsed = {"models": parsed, "reason": "LLM 返回了数组格式"}
+    if not isinstance(parsed, dict):
+        logger.warning("_llm_refine: LLM 返回非 dict/list, 降级返回原始召回")
+        return RetrievalResult(models=_candidates_to_models(candidates), degraded=True)
+
     selected_names = set(parsed.get("models", []))
     if not selected_names:
         # 宁缺毋滥: LLM 判断无真匹配

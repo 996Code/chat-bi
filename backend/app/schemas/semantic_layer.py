@@ -151,3 +151,5 @@ class SemanticModelContent(BaseModel):
 
     version: int = Field(default=1, ge=1, description="语义层 schema 版本")
     models: list[Model] = Field(default_factory=list)
+    # 扫描时生成的示例问题 (LLM 基于表/列/关系推断, 前端空状态展示)
+    sample_questions: list[str] = Field(default_factory=list)

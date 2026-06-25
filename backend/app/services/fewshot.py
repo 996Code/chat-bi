@@ -101,3 +101,48 @@ def format_fewshot_prompt(examples: list[FewShotExample]) -> str:
         lines.append(f"{i}. 问题: {ex.question}")
         lines.append(f"   SQL: {ex.sql}")
     return "\n".join(lines)
+
+
+async def index_fewshot_example(
+    question: str,
+    sql: str,
+    embedder: Embedder,
+    data_source_id: str,
+    example_id: str | None = None,
+) -> None:
+    """把审核通过的 Question-SQL Pair 写入 fewshot 向量库 (数据回流)。
+
+    对标 RAG-004: 反馈审核通过 → 回流知识库 → 后续相似问题可召回作 few-shot。
+    失败降级只记日志 (不阻塞审核流程)。
+
+    Args:
+        question: 用户原始问题 (作为向量化的文本 + 检索时的匹配键)
+        sql: 审核通过的 SQL (存 metadata, 召回时取出注入 prompt)
+        embedder: Embedder
+        data_source_id: 数据源 ID (标量过滤, 防跨数据源召回)
+        example_id: 唯一 ID (None 则用 question hash)
+    """
+    import hashlib
+    from app.services.vector_store import VectorRecord, get_vector_store
+
+    try:
+        vecs = await embedder.embed([question])
+        vector = vecs[0]
+    except Exception as e:
+        logger.warning("fewshot 索引 embed 失败 (不阻塞): %s", e)
+        return
+
+    if not example_id:
+        example_id = hashlib.md5(question.encode("utf-8")).hexdigest()
+
+    store = get_vector_store("fewshot")
+    try:
+        await store.upsert([VectorRecord(
+            id=example_id,
+            vector=vector,
+            text=question,
+            metadata={"question": question, "sql": sql, "data_source_id": data_source_id},
+        )])
+        logger.info("fewshot 示例已索引: %s (ds=%s)", question[:50], data_source_id[:8])
+    except Exception as e:
+        logger.warning("fewshot 索引 upsert 失败 (不阻塞): %s", e)

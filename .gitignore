@@ -60,3 +60,7 @@ alembic/versions/__pycache__/
 .coverage
 htmlcov/
 data/states/
+
+# Runtime data (agent memory / vector cache — 运行时生成, 不入库)
+memory/
+data/

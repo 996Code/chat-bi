@@ -102,3 +102,47 @@ def format_memories_for_prompt(memories: list[dict]) -> str:
         if body:
             lines.append(body[:200])  # 截断防 prompt 爆炸
     return "\n".join(lines)
+
+
+def save_query_memory(question: str, tables: list[str], memory_dir: str = "memory") -> None:
+    """记录用户查询到 memory (MEM-01 自主记忆写入闭环)。
+
+    把成功的 question+涉及表追加到 recent_queries.md, 让后续 recall 能召回
+    "这个用户常查什么"。轻量追加 (不覆盖), 防文件膨胀用截断。
+    失败静默 (记忆是增强, 不是必需)。
+
+    Args:
+        question: 用户问题
+        tables: 本轮查询涉及的表名
+    """
+    if not question:
+        return
+    try:
+        from datetime import datetime
+        mem_path = Path(memory_dir) / "recent_queries.md"
+        mem_path.parent.mkdir(parents=True, exist_ok=True)
+        # 文件不存在则创建 (带 frontmatter)
+        if not mem_path.exists():
+            mem_path.write_text(
+                "---\nname: recent_queries\ndescription: 用户最近的查询记录和常用表\n---\n\n",
+                encoding="utf-8",
+            )
+        # 追加一行 (时间 + 问题 + 表)
+        ts = datetime.now().strftime("%m-%d %H:%M")
+        tables_str = ", ".join(tables) if tables else "-"
+        entry = f"- [{ts}] {question} (表: {tables_str})\n"
+        with open(mem_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+        # 防膨胀: 超过 200 行只保留最近 100 行
+        lines = mem_path.read_text(encoding="utf-8").splitlines()
+        if len(lines) > 200:
+            # 保留 frontmatter (前几行) + 最近 100 行
+            fm_end = 0
+            for i, line in enumerate(lines):
+                if line.strip() == "---" and i > 0:
+                    fm_end = i + 1
+                    break
+            kept = lines[:fm_end] + lines[-100:]
+            mem_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    except Exception as e:
+        logger.debug("save_query_memory 失败 (不阻塞): %s", e)

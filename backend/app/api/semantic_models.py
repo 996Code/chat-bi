@@ -204,6 +204,154 @@ async def rollback_to_version(
     )
 
 
+# ── 局部更新 (T015 行内编辑: 表/列语义 → append-only 新版本) ────
+
+class SemanticPatch(BaseModel):
+    """语义层局部更新 (只改人工语义标注, 不动结构)。
+
+    支持: 表的 display_name/description; 列的 display_name/semantic_type/description。
+    source 改为 manual, confidence=1.0 (人工标注权威)。
+    """
+    table_name: str
+    display_name: str | None = None        # 表的中文名
+    description: str | None = None         # 表的描述
+    # 列级编辑 (任一非空则更新该列)
+    column_name: str | None = None
+    column_display_name: str | None = None
+    column_semantic_type: str | None = None  # measure/dimension/key
+    column_description: str | None = None
+
+
+@router.patch("/{sm_id}", response_model=SemanticModelOut)
+async def patch_semantic_model(
+    sm_id: str,
+    body: SemanticPatch,
+    user: AuthUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """局部更新语义层 (T015) — 写成新版本 (append-only, 不改历史)。
+
+    对标 SEM-004: 历史不可变, 编辑 = 复制当前版本 → 改字段 → 存为新版本。
+    编辑后重建向量索引 (RAG-005 语义边界)。
+    """
+    import copy
+    # 校验当前记录归属
+    stmt = select(SemanticModel).where(
+        SemanticModel.id == sm_id,
+        SemanticModel.tenant_filter(user.tenant_id),
+    )
+    current = (await db.execute(stmt)).scalar_one_or_none()
+    if current is None:
+        raise HTTPException(status_code=404, detail="语义层不存在")
+
+    # 深拷贝 content → 修改 (不污染原对象)
+    new_content = copy.deepcopy(current.content)
+    models = new_content.get("models", [])
+    target_model = next((m for m in models if m.get("name") == body.table_name), None)
+    if target_model is None:
+        raise HTTPException(status_code=404, detail=f"表 '{body.table_name}' 不在语义层中")
+
+    # 表级编辑
+    changed = False
+    if body.display_name is not None:
+        target_model["display_name"] = body.display_name
+        target_model["source"] = "manual"
+        target_model["confidence"] = 1.0
+        changed = True
+    if body.description is not None:
+        target_model["description"] = body.description
+        target_model["source"] = "manual"
+        target_model["confidence"] = 1.0
+        changed = True
+
+    # 列级编辑
+    if body.column_name:
+        columns = target_model.get("columns", [])
+        target_col = next((c for c in columns if c.get("name") == body.column_name), None)
+        if target_col is None:
+            raise HTTPException(status_code=404, detail=f"列 '{body.column_name}' 不在表 '{body.table_name}' 中")
+        if body.column_display_name is not None:
+            target_col["display_name"] = body.column_display_name
+        if body.column_semantic_type is not None:
+            if body.column_semantic_type not in ("measure", "dimension", "key"):
+                raise HTTPException(status_code=422, detail="column_semantic_type 必须是 measure/dimension/key")
+            target_col["semantic_type"] = body.column_semantic_type
+        if body.column_description is not None:
+            target_col["description"] = body.column_description
+        target_col["source"] = "manual"
+        target_col["confidence"] = 1.0
+        changed = True
+
+    if not changed:
+        raise HTTPException(status_code=400, detail="未提供任何更新字段")
+
+    # 旧版本 is_current=False
+    old_currents = (
+        await db.execute(
+            select(SemanticModel).where(
+                SemanticModel.tenant_filter(user.tenant_id),
+                SemanticModel.data_source_id == current.data_source_id,
+                SemanticModel.is_current == True,  # noqa: E712
+            )
+        )
+    ).scalars().all()
+    for old in old_currents:
+        old.is_current = False
+
+    # 新版本号 = 全局 max + 1
+    max_v = (
+        await db.execute(
+            select(SemanticModel.version).where(
+                SemanticModel.tenant_filter(user.tenant_id),
+                SemanticModel.data_source_id == current.data_source_id,
+            ).order_by(SemanticModel.version.desc()).limit(1)
+        )
+    ).scalar_one()
+    new_version = max_v + 1
+
+    new_sm = SemanticModel(
+        tenant_id=user.tenant_id,
+        data_source_id=current.data_source_id,
+        version=new_version,
+        content=new_content,
+        is_current=True,
+    )
+    db.add(new_sm)
+    await db.flush()
+    await write_audit_log(
+        db, tenant_id=user.tenant_id, user_id=user.user_id,
+        resource_type="semantic_model", action="patch", status="success",
+        resource_id=new_sm.id,
+        detail={"table": body.table_name, "column": body.column_name, "from_version": current.version},
+    )
+    await db.commit()
+    await db.refresh(new_sm)
+
+    # T021: 编辑后重建向量索引 (语义层是 RAG 检索的安全边界)
+    try:
+        from app.services.indexer_update import rebuild_index
+        from app.services.embedder import get_embedder
+        from app.services.vector_store import get_vector_store
+        from app.schemas.semantic_layer import SemanticModelContent
+        content = SemanticModelContent(**new_sm.content)
+        await rebuild_index(
+            content=content,
+            data_source_id=new_sm.data_source_id,
+            store=get_vector_store(),
+            embedder=get_embedder(),
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger("app.api.semantic_models").warning(
+            "编辑后重建索引失败, RAG 检索将降级: %s", e
+        )
+
+    return SemanticModelOut(
+        id=new_sm.id, tenant_id=new_sm.tenant_id, data_source_id=new_sm.data_source_id,
+        version=new_sm.version, is_current=new_sm.is_current, content=new_sm.content,
+    )
+
+
 # ── diff (简单: 对比两个版本的 content JSON) ──────────────────
 
 @router.get("/{sm_id}/diff")
@@ -243,18 +391,9 @@ async def diff_versions(
     if to_content is None:
         raise HTTPException(status_code=404, detail=f"版本 {to} 不存在")
 
-    from_models = {m["name"]: m for m in from_content.get("models", [])}
-    to_models = {m["name"]: m for m in to_content.get("models", [])}
-    added = sorted(set(to_models) - set(from_models))
-    removed = sorted(set(from_models) - set(to_models))
-    common = sorted(set(from_models) & set(to_models))
-    changed = [n for n in common if from_models[n] != to_models[n]]
-
-    return {
-        "from_version": frm,
-        "to_version": to,
-        "added_models": added,
-        "removed_models": removed,
-        "changed_models": changed,
-        "unchanged_models": [n for n in common if n not in changed],
-    }
+    # 复用语义层 diff 工具 (DSO-04 元数据刷新也用它)
+    from app.services.semantic_diff import diff_semantic_contents
+    result = diff_semantic_contents(from_content, to_content)
+    result["from_version"] = frm
+    result["to_version"] = to
+    return result

@@ -17,6 +17,7 @@ os.environ["SECRET_KEY"] = "test-secret-key-change-in-production-abcdef123456"
 # Fernet key 必须是 32 字节 url-safe base64（合法格式才能被 Fernet 接受）
 os.environ["FERNET_KEY"] = "3OO-go6es96rvMajcdliCWYpXiwvZ_Sckkpe0pQKF40="
 os.environ["LOG_LEVEL"] = "WARNING"
+os.environ["DEBUG"] = "true"  # 测试环境等同开发模式 (跳过 email_verified 强制校验, dev_token 可用)
 os.environ["ENV_FILE"] = ""  # Prevent loading .env from disk
 
 # Clear the lru_cache to ensure environment variables take effect
@@ -48,6 +49,10 @@ def test_engine():
 @pytest.fixture(scope="session")
 def _create_tables(test_engine):
     """Create all tables once for the test session."""
+    # 显式 import models 确保 Base.metadata 注册全部表 (session scope 可能在
+    # app import 前实例化, 此时 metadata 为空会建出空 schema — 根因: 字母序靠前的
+    # 测试文件先触发 _create_tables, 而 models 尚未导入)
+    import app.db.models  # noqa: F401
     from app.db.session import Base
     import asyncio
 
@@ -78,11 +83,15 @@ async def db_session(test_engine, _create_tables) -> AsyncGenerator[AsyncSession
         # 清理: 按依赖反序删 (避免外键约束)
         from sqlalchemy import text
         for table in [
-            "feedback", "audit_logs", "saved_queries",
+            "feedback", "query_tasks", "audit_logs", "saved_queries",
             "conversations", "semantic_models", "data_sources",
             "users", "tenants",
         ]:
-            await session.execute(text(f"DELETE FROM {table}"))
+            try:
+                await session.execute(text(f"DELETE FROM {table}"))
+            except Exception:
+                # 表可能因 app fixture teardown 提前重置引擎而不存在, 跳过 (健壮性)
+                pass
         await session.commit()
 
 

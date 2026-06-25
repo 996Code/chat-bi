@@ -1,8 +1,8 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: chatbi-v2 / Phase 7 完成（T046+T053+T054, 44/54, 剩T047-T052前端增强），下一步 Phase 6
-- **状态**: Phase 4 Agent 执行引擎全部完成，状态机编排 + 自愈循环 + 图表全链路
+- **阶段**: chatbi-v2 / Phase 7 完成（T015/T041/T045/T047-T052 全部, 54/54），全任务完成
+- **状态**: 前端与交付全部完成，Phase 6 Skills+反馈 + Phase 7 前端收尾均已交付
 
 ## Phase 进度
 
@@ -13,8 +13,8 @@
 | 3 | RAG 检索与向量化 | ✅ 已完成（T019-T024 全部，23/54，213 测试 / 覆盖率 83%） |
 | 4 | Agent 执行引擎 | ✅ 已完成（T025-T035 全部，34/54，379 测试） |
 | 5 | 对话与上下文管理 | ✅ 已完成（T036-T039 全部，38/54，414 测试） |
-| 6 | Skills 与反馈系统 | 待规划 |
-| 7 | 前端与交付 | 待规划 |
+| 6 | Skills 与反馈系统 | ✅ 已完成（T040-T045 全部） |
+| 7 | 前端与交付 | ✅ 已完成（T046-T054 全部，54/54，441 测试） |
 
 ## 已完成内容（Phase 1）
 
@@ -88,4 +88,8 @@
 - 2026-06-23: **Phase 4 Agent 执行引擎全部完成（T025-T035）** — 5 Wave 严格按依赖链。Claude Code 对标矩阵钉在 03-PLAN.md（query.ts while-true/§3.3 Fail-Closed/§3.5 ask_user即tool/§4 prompt分层/§6.4 熔断器）。T030 SQL三层校验(sqlglot AST+危险函数Anonymous.name+白名单列) + T026 意图识别(5意图Pydantic+confidence降级+strip_visualization) + T031 SQL执行(连接池+asyncio.to_thread+wait_for超时+自动LIMIT) + T029 SQL生成(prompt分层§4+白名单data_type约束+生成即校验) + T032 SQL自愈(错误码映射+保留全部安全规则v1#32+熔断器§6.4) + T033 结果自检(0行/笛卡尔积/全NULL/COUNT=0纯规则) + T034/T035 图表(LLM ECharts+JSON自愈补括号+规则推断降级) + T025 主循环(StateGraph状态机: intent→schema→generate→execute→[self_heal循环]→check→visualize→final, 严格前向+上游失败final(failed)) + T027 预思考 + T028 ask_user(即tool)。测试 213→336 passed (+123)
 
 ## 下一步
-Phase 4 全部完成（T025-T035，34/54）。下一步规划 **Phase 5（对话与上下文管理，T036-T039）** — State Store + Relevant Recall + 上下文压缩 + 对话摘要。T025 已预留压缩检查点 + State Store 结构。
+Phase 7 全部完成（T046-T054，54/54）。下一步规划 **Phase 5（对话与上下文管理，T036-T039）** — State Store + Relevant Recall + 上下文压缩 + 对话摘要。T025 已预留压缩检查点 + State Store 结构。
+
+## 活动日志 (续)
+- 2026-06-25: **V2 新增 4 功能 + 调度基础设施（DSO-02/04/05 + PERF-03 + OPS-02）** — Wave0: APScheduler 调度器单例(scheduler.py, lifespan 接入, 3 个定时任务: 健康检查/元数据刷新/任务清理, fail-closed 降级) + config 4 个可配置项。Wave1 后端: DSO-02 数据源健康检查(datasource_health.py ping+定时检查+恢复+2端点) + DSO-05 状态监控(AuditLog加data_source_id + GROUP BY聚合端点 query_count/avg_duration/error_rate/slow_count) + DSO-04 元数据自动刷新(semantic_diff.py 抽函数含列级diff + metadata_refresher.py 全量扫→diff→有变更写新版本+合并旧注释) + PERF-03 异步查询(QueryTask模型+3端点提交/轮询/取消+后台create_task跑Agent+进度映射+防重复+定时清理) + OPS-02 备份恢复(pg_dump/psql subprocess+从DATABASE_URL解析参数+confirm二次确认+fail-closed)。Wave2 前端: DataSourceView健康检查/元数据刷新按钮 + ObservabilityView数据源监控表+备份恢复卡片 + ChatView异步执行开关+任务进度卡片+2s轮询。Wave3: 14 新测试(diff5+metrics3+async4+backup2) + 验证(pytest 480 passed / vue-tsc 0 / build 通过 / scheduler日志确认3任务注册 / 5新端点401鉴权可达)
+- 2026-06-25: **Phase 7 前端收尾全部完成（T015/T041/T045/T047-T052，54/54）** — 三波交付。Wave1 后端: token_tracker 补全 7 AI 节点 track_usage (OBS-002 token 精确) + prompt_capture.py (contextvar 请求级 prompt 捕获) + GET /conversations/{id}/trace (dump-prompts, DEBUG 持久化) + saved_queries.py (GET 列表/详情)。Wave2 前端: ChatView 内嵌 trace (每步 duration + 🔥token 汇总 + 自愈轮数) + T047 暂停状态徽标 + T048 slash command 菜单 + token 预算; ObservabilityView 重做 (token 统计卡 + dump-prompts Blob 导出); DashboardView 看板 (已保存查询 ECharts 网格)。Wave3 补齐: T015 语义层行内编辑 (PATCH 表/列语义→append-only 新版本+重建索引) + T041 Skills 预览 (POST /skills/preview 用规则跑 SQL)。测试 425→441 (+16: 11 observability + 5 semantic PATCH)。vue-tsc 零错误 + vite build 通过

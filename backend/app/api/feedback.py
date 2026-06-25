@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthUser, require_admin, require_user, write_audit_log
-from app.db.models import Feedback
+from app.db.models import Feedback, SavedQuery
 from app.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -152,4 +152,31 @@ async def review_feedback(
         resource_id=fb.id, detail={"review_status": body.status, "note": body.note},
     )
     await db.commit()
+
+    # T044/RAG-004: 审核通过 → 回流知识库 (fewshot 向量库)
+    # 后续相似问题可召回此 SQL 作 few-shot 示例。失败降级不阻塞审核流程。
+    if body.status == "approved":
+        try:
+            from app.services.fewshot import index_fewshot_example
+            from app.services.embedder import get_embedder
+            # question/sql 来源: 关联的 saved_query (优先用户修正的 corrected_sql)
+            question = ""
+            sql = fb.corrected_sql or ""
+            if fb.saved_query_id:
+                sq = (await db.execute(
+                    select(SavedQuery).where(SavedQuery.id == fb.saved_query_id)
+                )).scalar_one_or_none()
+                if sq:
+                    question = sq.question or ""
+                    if not sql:
+                        sql = sq.sql_text or ""
+            if question and sql:
+                await index_fewshot_example(
+                    question=question, sql=sql,
+                    embedder=get_embedder(),
+                    data_source_id=fb.tenant_id,  # SavedQuery 无 data_source_id, 暂用 tenant 隔离
+                )
+        except Exception as e:
+            logger.warning("fewshot 回流失败 (不阻塞审核): %s", e)
+
     return FeedbackOut(**{k: getattr(fb, k) for k in FeedbackOut.model_fields})
