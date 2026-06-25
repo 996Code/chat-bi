@@ -52,8 +52,23 @@
         <template #header>
           <div class="detail-header">
             <div>
-              <b style="font-size: 1.1rem">{{ selected.display_name }}</b>
+              <!-- T015: 表中文名可编辑 -->
+              <el-input
+                v-if="editingTable"
+                v-model="editForm.tableDisplayName"
+                size="small" style="width: 240px"
+                @keydown.enter="saveTableEdit"
+              />
+              <b v-else style="font-size: 1.1rem">{{ selected.display_name }}</b>
               <code style="margin-left: 8px; color: #999">{{ selected.name }}</code>
+              <el-button
+                v-if="!editingTable" text size="small" :icon="Edit"
+                @click="startTableEdit"
+              >编辑</el-button>
+              <template v-else>
+                <el-button text size="small" type="primary" @click="saveTableEdit">保存</el-button>
+                <el-button text size="small" @click="editingTable = false">取消</el-button>
+              </template>
             </div>
             <div>
               <el-tag size="small" :type="sourceTag(selected.source)">{{ sourceLabel(selected.source, selected.confidence) }}</el-tag>
@@ -61,18 +76,56 @@
           </div>
         </template>
 
-        <p v-if="selected.description" class="desc">{{ selected.description }}</p>
+        <!-- T015: 表描述可编辑 -->
+        <div class="desc-edit-row">
+          <el-input
+            v-if="editingTable"
+            v-model="editForm.tableDescription"
+            type="textarea" :rows="2" size="small"
+            placeholder="表的业务描述..."
+          />
+          <p v-else-if="selected.description" class="desc">{{ selected.description }}</p>
+        </div>
 
         <h4>列 ({{ selected.columns.length }})</h4>
         <el-table :data="selected.columns" size="small" border>
           <el-table-column prop="name" label="列名" min-width="130">
             <template #default="{ row }"><code>{{ row.name }}</code></template>
           </el-table-column>
-          <el-table-column prop="display_name" label="中文名" min-width="130" />
-          <el-table-column prop="data_type" label="类型" width="140" />
-          <el-table-column label="语义" width="100">
+          <!-- T015: 中文名可编辑 (双击) -->
+          <el-table-column label="中文名" min-width="130">
             <template #default="{ row }">
-              <el-tag size="small" :type="semanticTag(row.semantic_type)">{{ row.semantic_type || '-' }}</el-tag>
+              <el-input
+                v-if="editingCol === row.name"
+                v-model="editForm.colDisplayName"
+                size="small"
+                @keydown.enter="saveColEdit(row)"
+                @blur="saveColEdit(row)"
+              />
+              <span v-else class="editable-cell" @dblclick="startColEdit(row, 'name')">
+                {{ row.display_name }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="data_type" label="类型" width="140" />
+          <!-- T015: 语义类型可编辑 (下拉) -->
+          <el-table-column label="语义" width="130">
+            <template #default="{ row }">
+              <el-select
+                v-if="editingCol === row.name"
+                v-model="editForm.colSemanticType"
+                size="small" style="width: 100px"
+                @change="saveColEdit(row)"
+              >
+                <el-option label="度量 measure" value="measure" />
+                <el-option label="维度 dimension" value="dimension" />
+                <el-option label="主键 key" value="key" />
+              </el-select>
+              <el-tag
+                v-else size="small" class="editable-cell"
+                :type="semanticTag(row.semantic_type)"
+                @dblclick="startColEdit(row, 'semantic')"
+              >{{ row.semantic_type || '-' }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="来源" width="120">
@@ -107,16 +160,53 @@
             <el-tag :type="v.is_current ? 'success' : 'info'" size="small">
               v{{ v.version }}{{ v.is_current ? ' 当前' : '' }}
             </el-tag>
-            <el-button
-              v-if="!v.is_current"
-              size="small" type="warning" plain
-              :loading="rollingBack === v.version"
-              @click="doRollback(v.version)"
-            >
-              回滚到此版本
-            </el-button>
+            <div class="version-actions">
+              <el-button
+                v-if="!v.is_current"
+                size="small" plain
+                :loading="diffLoading === v.version"
+                @click="showDiff(v.version)"
+              >
+                对比当前
+              </el-button>
+              <el-button
+                v-if="!v.is_current"
+                size="small" type="warning" plain
+                :loading="rollingBack === v.version"
+                @click="doRollback(v.version)"
+              >
+                回滚到此版本
+              </el-button>
+            </div>
           </div>
           <div class="version-id"><code>{{ v.id.slice(0, 8) }}</code></div>
+        </div>
+      </div>
+    </el-drawer>
+
+    <!-- 版本对比抽屉 -->
+    <el-drawer v-model="diffDrawer" title="版本对比" size="500px">
+      <div v-loading="diffLoading !== null">
+        <div v-if="diffResult">
+          <div v-if="diffResult.added_tables?.length" class="diff-section">
+            <div class="diff-title add">新增表 ({{ diffResult.added_tables.length }})</div>
+            <el-tag v-for="t in diffResult.added_tables" :key="t" type="success" size="small" style="margin: 2px">{{ t }}</el-tag>
+          </div>
+          <div v-if="diffResult.removed_tables?.length" class="diff-section">
+            <div class="diff-title remove">删除表 ({{ diffResult.removed_tables.length }})</div>
+            <el-tag v-for="t in diffResult.removed_tables" :key="t" type="danger" size="small" style="margin: 2px">{{ t }}</el-tag>
+          </div>
+          <div v-if="diffResult.changed_tables?.length" class="diff-section">
+            <div class="diff-title change">变更表 ({{ diffResult.changed_tables.length }})</div>
+            <div v-for="t in diffResult.changed_tables" :key="t.table" class="diff-table">
+              <strong>{{ t.table }}</strong>
+              <span v-if="t.added_columns?.length" class="diff-col add">+ {{ t.added_columns.join(', ') }}</span>
+              <span v-if="t.removed_columns?.length" class="diff-col remove">- {{ t.removed_columns.join(', ') }}</span>
+            </div>
+          </div>
+          <div v-if="!diffResult.added_tables?.length && !diffResult.removed_tables?.length && !diffResult.changed_tables?.length" class="empty-hint" style="text-align:center;color:#999;padding:40px">
+            两个版本无差异
+          </div>
         </div>
       </div>
     </el-drawer>
@@ -127,8 +217,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Refresh, Clock } from '@element-plus/icons-vue'
-import { semantic, type SemanticModel, type SemanticTableModel } from '@/api'
+import { ArrowLeft, Refresh, Clock, Edit } from '@element-plus/icons-vue'
+import { semantic, datasource, type SemanticModel, type SemanticTableModel, type SemanticColumn } from '@/api'
 
 const route = useRoute()
 const model = ref<SemanticModel | null>(null)
@@ -138,9 +228,24 @@ const loading = ref(false)
 const versionDrawer = ref(false)
 const versionLoading = ref(false)
 const versions = ref<{ id: string; version: number; is_current: boolean }[]>([])
+// 版本对比 (diff)
+const diffDrawer = ref(false)
+const diffLoading = ref<number | null>(null)
+const diffResult = ref<any>(null)
 const rollingBack = ref<number | null>(null)
 const search = ref('')
 const showSystemTables = ref(false) // 默认隐藏系统表 (ChatBI 元数据表, 用户不查)
+
+// T015: 行内编辑
+const editingTable = ref(false)
+const editingCol = ref<string | null>(null)  // 正在编辑的列名
+const editForm = ref({
+  tableDisplayName: '',
+  tableDescription: '',
+  colDisplayName: '',
+  colSemanticType: '' as string,
+})
+const saving = ref(false)
 
 // 系统表: ChatBI 自己的元数据表, 业务用户不关心, 默认隐藏
 const SYSTEM_TABLES = new Set([
@@ -159,7 +264,14 @@ const filteredModels = computed(() => {
 })
 
 async function fetchData() {
-  const dsId = route.query.data_source_id as string
+  let dsId = route.query.data_source_id as string
+  // 缺 data_source_id 时自动选第一个数据源 (从导航栏直接进入时)
+  if (!dsId) {
+    try {
+      const { data } = await datasource.list()
+      if (data.length) dsId = data[0].id
+    } catch { /* ignore */ }
+  }
   if (!dsId) return
   loading.value = true
   try {
@@ -212,6 +324,94 @@ async function doRollback(toVersion: number) {
     ElMessage.error('回滚失败: ' + (e.response?.data?.detail || e.message))
   } finally {
     rollingBack.value = null
+  }
+}
+
+async function showDiff(fromVersion: number) {
+  if (!model.value) return
+  // diff: fromVersion → 当前版本
+  diffLoading.value = fromVersion
+  diffDrawer.value = true
+  diffResult.value = null
+  try {
+    const currentVersion = model.value.version
+    const { data } = await semantic.diff(model.value.id, fromVersion, currentVersion)
+    diffResult.value = data
+  } catch (e: any) {
+    ElMessage.error('对比失败: ' + (e.response?.data?.detail || e.message))
+    diffDrawer.value = false
+  } finally {
+    diffLoading.value = null
+  }
+}
+
+// ── T015: 行内编辑 ──────────────────────────────────────────
+// 编辑 = 写新版本 (append-only), source→manual/confidence→1.0
+function startTableEdit() {
+  if (!selected.value) return
+  editForm.value.tableDisplayName = selected.value.display_name
+  editForm.value.tableDescription = selected.value.description || ''
+  editingTable.value = true
+}
+
+async function saveTableEdit() {
+  if (!model.value || !selected.value) return
+  // 检查是否有变化
+  if (
+    editForm.value.tableDisplayName === selected.value.display_name &&
+    editForm.value.tableDescription === (selected.value.description || '')
+  ) {
+    editingTable.value = false
+    return
+  }
+  saving.value = true
+  try {
+    await semantic.patch(model.value.id, {
+      table_name: selected.value.name,
+      display_name: editForm.value.tableDisplayName,
+      description: editForm.value.tableDescription,
+    })
+    ElMessage.success('已更新 (创建为新版本)')
+    editingTable.value = false
+    await fetchData()  // 刷新到新版本
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    saving.value = false
+  }
+}
+
+function startColEdit(row: SemanticColumn, field: 'name' | 'semantic') {
+  editingCol.value = row.name
+  editForm.value.colDisplayName = row.display_name
+  editForm.value.colSemanticType = row.semantic_type || 'dimension'
+}
+
+async function saveColEdit(row: SemanticColumn) {
+  const col = editingCol.value
+  editingCol.value = null
+  if (!model.value || !selected.value || !col) return
+  // 检查变化
+  if (
+    editForm.value.colDisplayName === row.display_name &&
+    editForm.value.colSemanticType === (row.semantic_type || '')
+  ) {
+    return
+  }
+  saving.value = true
+  try {
+    await semantic.patch(model.value.id, {
+      table_name: selected.value.name,
+      column_name: col,
+      column_display_name: editForm.value.colDisplayName,
+      column_semantic_type: editForm.value.colSemanticType || undefined,
+    })
+    ElMessage.success('已更新 (创建为新版本)')
+    await fetchData()
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    saving.value = false
   }
 }
 
@@ -273,7 +473,15 @@ onMounted(fetchData)
 }
 .badges span { margin-left: 8px; }
 .desc { color: #666; margin: 0 0 16px; }
+.desc-edit-row { margin-bottom: 12px; }
 h4 { margin: 16px 0 8px; color: #303030; }
+/* T015: 可双击编辑的单元格 */
+.editable-cell {
+  cursor: pointer;
+  border-bottom: 1px dashed #dcdfe6;
+  padding-bottom: 1px;
+}
+.editable-cell:hover { border-bottom-color: #409eff; color: #409eff; }
 .version-item {
   padding: 12px 0; border-bottom: 1px solid #ebeef5;
 }
@@ -281,4 +489,14 @@ h4 { margin: 16px 0 8px; color: #303030; }
   display: flex; justify-content: space-between; align-items: center;
 }
 .version-id { font-size: 0.8rem; color: #999; margin-top: 6px; }
+.version-actions { display: flex; gap: 6px; }
+.diff-section { margin-bottom: 16px; }
+.diff-title { font-weight: 600; margin-bottom: 6px; font-size: 0.85rem; }
+.diff-title.add { color: #67c23a; }
+.diff-title.remove { color: #f56c6c; }
+.diff-title.change { color: #e6a23c; }
+.diff-table { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.82rem; }
+.diff-col { display: block; margin-top: 2px; margin-left: 8px; }
+.diff-col.add { color: #67c23a; }
+.diff-col.remove { color: #f56c6c; }
 </style>

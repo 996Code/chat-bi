@@ -165,6 +165,9 @@ async def write_audit_log(
     sql_text: str | None = None,
     error_message: str | None = None,
     ip_address: str | None = None,
+    # DSO-07: 慢查询标记 (SQL 执行耗时 + 是否慢查询)
+    duration_ms: int | None = None,
+    is_slow: bool = False,
 ) -> None:
     """Write an audit log entry.
 
@@ -187,6 +190,8 @@ async def write_audit_log(
         sql_text=sql_text,
         error_message=error_message,
         ip_address=ip_address,
+        duration_ms=duration_ms,
+        is_slow=is_slow,
     )
     db_session.add(log_entry)
     # Don't commit here — let the caller commit as part of their transaction

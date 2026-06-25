@@ -132,6 +132,11 @@ async def compact_history(
             temperature=0.0,
         )
         summary = (resp.choices[0].message.content or "").strip()
+        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
+        from app.core.token_tracker import track_usage
+        from app.core.prompt_capture import record_prompt
+        track_usage(getattr(resp, "usage", None))
+        record_prompt("compress", "", _COMPACT_PROMPT.format(history=history_text), getattr(resp, "usage", None))
         logger.info("对话压缩成功: %d 轮 → 摘要 %d 字", len(old_messages), len(summary))
         return CompactResult(summary=summary, recent_messages=recent_messages)
     except Exception as e:

@@ -5,6 +5,7 @@
       <span class="title">查询历史 & 审计</span>
       <el-radio-group v-model="activeTab" size="small" style="margin-left: auto">
         <el-radio-button value="audit">审计日志</el-radio-button>
+        <el-radio-button value="slow">慢查询 🔥</el-radio-button>
         <el-radio-button value="conversations">对话历史</el-radio-button>
       </el-radio-group>
     </div>
@@ -23,10 +24,38 @@
             <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
+        <!-- DSO-07: 耗时列 (慢查询标红) -->
+        <el-table-column label="耗时" width="100">
+          <template #default="{ row }">
+            <el-tag v-if="row.is_slow" type="danger" size="small">🔥 {{ row.duration_ms }}ms</el-tag>
+            <span v-else-if="row.duration_ms" style="color:#909399;font-size:0.8em">{{ row.duration_ms }}ms</span>
+            <span v-else style="color:#c0c4cc">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="sql_text" label="SQL / 错误" min-width="200">
           <template #default="{ row }">
             <code style="font-size:0.8em">{{ (row.sql_text || row.error_message || '').slice(0, 80) }}</code>
           </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <!-- DSO-07: 慢查询列表 -->
+    <div v-if="activeTab === 'slow'" v-loading="loading">
+      <el-alert v-if="!slowQueries.length && !loading" type="info" :closable="false"
+        title="暂无慢查询" description="超过阈值 (默认 10s) 的查询会显示在这里" show-icon />
+      <el-table :data="slowQueries" size="small" border>
+        <el-table-column prop="created_at" label="时间" width="180">
+          <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="耗时" width="110">
+          <template #default="{ row }">
+            <el-tag type="danger" size="small">🔥 {{ row.duration_ms }}ms ({{ (row.duration_ms / 1000).toFixed(1) }}s)</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="user_id" label="用户" width="100" />
+        <el-table-column label="SQL" min-width="300">
+          <template #default="{ row }"><code style="font-size:0.8em">{{ row.sql_text }}</code></template>
         </el-table-column>
       </el-table>
     </div>
@@ -60,6 +89,7 @@ import { observability } from '@/api'
 const activeTab = ref('audit')
 const loading = ref(false)
 const auditLogs = ref<any[]>([])
+const slowQueries = ref<any[]>([])
 const conversations = ref<any[]>([])
 
 function formatTime(iso: string): string {
@@ -75,6 +105,14 @@ async function loadAudit() {
   } finally { loading.value = false }
 }
 
+async function loadSlow() {
+  loading.value = true
+  try {
+    const { data } = await observability.slowQueries(50)
+    slowQueries.value = data
+  } finally { loading.value = false }
+}
+
 async function loadConversations() {
   loading.value = true
   try {
@@ -85,6 +123,7 @@ async function loadConversations() {
 
 watch(activeTab, (tab) => {
   if (tab === 'audit') loadAudit()
+  else if (tab === 'slow') loadSlow()
   else loadConversations()
 })
 

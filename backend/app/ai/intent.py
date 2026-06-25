@@ -109,12 +109,14 @@ _INTENT_PROMPT = """你是 BI 系统的意图识别器。判断用户问题的�
 """
 
 
-async def classify_intent(question: str, llm_client) -> IntentOutput:
+async def classify_intent(question: str, llm_client, history: str | None = None) -> IntentOutput:
     """调 LLM 识别意图, 失败/低置信度降级 CLARIFICATION。
 
     Args:
         question: 用户原始问题
         llm_client: AsyncOpenAI client
+        history: 多轮对话历史文本 (追问时注入, 让"再查一遍/上个月呢"能正确消解指代
+                 并判为 TEXT_TO_SQL 而非 CLARIFICATION; 对标 ARC-04)
 
     Returns:
         IntentOutput — 始终返回 (不抛), 低置信/失败降级 CLARIFICATION
@@ -125,6 +127,10 @@ async def classify_intent(question: str, llm_client) -> IntentOutput:
 
     # SEC-007: 用户输入进 LLM 前清洗 (NFKC + 去零宽/方向控制字符)
     clean_question = sanitize_text(question)
+    # 追问时把历史拼进 user message (让意图识别结合上下文判断)
+    user_content = clean_question
+    if history:
+        user_content = f"【对话历史】\n{history}\n\n【当前问题】{clean_question}"
 
     last_error = None
     for attempt in range(MAX_RETRIES + 1):
@@ -133,12 +139,17 @@ async def classify_intent(question: str, llm_client) -> IntentOutput:
                 model=settings.llm_model,
                 messages=[
                     {"role": "system", "content": _INTENT_PROMPT},
-                    {"role": "user", "content": clean_question},
+                    {"role": "user", "content": user_content},
                 ],
                 max_tokens=300,
                 temperature=0.0,
             )
             content = resp.choices[0].message.content or ""
+            # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
+            from app.core.token_tracker import track_usage
+            from app.core.prompt_capture import record_prompt
+            track_usage(getattr(resp, "usage", None))
+            record_prompt("intent", _INTENT_PROMPT, user_content, getattr(resp, "usage", None))
             from app.core.llm_json import parse_json_response
             parsed = parse_json_response(content)
             if parsed is None:

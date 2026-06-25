@@ -6,8 +6,29 @@
         <span class="logo">📊 ChatBI v2</span>
       </div>
       <div class="nav-menu">
+        <router-link to="/chat" custom v-slot="{ navigate, isActive }">
+          <span :class="['nav-item', { active: isActive }]" @click="navigate">对话</span>
+        </router-link>
         <router-link to="/datasources" custom v-slot="{ navigate, isActive }">
           <span :class="['nav-item', { active: isActive }]" @click="navigate">数据源</span>
+        </router-link>
+        <router-link to="/dashboard" custom v-slot="{ navigate, isActive }">
+          <span :class="['nav-item', { active: isActive }]" @click="navigate">看板</span>
+        </router-link>
+        <router-link to="/semantic" custom v-slot="{ navigate, isActive }">
+          <span :class="['nav-item', { active: isActive }]" @click="navigate">语义层</span>
+        </router-link>
+        <router-link to="/history" custom v-slot="{ navigate, isActive }">
+          <span :class="['nav-item', { active: isActive }]" @click="navigate">历史</span>
+        </router-link>
+        <router-link to="/observability" custom v-slot="{ navigate, isActive }">
+          <span :class="['nav-item', { active: isActive }]" @click="navigate">系统</span>
+        </router-link>
+        <router-link to="/skills" custom v-slot="{ navigate, isActive }">
+          <span :class="['nav-item', { active: isActive }]" @click="navigate">规则</span>
+        </router-link>
+        <router-link to="/memory" custom v-slot="{ navigate, isActive }">
+          <span :class="['nav-item', { active: isActive }]" @click="navigate">记忆</span>
         </router-link>
       </div>
       <div class="nav-right">
@@ -22,15 +43,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { isLoggedIn, clearToken } from '@/composables/useAuth'
 
 const router = useRouter()
 
-const isLoggedIn = computed(() => !!localStorage.getItem('access_token'))
-
 function logout() {
-  localStorage.removeItem('access_token')
+  clearToken()
   router.push('/login')
 }
 </script>

@@ -56,11 +56,13 @@ class ChatResponse(BaseModel):
     truncated: bool = False
     chart: dict | None = None
     error: str | None = None
+    reply: str | None = None  # 自然语言回复 (GENERAL/EXPLANATION 意图)
     ask_user: dict | None = None  # 需要用户澄清时的提问
     # 过程信息 (调试/可观测)
     stage: str = ""
     llm_calls: int = 0
     self_heal_rounds: int = 0
+    token_usage: dict | None = None  # OBS-002: prompt/completion/total token 统计
 
 
 async def build_agent_deps(
@@ -81,6 +83,7 @@ async def build_agent_deps(
     from app.ai.sql_healer import heal_sql
     from app.ai.result_checker import check_result
     from app.ai.chart_agent import generate_chart
+    from app.ai.replier import generate_reply
     from app.ai.ask_user import should_ask_for_schema, should_ask_for_result
 
     llm = get_llm_client()
@@ -114,17 +117,49 @@ async def build_agent_deps(
             )
         )
     ).scalar_one_or_none()
+    # DSO-08: 禁用的数据源拒绝查询 (对标 v1 经验教训 #18, 避免 Partial 陷阱)
+    if ds is not None and not ds.is_active:
+        raise HTTPException(status_code=403, detail="数据源已禁用, 无法查询")
     url = datasource_to_url(ds) if ds else ""
 
-    deps = AgentDeps(
-        classify_intent=lambda q: classify_intent(q, llm),
-        retrieve=lambda q: _retrieve(q, store, _get_embedder(), llm_client=llm, data_source_id=data_source_id),
-        think=lambda q, ctx, models: think(q, ctx, models, llm),
-        generate_sql=lambda question, schema_context, allowed_columns, llm_client=None, **kw: generate_sql(
+    # Few-shot 检索闭包 (对标 RAG-004: 相似审核 SQL 作 few-shot 注入 prompt)
+    # 独立 fewshot collection, 标量过滤防跨数据源召回; 失败降级返回空 (宁缺毋滥)
+    from app.services.fewshot import find_fewshot_examples, format_fewshot_prompt
+    fewshot_store = get_vector_store("fewshot")
+    # Relevant Recall: 按需召回 Agent 记忆注入 prompt (对标 Claude §5.4, T037)
+    from app.ai.recall import recall_memories, format_memories_for_prompt
+
+    async def _generate_sql_with_fewshot(
+        question: str, schema_context: str, allowed_columns: set[str],
+        llm_client=None, history: str | None = None, **kw,
+    ):
+        # 1. 检索相似审核 SQL (few-shot)
+        fewshot_text = ""
+        try:
+            examples = await find_fewshot_examples(question, fewshot_store, _get_embedder())
+            fewshot_text = format_fewshot_prompt(examples)
+        except Exception as e:
+            logger.debug("fewshot 检索失败, 降级无 fewshot: %s", e)
+        # 2. 按需召回相关记忆 (Relevant Recall, 关键词相关性, 不调 LLM)
+        memory_text = ""
+        try:
+            memories = recall_memories(question)
+            memory_text = format_memories_for_prompt(memories)
+        except Exception as e:
+            logger.debug("记忆召回失败, 降级无记忆: %s", e)
+        # 合并 skills + memory 进同一个 skills 参数 (generate_sql 的 skills 槽位)
+        combined_skills = "\n\n".join(s for s in [skills_text, memory_text] if s) or None
+        return await generate_sql(
             question=question, schema_context=schema_context,
             allowed_columns=allowed_columns, llm_client=llm,
-            skills=skills_text,
-        ),
+            skills=combined_skills, history=history, fewshot_examples=fewshot_text or None,
+        )
+
+    deps = AgentDeps(
+        classify_intent=lambda q, history=None, **kw: classify_intent(q, llm, history=history),
+        retrieve=lambda q: _retrieve(q, store, _get_embedder(), llm_client=llm, data_source_id=data_source_id),
+        think=lambda q, ctx, models, history=None, **kw: think(q, ctx, models, llm, history=history),
+        generate_sql=_generate_sql_with_fewshot,
         execute_sql=lambda sql: execute_sql(sql, data_source_id, url, get_engine_pool()),
         heal_sql=lambda sql, error, allowed_columns, schema_context, **kw: heal_sql(
             sql=sql, error=error, allowed_columns=allowed_columns,
@@ -135,6 +170,7 @@ async def build_agent_deps(
             question=question, columns=columns, rows=rows,
             llm_client=llm, chart_type_hint=chart_type_hint,
         ),
+        generate_reply=lambda question, intent, **kw: generate_reply(question, intent, llm),
         should_ask_for_schema=should_ask_for_schema,
         should_ask_for_result=should_ask_for_result,
     )
@@ -166,6 +202,33 @@ def _chat_rate():
     """查询限流值 (从 config 读, 对标 rate_limit_queries_per_minute)。"""
     from app.core.config import get_settings
     return f"{get_settings().rate_limit_queries_per_minute}/minute"
+
+
+async def _generate_conversation_title(question: str, deps) -> str:
+    """为新对话生成简短标题 (≤16 字)。
+
+    用 LLM 总结首条问题为标题, 失败降级为问题截断 (fail-closed, 不阻塞主流程)。
+    """
+    fallback = question[:16].strip() or "新对话"
+    try:
+        from app.core.config import get_settings
+        from app.core.llm_client import get_llm_client
+        settings = get_settings()
+        llm = get_llm_client()
+        resp = await llm.chat.completions.create(
+            model=settings.llm_model,
+            messages=[
+                {"role": "system", "content": "把用户的提问总结为一个简短的对话标题(不超过16个字, 不要标点)。只输出标题文字。"},
+                {"role": "user", "content": question},
+            ],
+            max_tokens=30,
+            temperature=0.0,
+        )
+        title = (resp.choices[0].message.content or "").strip().strip('"\'""')
+        return title[:16] if title else fallback
+    except Exception as e:
+        logger.warning("标题生成失败, 降级为问题截断: %s", e)
+        return fallback
 
 
 @_limiter.limit(_chat_rate)
@@ -202,51 +265,136 @@ async def chat(
         logger.exception("Agent 依赖装配失败")
         raise HTTPException(status_code=500, detail=f"Agent 初始化失败: {e}")
 
-    # 运行 Agent
-    state = AgentState(question=req.question, semantic_content=content)
-    state = await run_agent(state, deps)
-
-    # 追问时恢复上轮状态 (T036 State Store, 对标 AEE-005)
+    # 追问时恢复上下文 (T036 State Store, 对标 ARC-04 多轮对话)
     import uuid
     conversation_id = req.conversation_id or str(uuid.uuid4()).replace("-", "")[:32]
     prev_state = None
+    history_text = None
     if req.conversation_id:
         try:
-            from app.ai.state_store import StateStore
-            prev_state = StateStore().load(user.tenant_id, conversation_id)
-        except Exception:
+            from app.ai.state_store import StateStore, format_history_text
+            store = StateStore()
+            prev_state = store.load(user.tenant_id, conversation_id)
+            # 取完整历史轮次 → 格式化 (含压缩 + 状态补偿), 喂给 Agent 各 LLM 节点
+            turns = store.list_turns(user.tenant_id, conversation_id)
+            if turns:
+                # 状态补偿用上一轮涉及的表 (追问时"当前在查的表")
+                prev_tables = (prev_state.current_tables if prev_state else None)
+                history_text = await format_history_text(
+                    turns, llm_client=get_llm_client(), semantic_tables=prev_tables,
+                )
+        except Exception as e:
+            logger.warning("历史恢复失败, 当新对话处理: %s", e)
             pass  # 恢复失败不阻塞, 当新对话处理
 
     # 运行 Agent
     state = AgentState(question=req.question, semantic_content=content)
+    state.history = history_text  # 注入多轮上下文 (intent/think/generate_sql 都用)
+    state.prev_sql = prev_state.current_sql if prev_state else ""  # CHART_MODIFY 复用上轮 SQL
+    # OBS-002: 启动 token 追踪 (请求级, 各节点 track_usage 累加)
+    # T050: 启动 prompt 捕获 (请求级, 各节点 record_prompt 累积, dump-prompts 导出用)
+    from app.core.token_tracker import start_token_tracking, stop_token_tracking
+    from app.core.prompt_capture import start_prompt_capture, stop_prompt_capture
+    _tt_token = start_token_tracking()
+    _pc_token = start_prompt_capture()
     state = await run_agent(state, deps)
+    token_stats = stop_token_tracking(_tt_token)
+    prompt_capture = stop_prompt_capture(_pc_token)
 
     # 持久化结构化状态到 StateStore (T036, 支持追问恢复)
-    try:
-        from app.ai.state_store import ConversationState, StateStore
-        exec_result = state.execute_result
-        conv_state = ConversationState(
-            current_tables=[m.get("name", "") for m in state.retrieved_models if m.get("name")],
-            current_sql=state.sql or "",
-            current_filters={},  # Phase 5 后续从 intent 提取
-            result_summary={
-                "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
-                "success": state.success,
-            } if exec_result or state.success else {},
-            chart_type=state.chart_option.get("series", [{}])[0].get("type") if state.chart_option else None,
-        )
-        turn_number = (prev_state.turn + 1) if hasattr(prev_state, "turn") and prev_state else 1
-        StateStore().save(user.tenant_id, conversation_id, turn_number, conv_state)
-    except Exception as e:
-        logger.warning("StateStore 持久化失败 (不阻塞): %s", e)
+    # 纯闲聊 (GENERAL) 不入对话历史 (state.persist=False)
+    if getattr(state, "persist", True):
+        try:
+            from app.ai.state_store import ConversationState, StateStore
+            exec_result = state.execute_result
+            is_new_conv = prev_state is None
+            # 新对话: 生成标题 (LLM 总结 ≤16 字, 失败降级为首条问题截断)
+            title = ""
+            if is_new_conv:
+                title = await _generate_conversation_title(req.question, deps)
+            # 结果采样 (前 50 行)
+            rows_sample = []
+            cols = []
+            if exec_result and hasattr(exec_result, "rows"):
+                rows_sample = [
+                    [_normalize_value(v) for v in r] for r in (exec_result.rows or [])[:50]
+                ]
+                cols = list(exec_result.columns) if hasattr(exec_result, "columns") else []
+            conv_state = ConversationState(
+                current_tables=[m.get("name", "") for m in state.retrieved_models if m.get("name")],
+                current_sql=state.sql or "",
+                current_filters={},
+                result_summary={
+                    "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
+                    "success": state.success,
+                } if exec_result or state.success else {},
+                chart_type=state.chart_option.get("series", [{}])[0].get("type") if state.chart_option else None,
+                title=title,
+                first_question=req.question if is_new_conv else "",
+                question=req.question,
+                reply=state.reply or "",
+                columns=cols,
+                rows_sample=rows_sample,
+                chart_option=state.chart_option,
+            )
+            turn_number = (prev_state.turn + 1) if hasattr(prev_state, "turn") and prev_state else 1
+            StateStore().save(user.tenant_id, conversation_id, turn_number, conv_state)
+
+            # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供 fewshot 回流 / 历史挖掘用
+            # 对标 ARC-05: SavedQuery 是历史查询挖掘的输入数据源
+            if state.success and state.sql:
+                try:
+                    from app.db.models import SavedQuery
+                    import json
+                    saved = SavedQuery(
+                        tenant_id=user.tenant_id,
+                        user_id=user.user_id,
+                        conversation_id=conversation_id,
+                        question=req.question,
+                        sql_text=state.sql,
+                        result_summary=json.dumps({
+                            "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
+                        }, ensure_ascii=False),
+                        chart_config=state.chart_option,
+                    )
+                    db.add(saved)
+                except Exception as e:
+                    logger.warning("SavedQuery 写入失败 (不阻塞): %s", e)
+
+            # MEM-01 自主记忆写入: 记录用户查询 (question+表), 让后续 recall 能召回
+            try:
+                from app.ai.recall import save_query_memory
+                tables_used = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
+                save_query_memory(req.question, tables_used)
+            except Exception as e:
+                logger.debug("记忆写入失败 (不阻塞): %s", e)
+        except Exception as e:
+            logger.warning("StateStore 持久化失败 (不阻塞): %s", e)
 
     # 审计
+    # SEC-006: SQL 注入拦截专项标识 — Layer 1(AST/多语句/写操作) 或 Layer 2(危险函数) 失败
+    # 视为注入拦截, 用 action="sql_injection_blocked" 单独标记便于检索
+    _INJECTION_LAYERS = ("AST", "dangerous_function")
+    is_injection_block = bool(
+        state.error and any(f"({layer})" in state.error for layer in _INJECTION_LAYERS)
+    )
+    # DSO-07: 从执行结果取耗时, 判定慢查询 (阈值可配置)
+    from app.core.config import get_settings as _get_settings
+    exec_duration = getattr(state.execute_result, "duration_ms", None) if state.execute_result else None
+    is_slow = bool(
+        exec_duration is not None
+        and exec_duration >= _get_settings().sql_slow_query_threshold * 1000
+    )
     await write_audit_log(
         db, tenant_id=user.tenant_id, user_id=user.user_id,
-        resource_type="chat", action="query",
+        resource_type="chat",
+        action="sql_injection_blocked" if is_injection_block else "query",
         status="success" if state.success else "fail",
         sql_text=state.sql or None,
         error_message=state.error[:500] if state.error else None,
+        duration_ms=exec_duration,
+        is_slow=is_slow,
+        data_source_id=data_source_id,
     )
     await db.commit()
 
@@ -264,6 +412,7 @@ async def chat(
         truncated=exec_result.truncated if exec_result and hasattr(exec_result, "truncated") else False,
         chart=state.chart_option,
         error=state.error,
+        reply=state.reply or None,
         ask_user={
             "reason": state.ask_user_request.reason,
             "question": state.ask_user_request.question,
@@ -272,4 +421,5 @@ async def chat(
         stage=state.stage.value,
         llm_calls=state.llm_call_count,
         self_heal_rounds=state.self_heal_rounds,
+        token_usage=token_stats or None,
     )

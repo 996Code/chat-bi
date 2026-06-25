@@ -115,16 +115,19 @@ def infer_chart_by_rule(columns: list[str], rows: list[tuple]) -> dict | None:
       - 列名含类别词 + 计数 → 饼图 (占比)
       - 默认 → 柱状图 (对比)
 
+    0 行结果: 仍返回图表 (空数据柱状图), 因为 0 是合法结果不是异常。
+              None 只在连列都没有时返回。
+
     Returns:
-        ECharts option dict, 或 None (无数据)
+        ECharts option dict, 或 None (无列结构)
     """
-    if not columns or not rows:
+    if not columns:
         return None
 
     cols_lower = [c.lower() for c in columns]
     first_col = cols_lower[0] if cols_lower else ""
 
-    # 取数据列 (假设最后一列是数值)
+    # 取数据列 (假设最后一列是数值); 0 行时 names/values 为空但仍生成空图表
     names = [str(r[0]) for r in rows if r]
     values = [r[-1] if r and isinstance(r[-1], (int, float)) else 0 for r in rows]
 
@@ -162,13 +165,20 @@ def infer_chart_by_rule(columns: list[str], rows: list[tuple]) -> dict | None:
 
 # ── T034: 图表生成 ────────────────────────────────────────────
 
-_CHART_PROMPT = """你是 BI 数据可视化专家。根据查询结果生成 ECharts option JSON。
+_CHART_PROMPT = """你是 BI 数据可视化专家。根据查询结果和用户意图生成 ECharts option JSON。
+
+图表类型选择规则 (根据列名语义自动识别):
+- 趋势/时间序列 (列名含 日期/月份/年份/date/month/time) → line 折线图
+- 占比/分布 (单维度 + 计数/百分比/count/ratio/占比) → pie 饼图
+- 对比/排名 (多类别 + 数值) → bar 柱状图
+- 关联/相关性 (两个数值维度) → scatter 散点图
+- 单个汇总值 (1行1列数值) → 不需要 series, 返回空 option {{}}
 
 规则:
 1. 只返回 ECharts option JSON, 不要解释, 不要 markdown 包裹
-2. option 必须含 series 数组
-3. 根据数据特征选合适图表: 趋势用 line, 对比用 bar, 占比用 pie, 关系用 scatter
-4. 数据列: 第一列通常是维度(类别/时间), 最后一列是数值
+2. option 必须含 series 数组 (单值汇总除外)
+3. 数据列: 第一列通常是维度(类别/时间), 最后一列是数值
+4. 0 行结果是正常的, 生成对应类型的空数据图表即可
 
 数据摘要:
 - 列: {columns}
@@ -223,6 +233,11 @@ async def generate_chart(
             temperature=0.0,
         )
         content = resp.choices[0].message.content or ""
+        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
+        from app.core.token_tracker import track_usage
+        from app.core.prompt_capture import record_prompt
+        track_usage(getattr(resp, "usage", None))
+        record_prompt("generate_chart", "你是 ECharts 配置生成器, 只返回 option JSON。", prompt, getattr(resp, "usage", None))
     except Exception as e:
         logger.warning("图表生成 LLM 失败, 降级规则推断: %s", e)
         option = infer_chart_by_rule(columns, rows)

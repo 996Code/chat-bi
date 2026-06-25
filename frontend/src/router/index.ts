@@ -25,6 +25,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/dashboard',
+      name: 'Dashboard',
+      component: () => import('../views/DashboardView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/semantic',
       name: 'Semantic',
       component: () => import('../views/SemanticView.vue'),
@@ -37,6 +43,18 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/skills',
+      name: 'Skills',
+      component: () => import('../views/SkillsView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/memory',
+      name: 'Memory',
+      component: () => import('../views/MemoryView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/history',
       name: 'History',
       component: () => import('../views/HistoryView.vue'),
@@ -45,11 +63,13 @@ const router = createRouter({
   ],
 })
 
-// 路由守卫: 没 token 跳登录
+// 路由守卫: 没 token 跳登录; 已登录访问登录页跳对话
 router.beforeEach((to, _from, next) => {
   const token = localStorage.getItem('access_token')
   if (to.meta.requiresAuth && !token) {
     next('/login')
+  } else if (to.path === '/login' && token) {
+    next('/chat')
   } else {
     next()
   }

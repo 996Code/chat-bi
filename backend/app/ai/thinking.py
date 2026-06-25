@@ -31,6 +31,7 @@ class ThinkingResult:
     tables: list[str] = field(default_factory=list)  # 选中的表 + 理由
     aggregation: str = ""  # 聚合方式说明
     caveats: list[str] = field(default_factory=list)  # 注意事项/陷阱
+    prev_sql_review: str = ""  # 上一轮 SQL 优化建议 (ARC-02 追问主动优化)
     raw: str = ""  # 原始 LLM 输出
     error: str | None = None
 
@@ -44,12 +45,13 @@ _THINKING_PROMPT = """你是 BI 分析师。在生成 SQL 前, 先分析查询�
 
 检索到的候选:
 {candidates}
-
+{history_section}
 请分析 (只返回 JSON):
 {{
   "tables": ["选中的表名 (附一句理由)"],
   "aggregation": "聚合方式说明 (SUM/COUNT/AVG + GROUP BY 维度)",
-  "caveats": ["注意事项 (Fan-Trap/多对多JOIN/维度混淆等陷阱)"]
+  "caveats": ["注意事项 (Fan-Trap/多对多JOIN/维度混淆等陷阱)"],
+  "prev_sql_review": "如有对话历史, 简述上一轮 SQL 是否有可优化处 (无历史则留空)"
 }}"""
 
 
@@ -58,23 +60,36 @@ async def think(
     schema_context: str,
     retrieved_models: list[dict],
     llm_client,
+    history: str | None = None,
 ) -> ThinkingResult:
     """预思考: 选表理由 + 聚合 + 陷阱 (对标 REF-001)。
+
+    Args:
+        history: 多轮对话历史文本 (追问时注入, 让预思考能继承上轮选表/聚合思路;
+                 对标 ARC-04)
 
     失败降级: LLM 失败/解析失败 → 空 ThinkingResult (不阻塞 SQL 生成)。
     """
     from app.core.config import get_settings
+    from app.core.text_sanitize import sanitize_text
     settings = get_settings()
+
+    # SEC-007: 用户问题进 LLM prompt 前清洗
+    question = sanitize_text(question)
 
     candidates = "\n".join(
         f"- {m.get('name', '')} (score={m.get('score', 0):.2f})"
         for m in retrieved_models[:5]
     ) or "(无候选)"
 
+    # 历史段 (有历史才出现, 否则留空保持 prompt 整洁)
+    history_section = f"\n对话历史:\n{history}\n" if history else ""
+
     prompt = _THINKING_PROMPT.format(
         question=question,
         schema=schema_context or "(无)",
         candidates=candidates,
+        history_section=history_section,
     )
 
     try:
@@ -85,8 +100,12 @@ async def think(
             temperature=0.0,
         )
         content = resp.choices[0].message.content or ""
+        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
+        from app.core.token_tracker import track_usage
+        from app.core.prompt_capture import record_prompt
+        track_usage(getattr(resp, "usage", None))
+        record_prompt("thinking", "", prompt, getattr(resp, "usage", None))
     except Exception as e:
-        logger.warning("预思考 LLM 失败, 跳过: %s", e)
         return ThinkingResult(error=str(e))
 
     try:
@@ -99,6 +118,7 @@ async def think(
             tables=parsed.get("tables", []),
             aggregation=parsed.get("aggregation", ""),
             caveats=parsed.get("caveats", []),
+            prev_sql_review=parsed.get("prev_sql_review", ""),
             raw=content,
         )
     except Exception:

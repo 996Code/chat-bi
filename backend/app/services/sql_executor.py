@@ -31,6 +31,7 @@ class ExecuteResult:
 
     error 非空表示失败 (error 含原始错误信息, 供 T032 自愈用)。
     truncated=True 表示结果被 max_rows 截断。
+    duration_ms: 执行耗时 (DSO-07 慢查询判定用)。
     """
     rows: list[tuple] = field(default_factory=list)
     columns: list[str] = field(default_factory=list)
@@ -39,6 +40,8 @@ class ExecuteResult:
     error: str | None = None
     # 原始 SQL (执行的实际 SQL, 含自动加的 LIMIT)
     executed_sql: str = ""
+    # DSO-07: 执行耗时 (毫秒), 供慢查询判定
+    duration_ms: int = 0
 
 
 def _inject_limit(sql: str, max_rows: int) -> str:
@@ -77,8 +80,11 @@ def _execute_sync(
       1. SQL 层 SET LOCAL statement_timeout (DB 主动中断, 释放连接)
       2. asyncio.wait_for 兜底 (主线程不等了, 但线程靠 DB timeout 结束)
     返回 ExecuteResult, 不抛异常 (异常转成 error 字段)。
+    DSO-07: 记录执行耗时 (duration_ms) 供慢查询判定。
     """
+    import time
     safe_sql = _inject_limit(sql, max_rows)
+    t0 = time.monotonic()
     try:
         with engine.connect() as conn:
             # DB 侧超时 (statement_timeout): DB 主动中断查询, 释放连接/线程
@@ -96,10 +102,14 @@ def _execute_sync(
                 truncated=truncated,
                 rowcount=len(rows),
                 executed_sql=safe_sql,
+                duration_ms=round((time.monotonic() - t0) * 1000),
             )
     except Exception as e:
         # 保留原始错误信息 (含错误码, 供 T032 自愈映射)
-        return ExecuteResult(error=str(e), executed_sql=safe_sql)
+        return ExecuteResult(
+            error=str(e), executed_sql=safe_sql,
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
 
 
 async def execute_sql(
@@ -137,6 +147,8 @@ async def execute_sql(
     # 从连接池复用 engine (不新建)
     engine = engine_pool.get_or_create(datasource_id, url)
 
+    import time
+    t_start = time.monotonic()
     try:
         result = await asyncio.wait_for(
             asyncio.to_thread(_execute_sync, engine, sql, max_rows, timeout),
@@ -144,11 +156,14 @@ async def execute_sql(
         )
         return result
     except asyncio.TimeoutError:
-        logger.warning("SQL 执行超时 (%ds): %s", timeout, sql[:100])
+        elapsed = round((time.monotonic() - t_start) * 1000)
+        logger.warning("SQL 执行超时 (%ds, 耗时 %dms): %s", timeout, elapsed, sql[:100])
         return ExecuteResult(
             error=f"SQL 执行超时 ({timeout}秒), 可能是慢查询或数据量过大",
             executed_sql=sql,
+            duration_ms=elapsed,
         )
     except Exception as e:
-        logger.warning("SQL 执行异常: %s", e)
-        return ExecuteResult(error=str(e), executed_sql=sql)
+        elapsed = round((time.monotonic() - t_start) * 1000)
+        logger.warning("SQL 执行异常 (耗时 %dms): %s", elapsed, e)
+        return ExecuteResult(error=str(e), executed_sql=sql, duration_ms=elapsed)

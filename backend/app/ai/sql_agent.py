@@ -120,14 +120,18 @@ async def generate_sql(
         GenerateResult — error 非空表示生成/校验失败 (不抛, T025 决定下一步)
     """
     from app.core.config import get_settings
-    from app.core.prompt_cache import get_prompt_cache
+    from app.core.prompt_cache import get_prompt_cache, PromptCache
+    from app.core.text_sanitize import sanitize_text
     settings = get_settings()
 
+    # SEC-007: 用户问题进 LLM prompt 前清洗 (NFKC + 去零宽/方向控制字符)
+    question = sanitize_text(question)
+
     # ── Prompt 分层组装 (对标 Claude Code §4) ──
-    # 用独立 PromptCache 实例 (不共享单例 — schema/columns 每次不同,
-    # 共享单例会跨数据源泄漏白名单)
-    from app.core.prompt_cache import PromptCache
-    cache = PromptCache()
+    # 用全局单例 PromptCache: static 段(system_rules)与请求无关可安全复用,
+    # dynamic 段(schema/columns/问题)每次覆盖重算, 不会跨数据源泄漏白名单。
+    # 对标 §4.4: prefix cache 命中靠 static 段稳定 (跨请求复用)
+    cache = get_prompt_cache()
     cache.set_static("system_rules", lambda: _SYSTEM_PROMPT)
     cache.set_dynamic("schema_type", lambda: _build_datatype_constraint_section(schema_context))
     cache.set_dynamic("allowed_cols", lambda: _build_allowed_columns_section(allowed_columns))
@@ -136,7 +140,6 @@ async def generate_sql(
     sections = cache.assemble()
     # assemble 返回 [static..., BOUNDARY, dynamic...]
     # 静态段拼成 system prompt, 动态段拼成 user prompt
-    from app.core.prompt_cache import PromptCache
     boundary = PromptCache.PROMPT_DYNAMIC_BOUNDARY
     if boundary in sections:
         idx = sections.index(boundary)
@@ -159,6 +162,11 @@ async def generate_sql(
             temperature=0.0,
         )
         content = resp.choices[0].message.content or ""
+        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
+        from app.core.token_tracker import track_usage
+        from app.core.prompt_capture import record_prompt
+        track_usage(getattr(resp, "usage", None))
+        record_prompt("generate_sql", system_content, user_content, getattr(resp, "usage", None))
     except Exception as e:
         logger.warning("SQL 生成 LLM 调用失败: %s", e)
         return GenerateResult(error=f"LLM 调用失败: {e}")

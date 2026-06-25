@@ -211,7 +211,11 @@ async def heal_sql(
 
     # ── 自愈 prompt (保留全部安全规则, 对标 v1 #32) ───────────
     from app.core.config import get_settings
+    from app.core.text_sanitize import sanitize_text
     settings = get_settings()
+
+    # SEC-007: DB 返回的错误信息可能含表名/列名, 进 LLM 前清洗
+    error = sanitize_text(error)
 
     prompt = (
         f"你是 BI SQL 修正器。下面这条 SQL 执行失败了, 请修正。\n\n"
@@ -232,6 +236,11 @@ async def heal_sql(
             temperature=0.0,
         )
         content = resp.choices[0].message.content or ""
+        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
+        from app.core.token_tracker import track_usage
+        from app.core.prompt_capture import record_prompt
+        track_usage(getattr(resp, "usage", None))
+        record_prompt("heal_sql", "", prompt, getattr(resp, "usage", None))
     except Exception as e:
         logger.warning("自愈 LLM 调用失败: %s", e)
         cb.record_failure()

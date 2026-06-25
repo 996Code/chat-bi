@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     # ── SQL Execution ────────────────────────────────────────
     sql_execution_timeout: int = 30  # seconds
     sql_max_rows: int = 10000
+    sql_slow_query_threshold: float = 10.0  # 秒; 超过标记为慢查询 (DSO-07, 可配置)
     sql_result_chunk_size: int = 1000
     sql_self_heal_max_rounds: int = 2
     sql_self_heal_circuit_breaker: int = 3  # consecutive failures across queries
@@ -122,6 +123,17 @@ class Settings(BaseSettings):
 
     # ── Audit ────────────────────────────────────────────────
     audit_enabled: bool = True
+
+    # ── Scheduler (定时任务: 健康检查/元数据刷新/任务清理) ────
+    scheduler_enabled: bool = True  # 总开关, False 时不启动任何定时任务
+    datasource_health_check_interval_seconds: int = 300  # 数据源健康检查间隔 (5 分钟)
+    datasource_health_check_max_failures: int = 3  # 连续失败 N 次标记 error
+    metadata_auto_refresh_interval_hours: int = 6  # 元数据自动刷新间隔 (6 小时)
+    async_task_retention_hours: int = 24  # 已完成异步任务保留时长 (定时清理)
+
+    # ── Backup (备份恢复, 仅元数据库) ─────────────────────────
+    backup_enabled: bool = True  # 总开关; pg_dump 不存在时 fail-closed 提示
+    backup_timeout_seconds: int = 300  # pg_dump/psql 执行超时
 
     # ── Prompt Dump (debug/observability) ────────────────────
     prompt_dump_enabled: bool = False
