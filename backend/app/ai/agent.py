@@ -266,7 +266,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # ── 自愈循环: 校验失败/执行失败 → heal → 重新校验+执行 ──
         while last_error is not None and state.self_heal_rounds < deps.max_self_heal_rounds:
             state.self_heal_rounds += 1
-            logger.info("SQL 自愈第 %d 轮 (错误: %s)", state.self_heal_rounds, last_error[:80])
+            logger.info("SQL 自愈第 %d 轮 (错误: %s)", state.self_heal_rounds, str(last_error)[:80])
 
             heal_result = await deps.heal_sql(
                 sql=state.sql,
@@ -315,7 +315,8 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         state.check_result = check
 
         # 结果异常 → 先尝试自动修正 (带 suggestion), 仍异常才 ask_user (AEE-003)
-        if not check.ok and check.suggestion:
+        # 对标 max_self_heal_rounds 守卫: 自检修正也消耗自愈配额, 避免无限循环
+        if not check.ok and check.suggestion and state.self_heal_rounds < deps.max_self_heal_rounds:
             # 用自检建议作纠正方向, 重新生成+执行 SQL (对标 AEE-003 自动修正回路)
             logger.info("结果自检异常 (%s), 尝试自动修正: %s", check.issue, check.suggestion)
             heal_result = await deps.heal_sql(

@@ -139,7 +139,7 @@ class Checkpointer:
         if not turns:
             return None
         last_turn = turns[-1]
-        state = last_turn.get("state", {})
+        state = dict(last_turn.get("state", {}))  # 复制, 防止修改原数据
         state["last_turn_number"] = last_turn.get("turn", 0)
         return state
 

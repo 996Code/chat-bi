@@ -196,7 +196,10 @@ def _get_embedder():
 
 
 def _normalize_value(v):
-    """DB 行值 → JSON 安全类型 (Decimal/datetime/UUID/bytes/Enum 等)。"""
+    """DB 行值 → JSON 安全类型 (Decimal/datetime/UUID/Enum/bytes/其他复杂对象)。
+
+    对未知类型走 str() 兜底, 保证 json.dumps 能序列化。
+    """
     from decimal import Decimal
     import datetime
     from uuid import UUID
@@ -204,18 +207,21 @@ def _normalize_value(v):
     if v is None:
         return None
     if isinstance(v, bool):
+        return v  # bool 是 int 子类, 必须在 int 之前判断
+    if isinstance(v, (int, float, str)):
         return v
     if isinstance(v, Decimal):
         return float(v)
     if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
         return v.isoformat()
-    if isinstance(v, bytes):
-        return v.decode("utf-8", errors="replace")
     if isinstance(v, UUID):
         return str(v)
     if isinstance(v, Enum):
         return v.value
-    return v
+    if isinstance(v, bytes):
+        return v.decode("utf-8", errors="replace")
+    # 兜底: 其他不可序列化类型 (numpy/自定义对象) 转 str, 避免 json.dumps 抛 TypeError
+    return str(v)
 
 
 def _chat_rate():

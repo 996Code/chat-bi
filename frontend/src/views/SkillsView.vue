@@ -171,6 +171,7 @@ async function doSave() {
     await skillsApi.save({
       name: ed.name, description: ed.description,
       version: ed.version, content: ed.content,
+      references: ed.references,
     })
     ElMessage.success('保存成功 (热更新已生效)')
     editorVisible.value = false

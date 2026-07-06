@@ -69,7 +69,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Refresh, Plus, MoreFilled, EditPen, Check } from '@element-plus/icons-vue'
 import { dashboard, type DashboardItem, type DashboardWidget } from '@/api'

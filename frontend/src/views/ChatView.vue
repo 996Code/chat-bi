@@ -703,12 +703,14 @@ async function send() {
   const q = input.value.trim()
   if (!q || loading.value || !selectedDsId.value) return
 
+  // 立即设 loading, 防止双击竞态 (先于 push, 保证第二次 click 时 guard 生效)
+  loading.value = true
+
   messages.value.push({ role: 'user', text: q })
   inputHistory.value.push(q)
   if (inputHistory.value.length > 50) inputHistory.value.shift()
   historyIdx.value = -1
   input.value = ''
-  loading.value = true
   await scrollToBottom()
 
   // 创建占位 assistant 消息 (流式逐步填充)

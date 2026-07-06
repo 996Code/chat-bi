@@ -198,9 +198,11 @@ async function scan(row: DataSource) {
 function startPollingScan(dsId: string) {
   // 已有定时器则不重复
   if (scanTimers.has(dsId)) return
+  let _pollFailCount = 0
   const poll = async () => {
     try {
       const { data } = await datasource.get(dsId)
+      _pollFailCount = 0  // 成功则重置失败计数
       // 更新列表中对应行 (响应式: 直接改对象属性触发刷新)
       const row = list.value.find(d => d.id === dsId)
       if (row) {
@@ -218,7 +220,12 @@ function startPollingScan(dsId: string) {
         ElMessage.error('扫描失败: ' + (data.scan_error || '未知错误'))
       }
     } catch {
-      // 网络抖动静默重试 (下个 tick)
+      // 网络错误计数: 连续失败超限则停止轮询, 避免后端永久不可用时无限重试
+      _pollFailCount = (_pollFailCount || 0) + 1
+      if (_pollFailCount >= 10) {
+        stopPollingScan(dsId)
+        ElMessage.error('网络连接异常, 轮询已停止')
+      }
     }
   }
   poll() // 立即查一次

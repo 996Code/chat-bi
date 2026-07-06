@@ -96,11 +96,22 @@ async def get_current_user(
             detail="Invalid token type",
         )
 
+    # 安全提取 JWT 字段 (对标 fail-closed: 缺字段 → 401 而非 500 KeyError)
+    user_id = payload.get("user_id")
+    email = payload.get("email")
+    tenant_id = payload.get("tenant_id")
+    role = payload.get("role")
+    if not all([user_id, email, tenant_id, role]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing required fields",
+        )
+
     return AuthUser(
-        user_id=payload["user_id"],
-        email=payload["email"],
-        tenant_id=payload["tenant_id"],
-        role=payload["role"],
+        user_id=user_id,
+        email=email,
+        tenant_id=tenant_id,
+        role=role,
     )
 
 

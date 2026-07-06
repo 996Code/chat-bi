@@ -70,7 +70,7 @@ async def generate_reply(
                 {"role": "system", "content": "你是 ChatBI 智能助手, 友好简短地回复用户。"},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=settings.llm_max_tokens,
+            max_tokens=200,  # 回复只需 1-2 句话, 不需要大量输出
             temperature=0.3,
         )
         reply = extract_content(resp).strip()
