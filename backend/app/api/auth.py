@@ -162,8 +162,11 @@ def _check_login_lock(email: str) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"账号已锁定, 请 {remaining} 分钟后再试 (连续失败 {settings.max_login_attempts} 次)",
         )
-    # 锁已过期: 清除记录 + 重置计数, 避免内存泄漏和单次失败就重锁
-    _login_locks.pop(email, None)
+    # 锁曾生效但已过期 → "服刑完毕", 重置计数给全新开始
+    # 注意: locked_until == 0 表示从未锁定, 不能重置 (否则连续失败计数被清零)
+    if locked_until > 0:
+        lock["fail_count"] = 0
+        lock["locked_until"] = 0
 
 
 def _record_login_failure(email: str) -> None:

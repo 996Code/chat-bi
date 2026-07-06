@@ -77,7 +77,7 @@ def _execute_sync(
     """同步执行 SQL (在 to_thread 里跑)。
 
     超时双保险:
-      1. SQL 层 SET LOCAL statement_timeout (DB 主动中断, 释放连接)
+      1. SQL 层 statement_timeout / max_execution_time (DB 主动中断, 释放连接)
       2. asyncio.wait_for 兜底 (主线程不等了, 但线程靠 DB timeout 结束)
     返回 ExecuteResult, 不抛异常 (异常转成 error 字段)。
     DSO-07: 记录执行耗时 (duration_ms) 供慢查询判定。
@@ -87,9 +87,14 @@ def _execute_sync(
     t0 = time.monotonic()
     try:
         with engine.connect() as conn:
-            # DB 侧超时 (statement_timeout): DB 主动中断查询, 释放连接/线程
-            # 比 asyncio.wait_for 更可靠 — Python 无法取消线程, 但 DB 能取消查询
-            conn.execute(text(f"SET LOCAL statement_timeout = '{timeout_seconds * 1000}'"))
+            # DB 侧超时: 按 dialect 设置对应参数 (PG: statement_timeout, MySQL: max_execution_time)
+            # DB 主动中断查询比 asyncio.wait_for 更可靠 — Python 无法取消线程, 但 DB 能取消查询
+            dialect = str(engine.url)
+            if "postgresql" in dialect or "asyncpg" in dialect:
+                conn.execute(text(f"SET LOCAL statement_timeout = '{timeout_seconds * 1000}'"))
+            elif "mysql" in dialect or "aiomysql" in dialect:
+                conn.execute(text(f"SET SESSION max_execution_time = {timeout_seconds * 1000}"))
+            # SQLite 无 DB 侧超时支持, 仅靠 asyncio.wait_for 兜底
             result = conn.execute(text(safe_sql))
             columns = list(result.keys()) if hasattr(result, "keys") else []
             rows = result.fetchall()

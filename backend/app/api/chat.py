@@ -384,7 +384,9 @@ async def chat(
                 # T050: prompt 记录 (DEBUG 模式才持久化, dump-prompts 导出用)
                 prompts=prompt_capture.get("records", []) if get_settings().debug and prompt_capture else None,
             )
-            turn_number = (prev_state.turn + 1) if hasattr(prev_state, "turn") and prev_state else 1
+            # turn_number: 从已有轮次数推算 (ConversationState 无 turn 字段)
+            existing_turns = StateStore().list_turns(user.tenant_id, conversation_id)
+            turn_number = len(existing_turns) + 1
             StateStore().save(user.tenant_id, conversation_id, turn_number, conv_state)
 
             # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供 fewshot 回流 / 历史挖掘用
@@ -396,6 +398,7 @@ async def chat(
                     saved = SavedQuery(
                         tenant_id=user.tenant_id,
                         user_id=user.user_id,
+                        data_source_id=data_source_id,
                         conversation_id=conversation_id,
                         question=req.question,
                         sql_text=state.sql,

@@ -416,7 +416,8 @@ async def chat_stream(
                 state.check_result = check
 
                 # 结果异常 → 自动修正尝试 (AEE-003, 与 run_agent 对齐)
-                if not check.ok and check.suggestion:
+                # 对标 max_self_heal_rounds 守卫: 自检修正也消耗自愈配额, 避免无限循环
+                if not check.ok and check.suggestion and state.self_heal_rounds < max_rounds:
                     logger.info("流式结果自检异常 (%s), 尝试自动修正", check.issue)
                     heal_result = await deps.heal_sql(
                         sql=state.sql, error=check.reason,
@@ -595,7 +596,9 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             # T050: prompt 记录 (DEBUG 模式, dump-prompts 导出用)
             prompts=getattr(state, "_prompt_records", None),
         )
-        turn = (prev_state.turn + 1) if hasattr(prev_state, "turn") and prev_state else 1
+        # turn: 从已有轮次数推算 (ConversationState 无 turn 字段)
+        existing_turns = store.list_turns(user.tenant_id, conv_id)
+        turn = len(existing_turns) + 1
         store.save(user.tenant_id, conv_id, turn, conv_state)
 
         # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供看板展示 / fewshot 回流
@@ -607,6 +610,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
                 saved = SavedQuery(
                     tenant_id=user.tenant_id,
                     user_id=user.user_id,
+                    data_source_id=data_source_id,
                     conversation_id=conv_id,
                     question=state.question,
                     sql_text=state.sql,

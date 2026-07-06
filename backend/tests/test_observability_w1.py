@@ -208,8 +208,8 @@ class TestCsvExport:
         )
         assert res.status_code == 404
 
-    async def test_export_missing_datasource_422(self, http_client, admin_token, db_session):
-        """导出不传 data_source_id → 422。"""
+    async def test_export_missing_datasource_400(self, http_client, admin_token, db_session):
+        """导出不传 data_source_id 且记录也无 → 400。"""
         from app.db.models import SavedQuery
         sq = SavedQuery(
             tenant_id="tenant_A", user_id="admin_1",
@@ -218,12 +218,12 @@ class TestCsvExport:
         db_session.add(sq)
         await db_session.commit()
         await db_session.refresh(sq)
-        # 不传 data_source_id → 422 (Query 必填)
+        # 不传 data_source_id 且记录无此字段 → 400 (业务层拒绝)
         res = await http_client.get(
             f"/chat-bi/api/v1/saved-queries/{sq.id}/export",
             headers=_auth(admin_token),
         )
-        assert res.status_code == 422
+        assert res.status_code == 400
 
     async def test_export_nonexistent_datasource_404(self, http_client, admin_token, db_session):
         """导出但数据源不存在 → 404。"""

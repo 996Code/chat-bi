@@ -3,9 +3,6 @@ T051: Saved Query API — 看板页数据源 (查询历史/收藏)
 
 对标 ARC-05: SavedQuery 是历史查询挖掘的输入数据源。
 本端点提供查询历史的列表/详情读取, 供前端看板页渲染已保存查询的图表。
-
-注意 (已知技术债): SavedQuery 无 data_source_id 字段 (models.py:171)，
-前端列表通过 conversation_id 关联兜底显示来源, 不擅自改模型 (迁移风险)。
 """
 from __future__ import annotations
 
@@ -34,6 +31,7 @@ _CSV_EXPORT_MAX_ROWS = 50000
 class SavedQueryOut(BaseModel):
     id: str
     user_id: str | None = None
+    data_source_id: str | None = None
     conversation_id: str | None = None
     question: str
     sql_text: str
@@ -60,7 +58,8 @@ async def list_saved_queries(
     result = await db.execute(stmt)
     return [
         SavedQueryOut(
-            id=q.id, user_id=q.user_id, conversation_id=q.conversation_id,
+            id=q.id, user_id=q.user_id, data_source_id=q.data_source_id,
+            conversation_id=q.conversation_id,
             question=q.question, sql_text=q.sql_text,
             result_summary=q.result_summary, chart_config=q.chart_config,
             created_at=q.created_at.isoformat() if q.created_at else None,
@@ -87,7 +86,8 @@ async def get_saved_query(
     if q is None:
         raise HTTPException(status_code=404, detail="查询记录不存在")
     return SavedQueryOut(
-        id=q.id, user_id=q.user_id, conversation_id=q.conversation_id,
+        id=q.id, user_id=q.user_id, data_source_id=q.data_source_id,
+        conversation_id=q.conversation_id,
         question=q.question, sql_text=q.sql_text,
         result_summary=q.result_summary, chart_config=q.chart_config,
         created_at=q.created_at.isoformat() if q.created_at else None,
@@ -97,14 +97,14 @@ async def get_saved_query(
 @router.get("/{sq_id}/export")
 async def export_saved_query_csv(
     sq_id: str,
-    data_source_id: str = Query(..., description="数据源 id (SavedQuery 无此字段, 需前端传入)"),
+    data_source_id: str | None = Query(None, description="数据源 id (SavedQuery 有此字段时自动使用)"),
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """导出已保存查询为 CSV (UX-08)。
 
     重跑 SavedQuery 的 sql_text 拿全量结果 (受 _CSV_EXPORT_MAX_ROWS 上限),
-    转成 CSV 下载。data_source_id 由前端传入 (SavedQuery 无此字段, 已知技术债)。
+    转成 CSV 下载。优先使用 SavedQuery.data_source_id, 无则用查询参数。
 
     安全: sql_text 是之前通过三层校验的 SELECT, 这里复用校验 (不信任历史数据)。
     """
@@ -120,12 +120,17 @@ async def export_saved_query_csv(
     if q is None:
         raise HTTPException(status_code=404, detail="查询记录不存在")
 
+    # 优先使用记录中的 data_source_id, 无则用查询参数
+    effective_ds_id = q.data_source_id or data_source_id
+    if not effective_ds_id:
+        raise HTTPException(status_code=400, detail="缺少 data_source_id, 无法执行查询")
+
     # 校验数据源归属 + 启用状态 (DSO-08: 禁用数据源拒绝导出)
     ds = (
         await db.execute(
             select(DataSource).where(
                 DataSource.tenant_filter(user.tenant_id),
-                DataSource.id == data_source_id,
+                DataSource.id == effective_ds_id,
             )
         )
     ).scalar_one_or_none()
@@ -144,7 +149,7 @@ async def export_saved_query_csv(
         await db.execute(
             select(SemanticModel).where(
                 SemanticModel.tenant_filter(user.tenant_id),
-                SemanticModel.data_source_id == data_source_id,
+                SemanticModel.data_source_id == effective_ds_id,
                 SemanticModel.is_current == True,  # noqa: E712
             )
         )
