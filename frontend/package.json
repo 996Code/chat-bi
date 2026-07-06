@@ -1,6 +1,7 @@
 {
   "name": "chatbi-v2-frontend",
   "version": "0.1.0",
+  "description": "ChatBI v2 前端 — 自然语言驱动的智能 BI 平台",
   "private": true,
   "type": "module",
   "scripts": {

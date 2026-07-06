@@ -22,9 +22,9 @@ cat openspec/changes/chatbi-v2/tasks.md
 
 ## 当前状态
 
-- **Phase 1（基础设施）已完成**：11/11 任务，20 测试通过
-- **下一步**：Phase 2（语义层），从 T012 开始
-- 详见 `.planning/STATE.md`（唯一状态真相源）
+- **全部 10 Phase 已完成**：68 任务 (T001-T068)，516 测试通过
+- **Phase 10（技术债清理）已收尾**，详见 `.planning/STATE.md`（唯一状态真相源）
+- 开源文档已就绪：README.md / LICENSE (MIT) / CONTRIBUTING.md / SECURITY.md / CHANGELOG.md
 
 ---
 
@@ -81,13 +81,15 @@ cat openspec/changes/chatbi-v2/tasks.md
 chat-bi/
 ├── backend/app/
 │   ├── main.py              # FastAPI 入口 + lifespan
-│   ├── api/                 # API 路由（目前只有 /ping、/health）
-│   ├── core/                # config / security / auth / checkpointer /
-│   │                        # agent_memory / prompt_cache / logging / redis / milvus
+│   ├── api/                 # API 路由 (chat/stream/data-sources/observability/...)
+│   ├── core/                # config / security / auth / sql_validator /
+│   │                        # llm_client / token_tracker / prompt_capture / ...
 │   ├── db/                  # models（8 张表）/ session（懒加载引擎）
-│   ├── ai/ models/ schemas/ services/   # Phase 2+ 占位
-│   └── tests/               # 20 passed
-├── frontend/src/            # Vue3 + TS 骨架（ChatView 占位 + api client JWT 拦截器）
+│   ├── ai/                  # Agent 核心管线 (agent/intent/thinking/sql_agent/...)
+│   ├── schemas/             # Pydantic 模型 (semantic_layer/...)
+│   ├── services/            # 业务服务 (retriever/embedder/indexer/skills_loader/...)
+│   └── tests/               # 516 passed
+├── frontend/src/            # Vue3 + TS (9 个功能页面 + api 封装层)
 ├── openspec/changes/chatbi-v2/   # ★ OpenSpec 规格（任务真相源）
 ├── .planning/                    # ★ GSD 状态（STATE/ROADMAP/PROJECT + phases/）
 ├── doc/
@@ -96,6 +98,9 @@ chat-bi/
 │   ├── 海泰ChatBI完整代码分析.md     # BI 领域打法来源
 │   ├── 经验教训.md                  # v1 48 条坑
 │   └── v1-archive/               # v1 历史文档（非当前依据）
+├── skills/                       # SKILL.md 业务规则
+├── docker/                       # Docker Compose (infra + app)
+├── deploy/                       # 生产部署 (nginx + .env)
 └── .claude/commands/ai/         # /ai:* 工作流命令
 ```
 
@@ -157,11 +162,12 @@ cd frontend && npx vite --host 0.0.0.0 --port 5173 &
 uv run pytest backend/tests/ -v
 ```
 
-## 遗留技术债（进 Phase 2 前建议补）
+## 遗留技术债
 
-- **T006 多租户隔离** + **T008 审计日志**：代码已实现但缺单元测试（只测了模型字段，没验证框架级行为）
-- 建议在 Phase 2 引入 CRUD API 后一起补（需要 HTTP 层 + 认证中间件）
+- knowledge_graph 孤儿函数未清理
+- REF-002 跟进建议未实现
+- 详见 `.planning/STATE.md`
 
 ---
 
-*最后更新: 2026-06-23*
+*最后更新: 2026-07-06*
