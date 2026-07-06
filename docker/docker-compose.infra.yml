@@ -24,21 +24,22 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-root}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-root}
-      POSTGRES_DB: ${POSTGRES_DB:-chat-bi}
+      POSTGRES_DB: ${POSTGRES_DB:-chatbi}
     ports:
       - "5432:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-root} -d ${POSTGRES_DB:-chat-bi}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-root} -d ${POSTGRES_DB:-chatbi}"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
 
   # ── Redis (缓存/限流/分布式锁) ───────────────────────────────
-  # 仅容器内访问 (backend 通过 redis:6379 连), 不暴露端口到宿主机
+  # 本地开发: 后端跑在宿主机, 需映射 6379 到宿主机
+  # 生产部署: backend 在容器网络内用容器名 redis:6379, 端口可不映射 (按需删 ports)
   redis:
     image: redis:7-alpine
     container_name: chatbi-redis
@@ -46,8 +47,8 @@ services:
       redis-server
       --requirepass ${REDIS_PASSWORD:-redis_pass}
       --appendonly yes
-    expose:
-      - "6379"
+    ports:
+      - "6379:6379"
     volumes:
       - ./data/redis:/data
     healthcheck:

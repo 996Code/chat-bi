@@ -24,10 +24,7 @@
     <div v-loading="loading" v-if="model" class="content-layout">
       <el-card class="table-list">
         <template #header>
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <b>表 ({{ filteredModels.length }})</b>
-            <el-switch v-model="showSystemTables" size="small" active-text="系统表" inline-prompt style="--el-switch-on-color:#909399" />
-          </div>
+          <b>表 ({{ filteredModels.length }})</b>
         </template>
         <el-input v-model="search" placeholder="搜索表名..." clearable size="small" style="margin-bottom: 12px" />
         <div
@@ -99,7 +96,7 @@
                 v-if="editingCol === row.name"
                 v-model="editForm.colDisplayName"
                 size="small"
-                @keydown.enter="saveColEdit(row)"
+                @keydown.enter.prevent="saveColEdit(row)"
                 @blur="saveColEdit(row)"
               />
               <span v-else class="editable-cell" @dblclick="startColEdit(row, 'name')">
@@ -179,7 +176,7 @@
               </el-button>
             </div>
           </div>
-          <div class="version-id"><code>{{ v.id.slice(0, 8) }}</code></div>
+          <div class="version-id"><code>{{ (v.id || '').slice(0, 8) }}</code></div>
         </div>
       </div>
     </el-drawer>
@@ -234,7 +231,6 @@ const diffLoading = ref<number | null>(null)
 const diffResult = ref<any>(null)
 const rollingBack = ref<number | null>(null)
 const search = ref('')
-const showSystemTables = ref(false) // 默认隐藏系统表 (ChatBI 元数据表, 用户不查)
 
 // T015: 行内编辑
 const editingTable = ref(false)
@@ -247,20 +243,12 @@ const editForm = ref({
 })
 const saving = ref(false)
 
-// 系统表: ChatBI 自己的元数据表, 业务用户不关心, 默认隐藏
-const SYSTEM_TABLES = new Set([
-  'tenants', 'users', 'data_sources', 'semantic_models',
-  'conversations', 'saved_queries', 'audit_logs', 'feedback',
-])
-
 const filteredModels = computed(() => {
   if (!model.value) return []
   const q = search.value.toLowerCase()
-  return model.value.content.models.filter(m => {
-    // 默认隐藏系统表 (开关打开才显示)
-    if (!showSystemTables.value && SYSTEM_TABLES.has(m.name)) return false
-    return m.name.toLowerCase().includes(q) || m.display_name.toLowerCase().includes(q)
-  })
+  return model.value.content.models.filter(m =>
+    m.name.toLowerCase().includes(q) || m.display_name.toLowerCase().includes(q)
+  )
 })
 
 async function fetchData() {
@@ -278,9 +266,7 @@ async function fetchData() {
     const { data } = await semantic.current(dsId)
     model.value = data
     if (data && data.content.models.length > 0) {
-      // 默认选第一个业务表 (跳过系统表)
-      selected.value = data.content.models.find(m => !SYSTEM_TABLES.has(m.name))
-        ?? data.content.models[0]
+      selected.value = data.content.models[0]
     }
   } catch (e: any) {
     ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
@@ -457,9 +443,10 @@ onMounted(fetchData)
   margin-bottom: 20px;
 }
 .title { font-size: 1.3rem; font-weight: bold; margin-left: 8px; }
-.content-layout { display: flex; gap: 16px; }
-.table-list { width: 280px; flex-shrink: 0; }
-.table-detail { flex: 1; }
+.content-layout { display: flex; gap: 16px; height: calc(100vh - 140px); }
+.table-list { width: 280px; flex-shrink: 0; display: flex; flex-direction: column; }
+.table-list :deep(.el-card__body) { flex: 1; overflow-y: auto; }
+.table-detail { flex: 1; overflow-y: auto; }
 .table-item {
   padding: 10px 12px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
   border: 1px solid transparent;

@@ -3,7 +3,7 @@ ChatBI v2 — Tests for Database Models (T004)
 """
 import pytest
 from app.db.models import (
-    Tenant, User, DataSource, AuditLog, Feedback,
+    Tenant, User, DataSource, AuditLog,
     Conversation, SavedQuery, SemanticModel,
 )
 
@@ -59,35 +59,6 @@ class TestDatabaseModels:
                 status=status,
             )
             db_session.add(log)
-
-        await db_session.commit()
-
-    @pytest.mark.asyncio
-    async def test_feedback_model(self, db_session):
-        """FBK-001: Feedback supports all 5 types."""
-        tenant = Tenant(name="Test Corp")
-        db_session.add(tenant)
-        await db_session.flush()
-
-        user = User(
-            tenant_id=tenant.id,
-            email="fb@test.com",
-            username="feedback_user",
-            hashed_password="hash",
-            role="user",
-        )
-        db_session.add(user)
-        await db_session.flush()
-
-        feedback_types = ["like", "dislike", "sql_correction", "chart_correction", "comment"]
-        for fb_type in feedback_types:
-            fb = Feedback(
-                tenant_id=tenant.id,
-                user_id=user.id,
-                feedback_type=fb_type,
-                comment=f"Test {fb_type}",
-            )
-            db_session.add(fb)
 
         await db_session.commit()
 

@@ -34,6 +34,7 @@
         </el-select>
         <el-button text size="small" @click="$router.push('/datasources')">数据源</el-button>
         <el-button text size="small" @click="$router.push('/semantic')">语义层</el-button>
+        <el-button text size="small" @click="$router.push('/dashboard')">看板</el-button>
         <el-button text size="small" @click="$router.push('/history')">历史</el-button>
         <el-button text size="small" @click="$router.push('/observability')">系统</el-button>
       </div>
@@ -112,120 +113,98 @@
                 </div>
               </div>
 
-              <!-- Pipeline 折叠区: SQL / 结果表格 收在里面 (默认折叠); 图表在外独立展示 -->
-              <div v-if="msg.steps?.length" class="pipeline">
-                <div class="pipeline-header-row" @click="togglePipeline(msg, idx)" style="cursor: pointer; user-select: none;">
-                  <span class="pipeline-title">查询流程</span>
-                  <span v-if="msg.rowCount != null" class="pipeline-summary">{{ msg.rowCount }} 行结果</span>
-                  <el-icon class="expand-toggle"><ArrowDown v-if="msg.pipelineCollapsed" /><ArrowUp v-else /></el-icon>
-                </div>
-                <template v-if="!msg.pipelineCollapsed">
-                <div
-                  v-for="(s, si) in msg.steps" :key="si"
-                  :class="['pipeline-step', s.status]"
-                >
-                  <div class="step-icon">
-                    <el-icon v-if="s.status === 'running'" class="is-loading"><Loading /></el-icon>
-                    <el-icon v-else-if="s.status === 'done'" class="step-done"><CircleCheck /></el-icon>
-                    <el-icon v-else class="step-failed"><CircleClose /></el-icon>
-                  </div>
-                  <div class="step-content">
-                    <div class="step-label" :class="{ clickable: s.expandable }" @click="toggleStep(msg, si, idx)">
-                      {{ s.label }}
-                      <span v-if="s.detail" class="step-detail-inline">{{ s.detail }}</span>
-                      <el-icon v-if="s.expandable" class="expand-toggle"><ArrowDown v-if="!s.expanded" /><ArrowUp v-else /></el-icon>
-                    </div>
-                    <!-- SQL 折叠内容 -->
-                    <div v-if="s.expanded && s.type === 'sql' && msg.sql" class="sql-box">
-                      <div class="sql-label">SQL</div>
-                      <pre><code>{{ msg.sql }}</code></pre>
-                    </div>
-                    <!-- 执行查询步骤展开后: 结果表格 (默认折叠, 图表在外独立展示) -->
-                    <div v-if="s.expanded && s.type === 'result' && msg.columns?.length" class="result-box">
-                      <div class="result-meta">
-                        {{ msg.rowCount }} 行{{ msg.truncated ? ' (已截断)' : '' }}
-                      </div>
-                      <el-table :data="msg.rows" size="small" border max-height="400">
-                        <el-table-column
-                          v-for="col in msg.columns" :key="col"
-                          :prop="String(col)" :label="String(col)" min-width="100"
-                        />
-                      </el-table>
-                    </div>
-                    <!-- 预思考步骤展开后: 选表理由+聚合+陷阱 (REF-001) -->
-                    <div v-if="s.expanded && s.type === 'thinking' && s.thinkingData" class="thinking-box">
-                      <div v-if="s.thinkingData.tables.length" class="think-section">
-                        <span class="think-label">选表:</span> {{ s.thinkingData.tables.join('、') }}
-                      </div>
-                      <div v-if="s.thinkingData.aggregation" class="think-section">
-                        <span class="think-label">聚合:</span> {{ s.thinkingData.aggregation }}
-                      </div>
-                      <div v-if="s.thinkingData.caveats.length" class="think-section">
-                        <span class="think-label">注意:</span>
-                        <span v-for="c in s.thinkingData.caveats" :key="c" class="think-caveat">{{ c }}</span>
-                      </div>
-                    </div>
-                    <!-- 自愈步骤展开后: 修复前后 SQL 对比 (OBS-003) -->
-                    <div v-if="s.expanded && s.type === 'heal' && s.healData" class="heal-box">
-                      <div class="heal-error">错误: {{ s.healData.error }}</div>
-                      <div class="heal-diff">
-                        <div class="heal-before"><span class="heal-tag del">修复前</span><pre>{{ s.healData.before }}</pre></div>
-                        <div class="heal-after"><span class="heal-tag add">修复后</span><pre>{{ s.healData.after }}</pre></div>
-                      </div>
-                    </div>
-                  </div>
-                  <span v-if="s.duration" class="step-dur">{{ s.duration }}ms</span>
-                </div>
-                </template>
-                <!-- T049: token 用量汇总 (本轮请求级, complete 事件携带) -->
-                <div v-if="msg.tokenUsage" class="trace-summary">
-                  🔥 {{ msg.tokenUsage.total_tokens }} tokens
-                  (输入 {{ msg.tokenUsage.prompt_tokens }} / 输出 {{ msg.tokenUsage.completion_tokens }})
-                  · {{ msg.tokenUsage.llm_calls }} 次 LLM 调用
-                  <span v-if="msg.selfHealRounds"> · 自愈 {{ msg.selfHealRounds }} 轮</span>
-                </div>
-              </div>
-
-              <!-- BI 图表 (独立展示在 pipeline 外, 始终可见) -->
+              <!-- BI 图表 (查询完成后图表为主, 展示在流程前面) -->
               <div v-if="msg.chart" class="chart-box">
                 <div :ref="(el: any) => setChartRef(el, idx)" style="width: 100%; height: 350px"></div>
+                <div class="chart-toolbar">
+                  <!-- 左侧: 导出 Excel + 保存到看板 -->
+                  <div class="chart-toolbar-left">
+                    <el-button text size="small" :icon="Download" @click="exportChart(idx)">导出 Excel</el-button>
+                    <el-button text size="small" :icon="Monitor" @click="openSaveToDashboard(idx)">保存到看板</el-button>
+                  </div>
+                  <!-- 右侧: 完整流程 (弹窗) -->
+                  <el-button
+                    v-if="msg.done && msg.steps?.length"
+                    text size="small" :icon="QuestionFilled"
+                    @click="openTraceDialog(msg)"
+                  >完整流程</el-button>
+                </div>
               </div>
 
-              <!-- 反馈按钮组 (FBK-001: 查询完成后可点赞/点踩) -->
-              <div v-if="msg.done && !msg.error" class="feedback-row">
-                <span class="feedback-label">这个结果有帮助吗?</span>
-                <el-button
-                  text size="small"
-                  :type="msg.feedbackGiven === 'like' ? 'success' : ''"
-                  @click="giveFeedback(msg, 'like')"
-                >👍</el-button>
-                <el-button
-                  text size="small"
-                  :type="msg.feedbackGiven === 'dislike' ? 'danger' : ''"
-                  @click="giveFeedback(msg, 'dislike')"
-                >👎</el-button>
+              <!-- Pipeline (V1 交互: 执行中竖排实时显示, 完成后隐藏 → 弹窗看完整流程) -->
+              <div v-if="msg.steps?.length && !msg.done" class="pipeline">
+                <div class="pipeline-header-row">
+                  <span class="pipeline-title">查询流程</span>
+                </div>
+                <div
+                  v-for="(s, si) in msg.steps" :key="si"
+                >
+                  <div :class="['pipeline-step', s.status]">
+                    <div class="step-icon">
+                      <el-icon v-if="s.status === 'running'" class="is-loading"><Loading /></el-icon>
+                      <el-icon v-else-if="s.status === 'done'" class="step-done"><CircleCheck /></el-icon>
+                      <el-icon v-else class="step-failed"><CircleClose /></el-icon>
+                    </div>
+                    <div class="step-content" :class="{ clickable: s.expandable }" @click="toggleStep(msg, si)">
+                      <div class="step-label">
+                        {{ s.label }}
+                        <el-icon v-if="s.expandable" class="expand-icon"><ArrowDown :class="{ rotated: !s.expanded }" /></el-icon>
+                      </div>
+                      <div v-if="s.detail && !s.expandable" class="step-detail">{{ s.detail }}</div>
+                    </div>
+                    <span v-if="s.duration" class="step-dur">{{ s.duration }}ms</span>
+                    <span v-if="s.llmCalls" class="step-llm">🤖 ×{{ s.llmCalls }}<template v-if="s.llmTokens"> · {{ s.llmTokens }} tokens</template></span>
+                  </div>
+                  <!-- 展开内容区域 (SQL / thinking / heal) — 紧跟对应步骤 -->
+                  <div v-if="s.expandable && s.expanded" class="step-expand">
+                    <pre v-if="s.type === 'sql' && msg.originalSql" class="sql-inline">{{ msg.originalSql }}</pre>
+                    <div v-else-if="s.type === 'thinking' && s.thinkingData" class="thinking-detail">
+                      <div v-if="s.thinkingData.tables?.length" class="thinking-section">
+                        <span class="thinking-label">选表:</span> {{ s.thinkingData.tables.join(', ') }}
+                      </div>
+                      <div v-if="s.thinkingData.aggregation" class="thinking-section">
+                        <span class="thinking-label">聚合:</span> {{ s.thinkingData.aggregation }}
+                      </div>
+                      <div v-if="s.thinkingData.caveats?.length" class="thinking-section">
+                        <span class="thinking-label">注意:</span> {{ s.thinkingData.caveats.join('; ') }}
+                      </div>
+                    </div>
+                    <div v-else-if="s.type === 'heal' && s.healData" class="heal-detail">
+                      <div class="heal-compare">
+                        <div class="heal-col">
+                          <span class="heal-label">修复前</span>
+                          <pre class="sql-inline heal-sql">{{ s.healData.before }}</pre>
+                        </div>
+                        <div class="heal-col">
+                          <span class="heal-label">修复后</span>
+                          <pre class="sql-inline heal-sql healed">{{ s.healData.after }}</pre>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- T049: token 用量汇总 (完成后显示) -->
+              <div v-if="msg.done && msg.tokenUsage" class="trace-summary">
+                🔥 {{ msg.tokenUsage.total_tokens }} tokens
+                (输入 {{ msg.tokenUsage.prompt_tokens }} / 输出 {{ msg.tokenUsage.completion_tokens }})
+                · {{ msg.tokenUsage.llm_calls }} 次 LLM 调用
+                <span v-if="msg.selfHealRounds"> · 自愈 {{ msg.selfHealRounds }} 轮</span>
+                <!-- H5: per-node 分段明细 -->
+                <div v-if="msg.tokenUsage.nodes" class="token-nodes">
+                  <span v-for="(nu, name) in msg.tokenUsage.nodes" :key="name" class="token-node-tag">
+                    {{ name }}: {{ nu.total_tokens }}
+                  </span>
+                </div>
               </div>
             </template>
           </div>
         </div>
       </div>
 
-      <!-- PERF-03: 异步任务进度卡片 -->
-      <div v-if="asyncTask" class="async-task-card">
-        <div class="async-head">
-          <el-icon v-if="asyncTask.status === 'running'" class="is-loading"><Loading /></el-icon>
-          <el-icon v-else-if="asyncTask.status === 'done'" class="step-done"><CircleCheck /></el-icon>
-          <el-icon v-else class="step-failed"><CircleClose /></el-icon>
-          <span class="async-q">{{ asyncTask.current_stage || asyncTask.status }}</span>
-          <el-progress :percentage="asyncTask.progress" :status="asyncTask.status === 'failed' ? 'exception' : (asyncTask.status === 'done' ? 'success' : undefined)" style="flex: 1; margin: 0 12px" />
-          <el-button v-if="asyncTask.status === 'running' || asyncTask.status === 'pending'" size="small" text type="danger" @click="cancelAsyncTask">取消</el-button>
-        </div>
-      </div>
-
       <!-- 输入区 (T048: slash command + token 预算) -->
       <div class="chat-input">
-        <!-- PERF-03: 异步执行开关 -->
-        <el-switch v-model="asyncMode" active-text="异步" inline-prompt style="margin-right: 8px" />
         <div class="input-wrap">
           <el-input
             v-model="input"
@@ -260,15 +239,112 @@
         </el-button>
       </div>
     </div>
+
+	    <!-- 完整流程弹窗 (步骤表格, 整行点击展开/收起看详情) -->
+	    <el-dialog v-model="showTraceDialog" title="查询执行记录" width="800px">
+	      <div v-if="traceSteps.length" class="trace-table">
+	        <el-table ref="traceTableRef" :data="traceSteps" stripe size="small" style="width: 100%" @row-click="toggleTraceRow">
+	          <el-table-column type="expand" width="36">
+	            <template #default="{ row }">
+	              <div style="padding: 8px 12px;">
+	                <!-- SQL -->
+	                <pre v-if="row.type === 'sql' && traceSql" class="sql-inline">{{ traceSql }}</pre>
+	                <!-- 预思考 -->
+	                <div v-else-if="row.type === 'thinking' && row.thinkingData" class="trace-thinking">
+	                  <div v-if="row.thinkingData.tables.length">选表: {{ row.thinkingData.tables.join('、') }}</div>
+	                  <div v-if="row.thinkingData.aggregation">聚合: {{ row.thinkingData.aggregation }}</div>
+	                  <div v-for="c in row.thinkingData.caveats" :key="c" class="trace-caveat">⚠ {{ c }}</div>
+	                </div>
+	                <!-- 自愈对比 -->
+	                <div v-else-if="row.type === 'heal' && row.healData" class="trace-heal">
+	                  <div class="trace-heal-err">错误: {{ row.healData.error }}</div>
+	                  <pre>{{ row.healData.after }}</pre>
+	                </div>
+	                <!-- 查询结果数据表格 -->
+	                <div v-else-if="row.type === 'result' && traceColumns?.length" class="trace-result-table">
+	                  <el-table
+	                    :data="traceRows.slice(0, 100)"
+	                    size="small" stripe border
+	                    max-height="360"
+	                    style="width: 100%"
+	                  >
+	                    <el-table-column
+	                      v-for="col in traceColumns"
+	                      :key="col"
+	                      :prop="col" :label="col" min-width="100"
+	                      show-overflow-tooltip
+	                    />
+	                  </el-table>
+	                  <div v-if="traceRowCount > 100" class="result-more">
+	                    共 {{ traceRowCount }} 行, 仅展示前 100 行
+	                  </div>
+	                </div>
+	                <span v-else>{{ row.detail || '暂无详情' }}</span>
+	              </div>
+	            </template>
+	          </el-table-column>
+	          <el-table-column label="#" width="40" align="center">
+	            <template #default="{ $index }">{{ $index + 1 }}</template>
+	          </el-table-column>
+	          <el-table-column label="步骤" prop="label" />
+	          <el-table-column label="状态" width="70" align="center">
+	            <template #default="{ row }">
+	              <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
+	              <el-tag v-else-if="row.status === 'failed'" type="danger" size="small">失败</el-tag>
+	              <el-tag v-else type="info" size="small">进行中</el-tag>
+	            </template>
+	          </el-table-column>
+		          <el-table-column label="耗时" width="80" align="center">
+		            <template #default="{ row }">
+		              <span v-if="row.duration">{{ row.duration }}ms</span>
+		              <span v-else style="color:#c0c4cc">-</span>
+		            </template>
+		          </el-table-column>
+		          <el-table-column label="LLM" width="120" align="center">
+		            <template #default="{ row }">
+		              <span v-if="row.llmCalls" class="trace-llm">🤖 ×{{ row.llmCalls }}<template v-if="row.llmTokens"> · {{ row.llmTokens }} tokens</template></span>
+		              <span v-else style="color:#c0c4cc">-</span>
+		            </template>
+		          </el-table-column>
+	        </el-table>
+	      </div>
+	    </el-dialog>
+
+    <!-- 保存到看板弹窗 (V1 风格: 选择/新建看板 + 组件名) -->
+    <el-dialog v-model="showSaveDashboard" title="保存到看板" width="480px" @open="loadDashboardList">
+      <el-form label-width="80px" size="default">
+        <el-form-item label="选择看板">
+          <el-select v-model="saveDashId" placeholder="选择已有看板" style="width: 100%">
+            <el-option
+              v-for="d in dashboards"
+              :key="d.id"
+              :label="d.name"
+              :value="d.id"
+            />
+          </el-select>
+          <div class="or-divider">或者</div>
+          <el-input v-model="newDashName" placeholder="输入新看板名称" />
+        </el-form-item>
+        <el-form-item label="组件名称">
+          <el-input v-model="saveWidgetName" placeholder="给这个图表起个名字" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showSaveDashboard = false">取消</el-button>
+        <el-button type="primary" :loading="savingDashboard" @click="doSaveToDashboard">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch, onUnmounted } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Loading, ChatDotRound, CircleCheck, CircleClose, Plus, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
-import { chat, datasource, observability, semantic, feedback as feedbackApi, asyncQuery, STREAM_URL, type ChatResponse, type ConversationItem, type AsyncTask } from '@/api'
+import { Loading, ChatDotRound, CircleCheck, CircleClose, Plus, ArrowDown, Download, QuestionFilled, Monitor } from '@element-plus/icons-vue'
+import { chat, datasource, observability, semantic, dashboard, STREAM_URL, type ChatResponse, type ConversationItem, type DashboardItem } from '@/api'
+import { clearToken } from '@/composables/useAuth'
+import { exportQueryToExcel } from '@/utils/exportExcel'
 import * as echarts from 'echarts'
 
 interface TraceStep {
@@ -279,6 +355,8 @@ interface TraceStep {
   type?: 'sql' | 'result' | 'thinking' | 'heal'  // 步骤类型 (决定折叠内容)
   expandable?: boolean          // 是否可点击展开
   expanded?: boolean            // 当前是否展开
+  llmCalls?: number             // 该步骤的 LLM 调用次数
+  llmTokens?: number            // 该步骤消耗的 total tokens
   thinkingData?: {              // 预思考内容 (REF-001)
     tables: string[]
     aggregation: string
@@ -296,7 +374,8 @@ interface Message {
   role: 'user' | 'assistant'
   text?: string
   reply?: string
-  sql?: string
+  sql?: string              // 当前生效的 SQL (heal 后会更新)
+  originalSql?: string      // LLM 最初生成的 SQL (不变, 供步骤展示)
   columns?: string[]
   rows?: Record<string, any>[]
   rowCount?: number
@@ -307,12 +386,12 @@ interface Message {
   steps?: TraceStep[]
   done?: boolean
   pipelineCollapsed?: boolean
-  feedbackGiven?: 'like' | 'dislike' | null  // 用户已给的反馈 (FBK-001)
   tokenUsage?: {                // 本轮 token 统计 (T049 trace, complete 事件携带)
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
     llm_calls: number
+    nodes?: Record<string, { total_tokens: number; prompt_tokens: number; completion_tokens: number; call_count: number }>  // H5: per-node 分段
   } | null
   selfHealRounds?: number       // 本轮自愈次数 (T049 trace)
 }
@@ -327,6 +406,10 @@ const dataSources = ref<{ id: string; name: string }[]>([])
 const selectedDsId = ref<string>('')
 const chatBody = ref<HTMLElement>()
 const chartRefs: Record<number, HTMLElement> = {}
+const chartInstances: Record<number, echarts.ECharts> = {}
+// M3: SSE AbortController (组件卸载或超时时中断流)
+let sseAbortController: AbortController | null = null
+let sseTimeoutTimer: ReturnType<typeof setTimeout> | null = null
 const conversations = ref<ConversationItem[]>([])
 const convLoading = ref(false)
 const sampleQuestions = ref<string[]>([])
@@ -334,22 +417,38 @@ const clarifyInput = ref('')
 const inputHistory = ref<string[]>([])
 const historyIdx = ref(-1)
 
-// T048: slash command + token 预算
+// T048 + T061: slash command + token 预算
 const slashCommands = [
   { cmd: '/new', desc: '新建对话' },
   { cmd: '/clear', desc: '清空当前对话' },
   { cmd: '/history', desc: '查看历史' },
+  { cmd: '/ds', desc: '切换数据源 (如 /ds mydb)' },
+  { cmd: '/sql', desc: '查看当前 SQL' },
+  { cmd: '/explain', desc: '解释当前查询' },
   { cmd: '/help', desc: '查看命令帮助' },
 ]
 const slashMenuVisible = ref(false)
+// 完整流程弹窗 (V1 风格)
+const showTraceDialog = ref(false)
+const traceSteps = ref<any[]>([])
+const traceSql = ref('')
+const traceColumns = ref<string[]>([])
+const traceRows = ref<Record<string, any>[]>([])
+const traceRowCount = ref(0)
+const traceTableRef = ref()
 // T049: 当前对话累计 token (聚合所有消息的 tokenUsage)
 const totalTokens = computed(() =>
   messages.value.reduce((sum, m) => sum + (m.tokenUsage?.total_tokens || 0), 0)
 )
-// PERF-03: 异步查询
-const asyncMode = ref(false)
-const asyncTask = ref<AsyncTask | null>(null)
-let _pollTimer: ReturnType<typeof setInterval> | null = null
+
+// ── 保存到看板 (V1 风格) ──
+const showSaveDashboard = ref(false)
+const saveDashId = ref('')
+const newDashName = ref('')
+const saveWidgetName = ref('')
+const savingDashboard = ref(false)
+const dashboards = ref<DashboardItem[]>([])
+const saveMsgIdx = ref<number>(-1)  // 当前要保存的消息索引
 
 function setChartRef(el: any, idx: number) {
   if (el) chartRefs[idx] = el
@@ -367,6 +466,107 @@ function toggleStep(msg: Message, si: number, _msgIdx?: number) {
   if (!step?.expandable) return
   step.expanded = !step.expanded
   msg.steps = [...msg.steps!]  // 重新赋值数组触发 Vue 响应式
+}
+
+// 完整流程弹窗 (V1 PipelineTraceDialog 风格)
+function openTraceDialog(msg: Message) {
+  traceSteps.value = msg.steps || []
+  traceSql.value = msg.sql || ''
+  // 传结果数据供弹窗内 result 步骤展示表格 (msg.rows 已是对象数组, 保持原样)
+  traceColumns.value = msg.columns || []
+  traceRows.value = (msg.rows || []) as any[]
+  traceRowCount.value = msg.rowCount || traceRows.value.length
+  showTraceDialog.value = true
+}
+
+// 点击弹窗表格行展开/收起详情
+function toggleTraceRow(row: any) {
+  if (traceTableRef.value) {
+    traceTableRef.value.toggleRowExpansion(row)
+  }
+}
+
+// ── 保存到看板 (V1 风格) ──
+
+async function loadDashboardList() {
+  try {
+    const { data } = await dashboard.list()
+    dashboards.value = data
+  } catch {
+    dashboards.value = []
+  }
+}
+
+function openSaveToDashboard(idx: number) {
+  const msg = messages.value[idx]
+  if (!msg?.chart && !msg?.columns?.length) {
+    ElMessage.warning('当前查询无图表/数据可保存')
+    return
+  }
+  saveMsgIdx.value = idx
+  saveDashId.value = ''
+  newDashName.value = ''
+  saveWidgetName.value = msg.reply || msg.text || ''
+  showSaveDashboard.value = true
+}
+
+async function doSaveToDashboard() {
+  const msg = messages.value[saveMsgIdx.value]
+  if (!msg) return
+
+  const dashName = newDashName.value.trim()
+  const selDashId = saveDashId.value
+
+  // 校验: 必须选择或新建一个看板
+  if (!selDashId && !dashName) {
+    ElMessage.warning('请选择已有看板或输入新看板名称')
+    return
+  }
+  const widgetName = saveWidgetName.value.trim()
+  if (!widgetName) {
+    ElMessage.warning('请输入组件名称')
+    return
+  }
+
+  savingDashboard.value = true
+  try {
+    let targetDashId = selDashId
+
+    // 新建看板
+    if (!targetDashId && dashName) {
+      const { data: newDash } = await dashboard.create({ name: dashName })
+      targetDashId = newDash.id
+      dashboards.value.unshift(newDash)
+    }
+
+    if (!targetDashId) {
+      ElMessage.error('无法确定目标看板')
+      return
+    }
+
+    // 保存 widget (实时查询模式: 只存 SQL + 数据源 + 图表类型, 不存结果)
+    // chart_type 从当前图表的 series 提取 (供看板实时查询时做 AI 选型提示)
+    const chartType = currentChartType(msg)
+
+    if (!msg.sql) {
+      ElMessage.warning('当前查询无 SQL, 无法保存到看板')
+      return
+    }
+
+    await dashboard.addWidget(targetDashId, {
+      question: widgetName,
+      query_sql: msg.sql,
+      datasource_id: selectedDsId.value,
+      chart_type: chartType,
+    })
+
+    ElMessage.success('已保存到看板')
+    showSaveDashboard.value = false
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message || '未知错误'))
+  } finally {
+    savingDashboard.value = false
+  }
 }
 
 async function fetchDataSources() {
@@ -419,6 +619,10 @@ async function fetchConversations() {
 }
 
 function startNewConversation() {
+  // 释放 ECharts 实例, 防止内存泄漏
+  Object.values(chartInstances).forEach(c => { try { c.dispose() } catch { /* ignore */ } })
+  Object.keys(chartInstances).forEach(k => delete chartInstances[k])
+  Object.keys(chartRefs).forEach(k => delete chartRefs[k])
   conversationId.value = null
   messages.value = []
 }
@@ -450,12 +654,23 @@ async function loadConversation(convId: string) {
           rowCount: st.result_summary?.row_count,
           chart: st.chart_option || undefined,
           steps: [
+            { label: '意图识别', status: 'done' as const },
+            { label: 'Schema 检索', status: 'done' as const },
+            {
+              label: '预思考', status: 'done' as const, type: 'thinking',
+              expandable: true, expanded: false,
+              thinkingData: {
+                tables: st.thinking?.tables || [],
+                aggregation: st.thinking?.aggregation || '',
+                caveats: st.thinking?.caveats || [],
+                prevSqlReview: st.thinking?.prev_sql_review || '',
+              },
+            },
             { label: 'SQL 生成', status: 'done' as const, type: 'sql', expandable: true, expanded: false },
             { label: '执行查询', status: 'done' as const, detail: `${st.result_summary?.row_count ?? 0} 行`, type: 'result', expandable: true, expanded: false },
           ],
-          done: true,
-          pipelineCollapsed: true,
-        })
+	          done: true,
+	        })
       }
     }
     await scrollToBottom()
@@ -488,12 +703,6 @@ async function send() {
   const q = input.value.trim()
   if (!q || loading.value || !selectedDsId.value) return
 
-  // PERF-03: 异步模式走 sendAsync
-  if (asyncMode.value) {
-    await sendAsync(q)
-    return
-  }
-
   messages.value.push({ role: 'user', text: q })
   inputHistory.value.push(q)
   if (inputHistory.value.length > 50) inputHistory.value.shift()
@@ -513,6 +722,18 @@ async function send() {
   const msgIdx = messages.value.length - 1
 
   try {
+    // M3: AbortController + 超时 (5 分钟), 防止后端挂起时前端无限等待
+    sseAbortController = new AbortController()
+    const SSE_TIMEOUT_MS = 5 * 60 * 1000
+    const resetSseTimeout = () => {
+      if (sseTimeoutTimer) clearTimeout(sseTimeoutTimer)
+      sseTimeoutTimer = setTimeout(() => {
+        sseAbortController?.abort()
+        ElMessage.warning('查询超时，请稍后重试')
+      }, SSE_TIMEOUT_MS)
+    }
+    resetSseTimeout()
+
     const token = localStorage.getItem('access_token')
     const response = await fetch(STREAM_URL, {
       method: 'POST',
@@ -525,9 +746,21 @@ async function send() {
         data_source_id: selectedDsId.value,
         conversation_id: conversationId.value || undefined,
       }),
+      signal: sseAbortController.signal,
     })
 
     if (!response.ok || !response.body) {
+      // 401: token 失效, 跳转登录页
+      if (response.status === 401) {
+        loading.value = false
+        clearToken()
+        localStorage.removeItem('refresh_token')
+        const { router } = await import('@/router')
+        if (router.currentRoute.value.path !== '/login') {
+          router.push({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } })
+        }
+        return
+      }
       throw new Error(`HTTP ${response.status}`)
     }
 
@@ -540,6 +773,7 @@ async function send() {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      resetSseTimeout()  // M3: 每收到数据重置超时
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || '' // 保留不完整的尾行
@@ -568,6 +802,9 @@ async function send() {
       }
     }
     loading.value = false
+    // M3: 清理超时计时器
+    if (sseTimeoutTimer) { clearTimeout(sseTimeoutTimer); sseTimeoutTimer = null }
+    sseAbortController = null
     await scrollToBottom()
     await nextTick()
     if (messages.value[msgIdx]?.chart) {
@@ -587,19 +824,35 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
   if (!msg) return
   const steps = msg.steps || []
 
+  // 从 SSE data 中提取 LLM 调用信息 (后端 emit 附带的 node_usage)
+  const llmInfo = (data: any): { llmCalls?: number; llmTokens?: number } => {
+    const nu = data?.node_usage
+    if (!nu) return {}
+    return {
+      llmCalls: nu.call_count ?? undefined,
+      llmTokens: nu.total_tokens ?? undefined,
+    }
+  }
+
   const updateStep = (label: string, status: 'done' | 'failed', extra?: Partial<TraceStep>) => {
     const step = steps.find(s => s.label === label)
     if (step) {
       step.status = status
-      // 同步所有传入字段 (detail/duration/type/expandable/expanded),
-      // 不能只挑两个字段——否则 expandable/type 永远落不到 step 上, SQL 无法展开
-      if (extra) Object.assign(step, extra)
+      // 同步所有传入字段, 但 duration 只在有值时覆盖 (防 undefined 抹掉已有值)
+      if (extra) {
+        if (extra.duration == null) {
+          const { duration, ...rest } = extra
+          Object.assign(step, rest)
+        } else {
+          Object.assign(step, extra)
+        }
+      }
     }
   }
 
   switch (type) {
     case 'intent':
-      updateStep('意图识别', 'done', { detail: data.intent, duration: data.duration_ms })
+      updateStep('意图识别', 'done', { detail: data.intent, duration: data.duration_ms, ...llmInfo(data) })
       if (data.intent === 'GENERAL' || data.intent === 'EXPLANATION') {
         msg.reply = data.reply || ''
         msg.done = true
@@ -609,18 +862,18 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
       steps.push({ label: 'Schema 检索', status: 'running' })
       break
     case 'schema':
-      updateStep('Schema 检索', 'done', { detail: (data.tables || []).join(', '), duration: data.duration_ms })
-      steps.push({ label: 'SQL 生成', status: 'running' })
+      updateStep('Schema 检索', 'done', { detail: (data.tables || []).join(', '), duration: data.duration_ms, ...llmInfo(data) })
+      steps.push({ label: '预思考', status: 'running' })
       break
     case 'sql':
       if (data.error) {
-        updateStep('SQL 生成', 'failed', { detail: data.error })
+        updateStep('SQL 生成', 'failed', { detail: data.error, ...llmInfo(data) })
         msg.error = data.error
         break
       }
-      msg.sql = data.sql
-      // SQL 步骤: 可点击展开查看 (默认收起)
-      updateStep('SQL 生成', 'done', { duration: data.duration_ms, type: 'sql', expandable: true, expanded: false })
+	      msg.sql = data.sql
+		      msg.originalSql = data.sql  // 保存初始 SQL, heal 后不覆盖
+		      updateStep('SQL 生成', 'done', { duration: data.duration_ms, type: 'sql', expandable: true, expanded: false, ...llmInfo(data) })
       steps.push({ label: '执行查询', status: 'running' })
       break
     case 'data':
@@ -647,9 +900,10 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
             status: 'done',
             detail: '已修复 SQL',
             duration: data.duration_ms,
-            type: 'heal',
-            expandable: true,
-            expanded: false,
+		            type: 'heal',
+		            expandable: true,
+		            expanded: false,
+            ...llmInfo(data),
             healData: {
               before: data.before_sql || '',
               after: data.sql || '',
@@ -658,12 +912,14 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
           })
         }
       } else {
-        steps.push({ label: `自愈 #${data.retry}`, status: 'failed', detail: data.error })
+        steps.push({ label: `自愈 #${data.retry}`, status: 'failed', detail: data.error, ...llmInfo(data) })
       }
       break
     case 'chart':
-      updateStep('图表生成', 'done', { duration: data.duration_ms })
+      updateStep('图表生成', 'done', { duration: data.duration_ms, ...llmInfo(data) })
       msg.chart = data.option
+      // 图表出来了 = 查询实质完成, 立即隐藏 pipeline (不等 complete, 避免延迟)
+      msg.done = true
       // 图表独立在 pipeline 外渲染。双重 nextTick 确保 v-if 的 DOM + ref 回调就绪
       if (data.option) {
         nextTick(() => nextTick(() => renderChart(msgIdx)))
@@ -673,15 +929,14 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
       msg.askUser = { question: data.question, options: data.options || null }
       break
     case 'thinking':
-      // 预思考 (REF-001): 在 schema 步骤后插入一个可展开的"预思考"步骤
-      steps.push({
-        label: '预思考',
-        status: 'done',
+      // 预思考 (REF-001): schema 事件已 push running 的预思考步骤, 这里更新为 done + 填充内容
+      updateStep('预思考', 'done', {
         type: 'thinking',
         expandable: true,
         expanded: false,
         detail: (data.tables || []).join(',') || '',
         duration: data.duration_ms,
+        ...llmInfo(data),
         thinkingData: {
           tables: data.tables || [],
           aggregation: data.aggregation || '',
@@ -689,6 +944,8 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
           prevSqlReview: data.prev_sql_review || '',
         },
       })
+      // 预思考完成 → 推进到 SQL 生成
+      steps.push({ label: 'SQL 生成', status: 'running' })
       break
     case 'complete':
       // 收尾: 所有 running 步骤标记为 done
@@ -701,12 +958,10 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
           completion_tokens: data.token_usage.completion_tokens || 0,
           total_tokens: data.token_usage.total_tokens || 0,
           llm_calls: data.token_usage.llm_calls || 0,
+          nodes: data.token_usage.nodes,
         }
       }
-      // 结果已收进 pipeline 折叠区的"执行查询"步骤内, pipeline 本身保持展开便于查看
-      // (用户可点 pipeline 头手动折叠)
-      msg.pipelineCollapsed = false
-      if (data.conversation_id) conversationId.value = data.conversation_id
+	      if (data.conversation_id) conversationId.value = data.conversation_id
       if (!data.success && data.error && !msg.error && !msg.reply) {
         msg.error = data.error
       }
@@ -735,7 +990,7 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
     msg.reply = data.reply || undefined
     msg.sql = data.sql || undefined
     msg.columns = data.columns
-    msg.rows = data.rows.map((row: any[]) => {
+    msg.rows = (data.rows || []).map((row: any[]) => {
       const obj: Record<string, any> = {}
       data.columns.forEach((col: string, ci: number) => { obj[col] = row[ci] })
       return obj
@@ -752,6 +1007,7 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
         completion_tokens: data.token_usage.completion_tokens || 0,
         total_tokens: data.token_usage.total_tokens || 0,
         llm_calls: data.token_usage.llm_calls || 0,
+        nodes: data.token_usage.nodes,
       }
     }
     msg.selfHealRounds = data.self_heal_rounds || 0
@@ -767,9 +1023,8 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
         })
       }
     }
-    msg.done = true
-    msg.pipelineCollapsed = false
-    await nextTick()
+	    msg.done = true
+	    await nextTick()
     if (msg.chart) nextTick(() => nextTick(() => renderChart(msgIdx)))
   } catch (e2: any) {
     msg.error = streamErr.message + ' | ' + (e2.response?.data?.detail || e2.message || '网络错误')
@@ -788,8 +1043,44 @@ function renderChart(idx: number, retries = 3) {
     }
     return
   }
-  const chart = echarts.init(el)
-  chart.setOption(msg.chart)
+  // M4: 复用已有实例而非重新 init (避免内存泄漏)
+  let chart = chartInstances[idx]
+  if (!chart || chart.isDisposed()) {
+    chart = echarts.init(el)
+    chartInstances[idx] = chart
+  }
+  chart.setOption(msg.chart, true)  // true = notMerge, 替换而非合并
+}
+
+/** 当前图表类型 (从 series 推断) */
+/** 获取当前图表类型 (从 series[0].type 推断) */
+function currentChartType(msg: Message): string {
+  if (!msg.chart?.series?.length) return 'bar'
+  return msg.chart.series[0].type || 'bar'
+}
+
+// 导出查询结果到 Excel (数据 sheet + 图表 sheet)
+// 对标 V1 API-05 + CHART-09: 数据 + 图表一起导出
+async function exportChart(idx: number) {
+  const msg = messages.value[idx]
+  if (!msg) return
+  // 无数据列时无法导出数据 sheet, 提示用户
+  if (!msg.columns?.length) {
+    ElMessage.warning('当前查询无数据可导出')
+    return
+  }
+  const chart = chartInstances[idx]
+  try {
+    await exportQueryToExcel({
+      question: msg.text || msg.reply || '查询结果',
+      columns: msg.columns,
+      rows: msg.rows || [],
+      chart: chart || undefined,
+    })
+    ElMessage.success('已导出 Excel')
+  } catch (e: any) {
+    ElMessage.error('导出失败: ' + (e.message || '未知错误'))
+  }
 }
 
 function navigateHistory(dir: number) {
@@ -805,26 +1096,86 @@ function navigateHistory(dir: number) {
 
 // T048: 输入变化 → 检测 slash command 菜单
 function onInputChange(val: string) {
-  slashMenuVisible.value = val.trimStart().startsWith('/') && val.trim().length <= 8
+  // T061: 更宽松的菜单触发 — 支持带参数的命令 (如 /ds mydb, /chart bar)
+  const trimmed = val.trimStart()
+  slashMenuVisible.value = trimmed.startsWith('/') && trimmed.length <= 20
 }
 
-// T048: 执行 slash command
+// T048 + T061: 执行 slash command (支持带参数)
 function runSlashCommand(cmd: string) {
   slashMenuVisible.value = false
   input.value = ''
-  switch (cmd) {
+  const parts = cmd.split(' ')
+  const base = parts[0]
+  const arg = parts.slice(1).join(' ')
+
+  switch (base) {
     case '/new':
     case '/clear':
       startNewConversation()
-      ElMessage.success(cmd === '/new' ? '已新建对话' : '已清空对话')
+      ElMessage.success(base === '/new' ? '已新建对话' : '已清空对话')
       break
     case '/history':
       router.push('/history')
       break
     case '/help':
-      ElMessage.info('可用命令: /new 新建 · /clear 清空 · /history 历史 · /help 帮助')
+      ElMessage.info('可用命令: /new 新建 · /clear 清空 · /history 历史 · /ds <名称> 切换数据源 · /sql 查看SQL · /explain 解释查询 · /help 帮助')
+      break
+    // T061: /ds 切换数据源
+    case '/ds':
+      if (arg) {
+        const ds = dataSources.value.find(d => d.name === arg || d.id === arg)
+        if (ds) {
+          selectedDsId.value = ds.id
+          ElMessage.success(`已切换到数据源: ${ds.name}`)
+        } else {
+          ElMessage.warning(`数据源 "${arg}" 不存在。可用: ${dataSources.value.map(d => d.name).join(', ')}`)
+        }
+      } else {
+        ElMessage.info(`当前数据源: ${dataSources.value.find(d => d.id === selectedDsId.value)?.name || '未选择'}\n可用: ${dataSources.value.map(d => d.name).join(', ')}`)
+      }
+      break
+    // T061: /sql 查看/复制当前 SQL
+    case '/sql':
+      const lastSql = findLastSql()
+      if (lastSql) {
+        // 复制到剪贴板 + 展示
+        navigator.clipboard.writeText(lastSql).catch(() => {})
+        ElMessage.success({ message: `当前 SQL 已复制到剪贴板`, duration: 3000 })
+        // 追加一条消息展示 SQL
+        messages.value.push({ role: 'assistant', text: `**当前 SQL:**\n\`\`\`sql\n${lastSql}\n\`\`\`` })
+      } else {
+        ElMessage.info('当前对话暂无 SQL')
+      }
+	      break
+	    // T061: /explain 解释当前查询
+    case '/explain':
+      const explainSql = findLastSql()
+      if (explainSql) {
+        // 用消息展示 SQL 解释 (不调 LLM, 就是对 SQL 的简要说明)
+        messages.value.push({ role: 'assistant', text: `**查询解释:**\n当前 SQL:\n\`\`\`sql\n${explainSql}\n\`\`\`\n数据源: ${dataSources.value.find(d => d.id === selectedDsId.value)?.name || '未选择'}` })
+      } else {
+        ElMessage.info('当前对话暂无可解释的查询')
+      }
       break
   }
+}
+
+// T061: 辅助函数 — 找最后一条有 SQL 的消息
+function findLastSql(): string | null {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i]
+    if (m.sql) return m.sql
+  }
+  return null
+}
+
+// T061: 辅助函数 — 找最后一条有图表的消息索引
+function findLastChartIndex(): number {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i].chart) return i
+  }
+  return -1
 }
 
 // 用户回答 Agent 的澄清问题 (ARC-03: 暂停后恢复对话流)
@@ -840,18 +1191,6 @@ function answerClarify(answer: string) {
   send()
 }
 
-// 用户反馈 (FBK-001: 点赞/点踩, 静默提交不阻塞)
-async function giveFeedback(msg: Message, type: 'like' | 'dislike') {
-  if (msg.feedbackGiven === type) return  // 已给过同类反馈
-  msg.feedbackGiven = type
-  try {
-    await feedbackApi.create({ feedback_type: type })
-  } catch {
-    msg.feedbackGiven = null  // 失败回退, 允许重试
-    ElMessage.error('反馈提交失败')
-  }
-}
-
 async function scrollToBottom() {
   await nextTick()
   if (chatBody.value) {
@@ -859,9 +1198,18 @@ async function scrollToBottom() {
   }
 }
 
+// M4: resize 处理 — 遍历所有 ECharts 实例调用 resize()
+function handleWindowResize() {
+  for (const chart of Object.values(chartInstances)) {
+    if (!chart.isDisposed()) chart.resize()
+  }
+}
+
 onMounted(() => {
   fetchDataSources()
   fetchConversations()
+  // M4: 监听窗口 resize → ECharts 自适应
+  window.addEventListener('resize', handleWindowResize)
   // 看板页"来源对话"跳转: 读取 conv query 自动加载该对话
   const convId = route.query.conv as string
   if (convId) {
@@ -869,94 +1217,27 @@ onMounted(() => {
   }
 })
 
+// M3 + M4: 组件卸载时清理 SSE + ECharts
+onBeforeUnmount(() => {
+  // M3: 中断正在进行的 SSE 流
+  if (sseAbortController) {
+    sseAbortController.abort()
+    sseAbortController = null
+  }
+  if (sseTimeoutTimer) {
+    clearTimeout(sseTimeoutTimer)
+    sseTimeoutTimer = null
+  }
+  // M4: dispose 所有 ECharts 实例
+  for (const chart of Object.values(chartInstances)) {
+    if (!chart.isDisposed()) chart.dispose()
+  }
+  Object.keys(chartInstances).forEach(k => delete chartInstances[Number(k)])
+  window.removeEventListener('resize', handleWindowResize)
+})
+
 // 数据源切换时刷新示例问题
 watch(selectedDsId, () => { fetchSampleQuestions() })
-
-// ── PERF-03: 异步查询 ────────────────────────────────────────
-async function sendAsync(q: string) {
-  messages.value.push({ role: 'user', text: q })
-  input.value = ''
-  try {
-    const { data } = await asyncQuery.create({ question: q, data_source_id: selectedDsId.value })
-    asyncTask.value = data
-    // 轮询 (2s 间隔)
-    _pollTimer = setInterval(pollAsyncTask, 2000)
-  } catch (e: any) {
-    if (e.response?.status === 409) {
-      ElMessage.warning('已有进行中的相同查询, 请等待完成')
-    } else {
-      ElMessage.error('提交失败: ' + (e.response?.data?.detail || e.message))
-    }
-  }
-}
-
-async function pollAsyncTask() {
-  if (!asyncTask.value) return
-  try {
-    const { data } = await asyncQuery.get(asyncTask.value.id)
-    asyncTask.value = data
-    if (data.status === 'done') {
-      _stopPolling()
-      // 结果渲染为消息
-      if (data.result) {
-        const rows = (data.result.rows || []).map((row: any[]) => {
-          const obj: Record<string, any> = {}
-          ;(data.result!.columns || []).forEach((col: string, ci: number) => { obj[col] = row[ci] })
-          return obj
-        })
-        messages.value.push({
-          role: 'assistant',
-          reply: data.result.reply || undefined,
-          sql: data.result.sql || undefined,
-          columns: data.result.columns,
-          rows,
-          rowCount: data.result.row_count,
-          chart: data.result.chart,
-          steps: [
-            { label: 'SQL 生成', status: 'done' as const, type: 'sql', expandable: true, expanded: false },
-            { label: '执行查询', status: 'done' as const, detail: `${data.result.row_count} 行`, type: 'result', expandable: true, expanded: false },
-          ],
-          done: true,
-          pipelineCollapsed: true,
-        })
-        await scrollToBottom()
-        await nextTick()
-        const idx = messages.value.length - 1
-        if (messages.value[idx]?.chart) {
-          nextTick(() => nextTick(() => renderChart(idx)))
-        }
-      }
-      // 清除任务卡片 (延迟, 让用户看到完成态)
-      setTimeout(() => { asyncTask.value = null }, 2000)
-      fetchConversations()
-    } else if (data.status === 'failed' || data.status === 'cancelled') {
-      _stopPolling()
-      messages.value.push({ role: 'assistant', error: data.error || '查询失败' })
-      setTimeout(() => { asyncTask.value = null }, 2000)
-    }
-  } catch {
-    _stopPolling()
-  }
-}
-
-async function cancelAsyncTask() {
-  if (!asyncTask.value) return
-  try {
-    await asyncQuery.cancel(asyncTask.value.id)
-    ElMessage.info('已取消')
-  } catch (e: any) {
-    ElMessage.error('取消失败: ' + (e.response?.data?.detail || e.message))
-  }
-}
-
-function _stopPolling() {
-  if (_pollTimer) {
-    clearInterval(_pollTimer)
-    _pollTimer = null
-  }
-}
-
-onUnmounted(_stopPolling)
 </script>
 
 <style scoped>
@@ -1069,17 +1350,34 @@ onUnmounted(_stopPolling)
   transform: translateY(-1px);
   box-shadow: 0 2px 8px rgba(102, 126, 234, 0.15);
 }
-.sql-box {
-  background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 6px;
-  padding: 10px 14px; margin-bottom: 12px; overflow-x: auto;
-}
-.sql-label { font-size: 0.75rem; color: #909399; margin-bottom: 4px; }
-.sql-box pre { margin: 0; font-size: 0.85rem; }
-.result-box { margin-bottom: 12px; }
+.result-box { margin: 4px 0 8px; }
 .result-meta { font-size: 0.8rem; color: #909399; margin-bottom: 6px; }
 .chart-box { margin-bottom: 12px; }
-.feedback-row { display: flex; align-items: center; gap: 4px; margin-top: 4px; padding-top: 8px; border-top: 1px solid #f0f0f0; }
-.feedback-label { font-size: 0.75rem; color: #909399; margin-right: 8px; }
+/* 弹窗内结果表格 */
+.trace-result-table { margin-top: 4px; overflow-x: auto; }
+.trace-result-table .el-table { border-radius: 4px; }
+.trace-result-table :deep(.el-table__body-wrapper) { overflow-x: auto; overflow-y: auto; }
+.trace-result-table :deep(.el-table .cell) { white-space: nowrap; line-height: 1.8; }
+.result-more {
+  text-align: center;
+  font-size: 0.75rem;
+  color: #909399;
+  padding: 6px 0;
+}
+/* 图表底部操作栏: 左侧导出+看板, 右侧查询流程开关 */
+.chart-toolbar { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+.chart-toolbar-left { display: flex; gap: 4px; align-items: center; }
+.chart-toolbar .el-button { color: #909399; }
+.chart-toolbar .el-button:hover { color: #667eea; }
+.chart-toolbar .expand-toggle { margin-left: 2px; }
+
+/* 保存到看板弹窗 */
+.or-divider {
+  text-align: center;
+  color: #c0c4cc;
+  font-size: 0.8rem;
+  margin: 8px 0;
+}
 .ask-user-box { margin-bottom: 12px; }
 .ask-options { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
 .ask-input { margin-top: 8px; display: flex; gap: 8px; }
@@ -1100,7 +1398,7 @@ onUnmounted(_stopPolling)
 .heal-tag.add { background: #e1f3d8; color: #67c23a; }
 .heal-box pre { margin: 0; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto; }
 
-/* ── Pipeline 步骤条 (对标 V1 Dify 风格: 始终展开, 竖排实时进度) ── */
+/* ── Pipeline 竖排步骤条 (V1 Dify 风格: 执行中实时显示) ── */
 .pipeline {
   display: flex;
   flex-direction: column;
@@ -1109,7 +1407,7 @@ onUnmounted(_stopPolling)
   padding: 10px 12px;
   background: #f8f9fa;
   border-radius: 8px;
-  border-left: 3px solid #667eea;
+  border-left: 3px solid #e0e0e0;
 }
 .pipeline-header-row {
   display: flex;
@@ -1118,22 +1416,16 @@ onUnmounted(_stopPolling)
   margin-bottom: 4px;
 }
 .pipeline-title {
-  font-size: 0.75rem;
+  font-size: 12px;
   font-weight: 600;
   color: #64748b;
-}
-.pipeline-summary {
-  flex: 1;
-  text-align: center;
-  font-size: 0.72rem;
-  color: #909399;
 }
 .pipeline-step {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   padding: 4px 0;
-  font-size: 0.82rem;
+  font-size: 13px;
   transition: opacity 0.3s ease;
 }
 .pipeline-step.failed { opacity: 0.7; }
@@ -1153,28 +1445,10 @@ onUnmounted(_stopPolling)
   font-weight: 500;
   color: #303133;
   line-height: 1.4;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.step-label.clickable {
-  cursor: pointer;
-  user-select: none;
-}
-.step-label.clickable:hover { color: #667eea; }
-.step-detail-inline {
-  font-weight: 400;
-  color: #909399;
-  font-size: 0.72rem;
-}
-.expand-toggle {
-  font-size: 12px;
-  color: #c0c4cc;
-  margin-left: 2px;
 }
 .step-detail {
   color: #909399;
-  font-size: 0.72rem;
+  font-size: 12px;
   margin-top: 2px;
   line-height: 1.4;
   word-break: break-all;
@@ -1185,6 +1459,95 @@ onUnmounted(_stopPolling)
   flex-shrink: 0;
   margin-top: 2px;
 }
+.step-llm {
+  color: #8c9eff;
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  margin-top: 2px;
+  margin-left: 4px;
+}
+.trace-llm {
+  color: #8c9eff;
+  font-size: 0.75rem;
+}
+/* Pipeline 步骤展开区域 */
+.step-content.clickable {
+  cursor: pointer;
+}
+.expand-icon {
+  font-size: 0.7rem;
+  margin-left: 4px;
+  transition: transform 0.2s;
+}
+.expand-icon .rotated {
+  transform: rotate(-90deg);
+}
+.step-expand {
+  margin: 0 0 8px 28px;
+  padding: 0 8px;
+}
+.thinking-detail {
+  font-size: 0.78rem;
+  color: #606266;
+  background: #f5f7fa;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+.thinking-section {
+  margin-bottom: 4px;
+}
+.thinking-label {
+  color: #909399;
+  font-weight: 500;
+}
+.heal-compare {
+  display: flex;
+  gap: 12px;
+}
+.heal-col {
+  flex: 1;
+  min-width: 0;
+}
+.heal-label {
+  font-size: 0.75rem;
+  color: #909399;
+  margin-bottom: 2px;
+  display: block;
+}
+.heal-sql {
+  font-size: 0.72rem !important;
+  padding: 6px 10px !important;
+}
+.heal-sql.healed {
+  color: #a5d6ff;
+  border-left: 3px solid #67c23a;
+}
+
+/* SQL 深色代码块 (V1 风格: 黑底 + 蓝字) */
+.sql-inline {
+  margin: 4px 0 8px;
+  padding: 10px 14px;
+  background: #1e1e1e;
+  color: #a5d6ff;
+  font-size: 0.8rem;
+  font-family: 'SF Mono', 'Fira Code', 'Menlo', monospace;
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+/* trace 弹窗内预思考/自愈 */
+.trace-thinking { font-size: 12px; line-height: 1.6; color: #606266; }
+.trace-thinking > div { margin-bottom: 2px; }
+.trace-caveat { display: block; color: #e6a23c; margin: 2px 0; }
+.trace-heal { font-size: 12px; }
+.trace-heal-err { color: #f56c6c; margin-bottom: 4px; }
+.trace-heal pre {
+  margin: 0; padding: 6px 10px; background: #1e1e1e; color: #a5d6ff;
+  font-size: 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-all;
+}
 /* T049: token 用量汇总行 (pipeline 底部) */
 .trace-summary {
   margin-top: 6px;
@@ -1193,6 +1556,20 @@ onUnmounted(_stopPolling)
   font-size: 0.72rem;
   color: #909399;
   text-align: right;
+}
+.token-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+.token-node-tag {
+  background: #f4f4f5;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 0.68rem;
+  color: #606266;
 }
 
 .chat-input {
@@ -1250,12 +1627,4 @@ onUnmounted(_stopPolling)
 }
 .ask-status-token { font-size: 0.72rem; color: #909399; }
 
-/* PERF-03: 异步任务卡片 */
-.async-task-card {
-  padding: 10px 20px;
-  background: #f0f5ff;
-  border-bottom: 1px solid #d6e4ff;
-}
-.async-head { display: flex; align-items: center; gap: 8px; }
-.async-q { font-size: 0.85rem; color: #303133; white-space: nowrap; }
 </style>

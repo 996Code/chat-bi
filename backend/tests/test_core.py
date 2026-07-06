@@ -23,6 +23,16 @@ class TestSettings:
         with pytest.raises(RuntimeError, match="SECURITY"):
             validate_settings_on_startup()
 
+    def test_cors_origins_placeholder_detected_as_warning(self, monkeypatch, caplog):
+        """CORS_ORIGINS with CHANGE_ME placeholder should trigger WARNING (not crash)."""
+        import logging
+        monkeypatch.setenv("CORS_ORIGINS", '["CHANGE_ME_CORS_ORIGINS"]')
+        from app.core.config import get_settings
+        get_settings.cache_clear()
+        with caplog.at_level(logging.WARNING, logger="app.config"):
+            validate_settings_on_startup()  # Should NOT raise
+        assert any("CORS_ORIGINS" in r.message and "CHANGE_ME" in r.message for r in caplog.records)
+
     def test_validate_settings_passes_with_real_keys(self):
         """Test key validation passes with real keys."""
         from app.core.config import get_settings

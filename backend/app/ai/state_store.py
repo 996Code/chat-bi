@@ -66,6 +66,8 @@ class ConversationState:
     columns: list[str] = field(default_factory=list)
     rows_sample: list[list] = field(default_factory=list)  # 前 N 行 (防大结果撑爆)
     chart_option: dict | None = None
+    # 预思考结果 (历史对话恢复时展示选表理由/聚合/陷阱)
+    thinking: dict | None = None
     # T039: 压缩摘要 (旧轮次的一句话总结) + 关键决策
     compressed_summary: str = ""
     decisions: list[DecisionPoint] = field(default_factory=list)
@@ -86,6 +88,7 @@ class ConversationState:
             "columns": self.columns,
             "rows_sample": self.rows_sample,
             "chart_option": self.chart_option,
+            "thinking": self.thinking,
             "compressed_summary": self.compressed_summary,
             "decisions": [d.to_dict() for d in self.decisions],
             "prompts": self.prompts,
@@ -106,6 +109,7 @@ class ConversationState:
             columns=d.get("columns", []),
             rows_sample=d.get("rows_sample", []),
             chart_option=d.get("chart_option"),
+            thinking=d.get("thinking"),
             compressed_summary=d.get("compressed_summary", ""),
             decisions=[DecisionPoint.from_dict(dp) for dp in d.get("decisions", [])],
             prompts=d.get("prompts"),

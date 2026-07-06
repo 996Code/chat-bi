@@ -18,14 +18,12 @@ apiClient.interceptors.request.use((config) => {
   return config
 })
 
-// Response interceptor: 401 时尝试用 refresh_token 刷新, 失败才注销 (AUTH-03 闭环)
-let _isRefreshing = false
+// Response interceptor: 401 时尝试用 refresh_token 刷新, 失败跳登录页 (AUTH-03 闭环)
 let _refreshPromise: Promise<string | null> | null = null
 
 async function _tryRefresh(): Promise<string | null> {
   // 并发刷新合并: 多个请求同时 401 时只发一次 refresh
   if (_refreshPromise) return _refreshPromise
-  _isRefreshing = true
   _refreshPromise = (async () => {
     const refreshToken = localStorage.getItem('refresh_token')
     if (!refreshToken) return null
@@ -39,11 +37,20 @@ async function _tryRefresh(): Promise<string | null> {
     } catch {
       return null
     } finally {
-      _isRefreshing = false
       _refreshPromise = null
     }
   })()
   return _refreshPromise
+}
+
+// 延迟导入 router, 避免循环依赖 (api 模块在 router 之前加载)
+async function _goToLogin() {
+  try {
+    const { router } = await import('@/router')
+    if (router.currentRoute.value.path !== '/login') {
+      router.push({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } })
+    }
+  } catch { /* router 未就绪时静默降级 */ }
 }
 
 apiClient.interceptors.response.use(
@@ -62,9 +69,14 @@ apiClient.interceptors.response.use(
         originalRequest.headers.Authorization = `Bearer ${newToken}`
         return apiClient(originalRequest)
       }
-      // 刷新失败 → 注销
+      // 刷新失败 → 注销并跳转登录页
       clearToken()
       localStorage.removeItem('refresh_token')
+      try {
+        const { ElMessage } = await import('element-plus')
+        ElMessage.warning('登录已过期，请重新登录')
+      } catch { /* element-plus 未就绪时静默降级 */ }
+      _goToLogin()
     }
     return Promise.reject(error)
   },

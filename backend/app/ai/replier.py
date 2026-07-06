@@ -56,6 +56,7 @@ async def generate_reply(
         始终返回非空字符串 (fail-closed, 前端永不空白)
     """
     from app.core.config import get_settings
+    from app.core.llm_client import extract_content
     from app.core.text_sanitize import sanitize_text
     settings = get_settings()
 
@@ -69,14 +70,14 @@ async def generate_reply(
                 {"role": "system", "content": "你是 ChatBI 智能助手, 友好简短地回复用户。"},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=200,
+            max_tokens=settings.llm_max_tokens,
             temperature=0.3,
         )
-        reply = (resp.choices[0].message.content or "").strip()
+        reply = extract_content(resp).strip()
         # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
         from app.core.token_tracker import track_usage
         from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None))
+        track_usage(getattr(resp, "usage", None), node="generate_reply")
         record_prompt("generate_reply", "你是 ChatBI 智能助手, 友好简短地回复用户。", prompt, getattr(resp, "usage", None))
         if not reply:
             logger.warning("回复生成返回空, 降级默认文案")

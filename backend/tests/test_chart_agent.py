@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.ai.chart_agent import (
+    analyze_data_shape,
     generate_chart,
     heal_json,
     infer_chart_by_rule,
@@ -86,10 +87,12 @@ class TestInferByRule:
         assert option.get("series", [{}])[0].get("type") == "line"
 
     def test_multi_category_to_bar(self):
-        """多类别 → 柱状图 (默认)。"""
+        """多类别 (超过饼图切片上限) → 柱状图。"""
+        # 超过 _PIE_MAX_SLICES 的类别数 → 柱状图
+        rows = [(f"cat_{i}", i) for i in range(12)]
         option = infer_chart_by_rule(
             columns=["name", "value"],
-            rows=[("a", 1), ("b", 2), ("c", 3), ("d", 4)],
+            rows=rows,
         )
         assert option is not None
         assert option.get("series", [{}])[0].get("type") == "bar"
@@ -97,6 +100,56 @@ class TestInferByRule:
     def test_empty_data_returns_none(self):
         """无数据 → None (不强行推断)。"""
         assert infer_chart_by_rule([], []) is None
+
+
+class TestAnalyzeDataShape:
+    """数据特征分析 (辅助图表类型选择)。"""
+
+    def test_basic_shape(self):
+        shape = analyze_data_shape(
+            columns=["province", "sales"],
+            rows=[("广东", 100), ("浙江", 80), ("广东", 50)],
+        )
+        assert shape["row_count"] == 3
+        assert shape["dim_unique_count"] == 2  # 广东、浙江
+        assert shape["numeric_col_count"] == 1
+        assert shape["first_col_is_time"] is False
+
+    def test_time_column_detected(self):
+        shape = analyze_data_shape(
+            columns=["month", "amount"],
+            rows=[("2024-01", 100), ("2024-02", 200)],
+        )
+        assert shape["first_col_is_time"] is True
+
+    def test_ratio_column_detected(self):
+        shape = analyze_data_shape(
+            columns=["category", "占比"],
+            rows=[("a", 0.3), ("b", 0.7)],
+        )
+        assert shape["has_ratio_col"] is True
+
+    def test_single_value_detected(self):
+        shape = analyze_data_shape(
+            columns=["total"],
+            rows=[(100,)],
+        )
+        assert shape["single_value"] is True
+
+    def test_multi_numeric_cols(self):
+        shape = analyze_data_shape(
+            columns=["name", "sales", "profit"],
+            rows=[("a", 100, 20), ("b", 200, 50)],
+        )
+        assert shape["numeric_col_count"] == 2
+
+    def test_summary_readable(self):
+        shape = analyze_data_shape(
+            columns=["month", "sales"],
+            rows=[("2024-01", 100), ("2024-02", 200)],
+        )
+        assert "2行" in shape["summary"]
+        assert "时间语义" in shape["summary"]
 
 
 # ── T034: 图表生成 ────────────────────────────────────────────
@@ -115,12 +168,12 @@ class TestGenerateChart:
 
     @pytest.mark.asyncio
     async def test_generate_valid_option(self):
-        option = json.dumps({
-            "xAxis": {"type": "category", "data": ["a", "b"]},
-            "yAxis": {"type": "value"},
-            "series": [{"type": "bar", "data": [1, 2]}],
+        config = json.dumps({
+            "chart_type": "bar",
+            "dim_col": "category",
+            "measure_cols": ["amount"],
         })
-        llm = _mock_llm(option)
+        llm = _mock_llm(config)
         result = await generate_chart(
             question="各品类销售额",
             columns=["category", "amount"],
@@ -134,12 +187,12 @@ class TestGenerateChart:
     @pytest.mark.asyncio
     async def test_generate_truncated_json_self_heals(self):
         """LLM 输出截断 JSON → 自愈补括号 (T035 集成)。"""
-        truncated = '{"xAxis": {"data": ["a", "b"]}, "series": [{"type": "bar", "data": [1, 2]'  # 缺 }]
+        truncated = '{"chart_type": "bar", "dim_col": "c", "measure_cols": ["v"'  # 缺 ]}
         llm = _mock_llm(truncated)
         result = await generate_chart(
             question="销售",
             columns=["c", "v"],
-            rows=[("a", 1)],
+            rows=[("a", 1), ("b", 2)],
             llm_client=llm,
         )
         assert result.ok  # 自愈成功
@@ -161,12 +214,12 @@ class TestGenerateChart:
     @pytest.mark.asyncio
     async def test_chart_type_hint_passed_to_llm(self):
         """chart_type_hint (来自 T026) 传给 LLM 引导。"""
-        option = json.dumps({"series": [{"type": "pie", "data": [1]}]})
-        llm = _mock_llm(option)
+        config = json.dumps({"chart_type": "pie", "dim_col": "c", "measure_cols": ["v"]})
+        llm = _mock_llm(config)
         await generate_chart(
             question="占比",
             columns=["c", "v"],
-            rows=[("a", 1)],
+            rows=[("a", 1), ("b", 2)],
             llm_client=llm,
             chart_type_hint="pie",
         )

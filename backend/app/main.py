@@ -18,12 +18,26 @@ from app.core.logging import setup_logging
 async def lifespan(app: FastAPI):
     """Application lifespan — startup and shutdown hooks.
 
-    对标: 连接池/客户端单例在启动时预热，关闭时优雅释放。
-    Redis/Milvus 连接失败不阻塞启动（降级模式，对标 v1 fail-closed）。
+    对标: FastAPI lifespan + SEC-004/SEC-005 (Fail-Closed):
+      - 启动探测必需服务 (默认 PostgreSQL): 挂了拒绝启动 (fail-fast)
+      - 可选服务 (Redis/Milvus) 失败 → WARNING 降级, 不阻塞 (SEC-005)
+      - 单例客户端预热 (best-effort, 失败降级, 真正用时再连)
     """
     # Startup
     setup_logging()
     validate_settings_on_startup()
+
+    # 启动探测: 必需服务 fail-fast, 可选服务降级 (SEC-004 + SEC-005)
+    from app.core.startup_probe import run_startup_probes
+    await run_startup_probes()
+
+    # 自动建表: 根据模型定义创建缺失表 + 增量补列 (models.py 为单一真相源)
+    from app.db.session import auto_create_tables
+    try:
+        await auto_create_tables()
+    except Exception as e:
+        import logging
+        logging.getLogger("app.main").error("auto_create_tables 失败: %s", e)
 
     # 预热连接（best-effort，失败降级，不阻塞启动）
     # Redis: 语义缓存(T023)/限流用；连不上 → 降级跳过缓存

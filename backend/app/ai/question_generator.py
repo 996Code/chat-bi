@@ -60,6 +60,7 @@ async def generate_sample_questions(
 
     try:
         from app.core.config import get_settings
+        from app.core.llm_client import extract_content
         settings = get_settings()
         resp = await llm_client.chat.completions.create(
             model=settings.llm_model,
@@ -67,14 +68,14 @@ async def generate_sample_questions(
                 {"role": "system", "content": "你是 BI 分析专家, 生成用户最可能问的业务问题。"},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=400,
+            max_tokens=settings.llm_max_tokens,
             temperature=0.3,
         )
-        content = resp.choices[0].message.content or ""
+        content = extract_content(resp)
         # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
         from app.core.token_tracker import track_usage
         from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None))
+        track_usage(getattr(resp, "usage", None), node="question_generator")
         record_prompt("question_generator", "你是 BI 分析专家, 生成用户最可能问的业务问题。", prompt, getattr(resp, "usage", None))
         questions = _parse_questions(content)
         if questions:
@@ -93,7 +94,7 @@ def _build_schema_summary(models: list[Model]) -> str:
         return ""
     # 过滤掉系统表 (ChatBI 元数据表)
     system_tables = {"tenants", "users", "data_sources", "semantic_models",
-                     "conversations", "saved_queries", "audit_logs", "feedback"}
+                     "conversations", "saved_queries", "audit_logs"}
     lines = []
     for m in models:
         if m.name in system_tables:
@@ -135,7 +136,7 @@ def _fallback_questions(models: list[Model]) -> list[str]:
       - 保证至少返回几个可用问题
     """
     system_tables = {"tenants", "users", "data_sources", "semantic_models",
-                     "conversations", "saved_queries", "audit_logs", "feedback"}
+                     "conversations", "saved_queries", "audit_logs"}
     questions = []
 
     for m in models:

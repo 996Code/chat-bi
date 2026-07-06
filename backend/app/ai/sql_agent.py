@@ -43,6 +43,7 @@ _SYSTEM_PROMPT = """你是 BI 系统的 SQL 生成器。根据用户问题和数
 3. 遵守 data_type 约束: 不能对 VARCHAR/TEXT 做数值聚合(SUM/AVG), 不能对 DATE 做数值运算
 4. 禁止危险函数: LOAD_FILE/SLEEP/BENCHMARK/INTO OUTFILE
 5. 只返回 SQL, 不要解释文字, 不要 markdown 包裹
+6. 为每个 SELECT 输出列添加 AS 中文别名: schema 中列名后括号标注了中文名(中文: xxx), 用它做别名。聚合列也要有中文别名, 如 COUNT(*) AS 订单数。别名用双引号包裹, 如 user_id AS "用户ID"。
 
 只返回一条 SQL 语句。"""
 
@@ -120,6 +121,7 @@ async def generate_sql(
         GenerateResult — error 非空表示生成/校验失败 (不抛, T025 决定下一步)
     """
     from app.core.config import get_settings
+    from app.core.llm_client import extract_content
     from app.core.prompt_cache import get_prompt_cache, PromptCache
     from app.core.text_sanitize import sanitize_text
     settings = get_settings()
@@ -158,14 +160,14 @@ async def generate_sql(
                 {"role": "system", "content": system_content},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=1000,
+            max_tokens=settings.llm_max_tokens,
             temperature=0.0,
         )
-        content = resp.choices[0].message.content or ""
+        content = extract_content(resp)
         # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
         from app.core.token_tracker import track_usage
         from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None))
+        track_usage(getattr(resp, "usage", None), node="generate_sql")
         record_prompt("generate_sql", system_content, user_content, getattr(resp, "usage", None))
     except Exception as e:
         logger.warning("SQL 生成 LLM 调用失败: %s", e)

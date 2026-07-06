@@ -46,7 +46,6 @@ def _ping_sync(url: str, datasource_id: str) -> PingResult:
 
     在 to_thread 里跑 (同 sql_executor 范式)。
     """
-    import time
     from sqlalchemy import text
     from app.services.datasource_engine import get_engine_pool
 
@@ -82,7 +81,7 @@ async def ping_datasource(ds: DataSource) -> PingResult:
         return PingResult(ok=False, error=f"健康检查超时 ({_PING_TIMEOUT}s)")
 
 
-async def check_all_datasources_health(db_session) -> dict:
+async def check_all_datasources_health(db_session, tenant_id: str | None = None) -> dict:
     """定时任务: 检查所有数据源健康状态。
 
     - 遍历所有数据源 (含 is_active=False 的, 给它们恢复机会)
@@ -90,6 +89,7 @@ async def check_all_datasources_health(db_session) -> dict:
     - ping 失败 → 累计连续失败; 达 max_failures → 标记 is_active=False
     - 返回汇总 dict (供手动触发端点展示)
 
+    M6: tenant_id 限定本租户数据源 (定时任务不传=全量, API 调用传=租户隔离)
     不抛异常 (定时任务容错), 失败只 WARNING。
     """
     from app.core.config import get_settings
@@ -97,27 +97,36 @@ async def check_all_datasources_health(db_session) -> dict:
     max_failures = settings.datasource_health_check_max_failures
 
     # 查所有数据源 (不限于 active, 让 error 的有恢复机会)
-    result = await db_session.execute(select(DataSource))
+    # M6: 加 tenant_id 过滤 (跨租户隔离, admin 只能查本租户数据源)
+    query = select(DataSource)
+    if tenant_id:
+        query = query.where(DataSource.tenant_id == tenant_id)
+    result = await db_session.execute(query)
     datasources = result.scalars().all()
 
     summary = {"checked": 0, "healthy": 0, "unhealthy": 0, "recovered": 0, "newly_error": 0}
 
     # 并发 ping (IO 密集型, gather 比串行快 N 倍; 中-6 修复)
     # 带并发上限避免数据源过多时压力过大
-    import asyncio as _aio
-    semaphore = _aio.Semaphore(10)  # 最多 10 个并发 ping
+    semaphore = asyncio.Semaphore(10)  # 最多 10 个并发 ping
 
     async def _ping_with_limit(ds):
         async with semaphore:
             return ds, await ping_datasource(ds)
 
-    ping_results = await _aio.gather(
+    ping_results = await asyncio.gather(
         *(_ping_with_limit(ds) for ds in datasources),
-        return_exceptions=False,
+        return_exceptions=True,
     )
 
     # 串行更新状态 (避免 is_active/计数竞态)
-    for ds, ping in ping_results:
+    for result in ping_results:
+        if isinstance(result, Exception):
+            logger.warning("ping 任务异常: %s", result)
+            summary["checked"] += 1
+            summary["unhealthy"] += 1
+            continue
+        ds, ping = result
         summary["checked"] += 1
         if ping.ok:
             summary["healthy"] += 1

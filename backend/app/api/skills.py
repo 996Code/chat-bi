@@ -28,6 +28,7 @@ class SkillOut(BaseModel):
     description: str
     version: str
     content: str
+    references: dict[str, str] = {}  # T060: reference 子文件 (key=文件名, value=内容)
 
 
 class SkillSave(BaseModel):
@@ -45,7 +46,8 @@ async def list_skills(
     from app.services.skills_loader import get_skills_loader
     loader = get_skills_loader()
     return [
-        SkillOut(name=s.name, description=s.description, version=s.version, content=s.content)
+        SkillOut(name=s.name, description=s.description, version=s.version,
+                 content=s.content, references=s.references)
         for s in loader.load_all()
     ]
 
@@ -60,7 +62,8 @@ async def get_skill(
     loader = get_skills_loader()
     for s in loader.load_all():
         if s.name == name:
-            return SkillOut(name=s.name, description=s.description, version=s.version, content=s.content)
+            return SkillOut(name=s.name, description=s.description, version=s.version,
+                            content=s.content, references=s.references)
     raise HTTPException(status_code=404, detail=f"Skill '{name}' 不存在")
 
 
@@ -105,7 +108,8 @@ async def save_skill(
         await db.commit()
     except Exception as e:
         logger.warning("Skill 审计日志失败 (不阻塞): %s", e)
-    return SkillOut(name=body.name, description=body.description, version=body.version, content=body.content)
+    return SkillOut(name=body.name, description=body.description, version=body.version,
+                    content=body.content, references={})
 
 
 @router.delete("/{name}")
@@ -168,7 +172,7 @@ async def preview_skill(
         raise HTTPException(status_code=422, detail="规则内容不能为空")
 
     from app.core.config import get_settings
-    from app.core.llm_client import get_llm_client
+    from app.core.llm_client import extract_content, get_llm_client
     settings = get_settings()
     llm = get_llm_client()
 
@@ -189,10 +193,10 @@ async def preview_skill(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": body.test_question},
             ],
-            max_tokens=500,
+            max_tokens=settings.llm_max_tokens,
             temperature=0.0,
         )
-        sql = (resp.choices[0].message.content or "").strip()
+        sql = extract_content(resp).strip()
         # 简单校验: 至少像 SQL
         if sql and not sql.upper().startswith("SELECT"):
             return SkillPreviewResponse(generated_sql=sql, error="生成内容非 SELECT 语句 (规则可能需要调整)")

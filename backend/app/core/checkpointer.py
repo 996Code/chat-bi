@@ -80,6 +80,7 @@ class Checkpointer:
         """Load all turns for a conversation.
 
         Returns a list of turn dicts, each containing {turn, timestamp, state, messages}.
+        OBS-004: 恢复后校验 turn 编号连续性 + 消息计数一致性, 不一致则 log ERROR。
         """
         path = self._checkpoint_path(tenant_id, conversation_id)
 
@@ -92,7 +93,34 @@ class Checkpointer:
             for line in f:
                 line = line.strip()
                 if line:
-                    turns.append(json.loads(line))
+                    try:
+                        turns.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        logger.error(
+                            "OBS-004: Checkpointer JSON 解析失败 tenant=%s conv=%s line=%d",
+                            tenant_id, conversation_id, len(turns) + 1,
+                        )
+
+        # OBS-004: 一致性校验 — turn 编号应该连续递增
+        if turns:
+            expected_turn = 1
+            for i, t in enumerate(turns):
+                actual_turn = t.get("turn", 0)
+                if actual_turn != expected_turn:
+                    logger.error(
+                        "OBS-004: Checkpointer turn 编号不一致 tenant=%s conv=%s "
+                        "expected_turn=%d actual_turn=%d index=%d",
+                        tenant_id, conversation_id, expected_turn, actual_turn, i,
+                    )
+                expected_turn = actual_turn + 1
+
+            # 校验消息计数: 总消息数应 > 0 (每轮至少有 user 或 assistant 消息)
+            total_messages = sum(len(t.get("messages", [])) for t in turns)
+            if total_messages == 0:
+                logger.error(
+                    "OBS-004: Checkpointer 恢复后消息为空 tenant=%s conv=%s turns=%d",
+                    tenant_id, conversation_id, len(turns),
+                )
 
         logger.debug(
             "Checkpoint loaded: tenant=%s conv=%s turns=%d",

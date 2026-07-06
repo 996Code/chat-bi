@@ -137,6 +137,9 @@ def build_schema_context(
         col_descs = []
         for col in model.columns:
             desc = col.name
+            # 附上中文列名 (供 LLM 生成 AS 中文别名)
+            if col.display_name and col.display_name != col.name:
+                desc += f"(中文: {col.display_name})"
             if col.data_type:
                 desc += f"[{col.data_type}]"
             col_descs.append(desc)

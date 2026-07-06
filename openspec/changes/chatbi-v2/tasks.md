@@ -69,10 +69,21 @@
 
 - [x] T040: Skills 加载 (SKILL.md 解析 + System Prompt 注入 + 热更新) — ✅ Skill.from_file (frontmatter+正文) + SkillsLoader (缓存+invalidate热更新) + format_for_prompt; 接入sql_agent; 8 测试 + 示例SKILL.md
 - [x] T041: Skills 编辑器 UI (在线编辑 + 预览效果 + 版本管理) — ✅ SkillsView (CRUD + 预览标签: 用规则跑一次 SQL 生成验证, POST /skills/preview)
-- [x] T042: 反馈收集 (点赞/点踩 + 改 SQL + 纠正图表 + 写评论) — ✅ POST/feedback (CRUD + 审核状态) + 审核 API
-- [x] T043: 负面信号检测 (关键词匹配 + 连续点踩 → 触发反馈表单) — ✅ detect_negative_signal + check_consecutive_dislikes; 3 测试
-- [x] T044: 反馈审核队列 (admin 审核 → 回流知识库 or 拒绝) — ✅ GET/feedback/pending + POST/{id}/review (三态 pending/approved/rejected)
+- [~] T042: 反馈收集 (点赞/点踩 + 改 SQL + 纠正图表 + 写评论) — ⚠️ 已实现后删除。**点赞/点踩/纠正图表/写评论不再纳入**；**改 SQL + 审核考虑恢复**
+- [~] T043: 负面信号检测 (关键词匹配 + 连续点踩 → 触发反馈表单) — ⚠️ 已实现后删除。**不再纳入**（依赖点赞/点踩，随整体裁剪）
+- [~] T044: 反馈审核队列 (admin 审核 → 回流知识库 or 拒绝) — ⚠️ 已实现后删除。**考虑恢复**（核心闭环：用户改 SQL → admin 审核 → 回流知识库）
 - [x] T045: Agent 记忆管理 UI (查看/编辑/删除记忆 对标 Claude Code MemoryFileSelector) — ✅ MemoryView (CRUD 完整)
+
+### 功能裁剪说明
+
+| 功能 | 规格编号 | 决策 | 理由 |
+|---|---|---|---|
+| 点赞/点踩 | FBK-001 (部分) | **不恢复** | 轻量反馈价值有限，改 SQL 审核已覆盖核心需求 |
+| 语义缓存 | RAG-003 | **不恢复** | 相似问题复用 SQL 场景有限，few-shot 已覆盖 |
+| 异步查询 | PERF-03 | **不恢复** | 当前查询量级不需要，同步模式足够 |
+| 备份恢复 | OPS-02 | **不恢复** | 运维可用 pg_dump 手动完成，不占产品功能 |
+| 负面信号自动触发 | FBK-003 | **不恢复** | 依赖点赞/点踩，随整体裁剪 |
+| 改 SQL + 审核 | FBK-001/002 | **考虑恢复** | 核心闭环：用户改 SQL → admin 审核 → 回流知识库 |
 
 ## Phase 7: 前端与交付（1 周）
 
@@ -85,6 +96,54 @@
 - [x] T052: 查询历史 + 审计日志页面 — ✅ HistoryView (审计日志 + 对话历史 tab 切换, 已在上轮完成)
 - [x] T053: 一键部署脚本 + 操作手册 — ✅ doc/操作手册.md (快速开始+生产部署+常用操作+架构) + seed_meta.py (元数据初始化幂等脚本)
 - [x] T054: 端到端测试 (50 个 QA 对准确率测试 + 跨租户数据泄露测试) — ✅ e2e_qa_test.py (8题准确率88%>70%, Skills验证通过, 跨租户隔离通过)
+
+## Phase 8: 补齐闭环 + 安全修复
+
+> 补齐规划中未实现的关键功能 + 安全修复。
+
+- [~] T055: SQL 修订模型 + API — **不纳入**，改 SQL 审核闭环整条砍掉（T055-T059）
+- [~] T056: 改 SQL 重执行端点 — **不纳入**
+- [~] T057: 审核回流知识图谱 — **不纳入**
+- [~] T058: ChatView SQL 编辑 + 提交审核 — **不纳入**
+- [~] T059: 审核管理页面 — **不纳入**
+- [x] T060: Skills 分层子目录 — ✅ SkillsLoader 支持 reference/*.md + format_for_prompt(db_type=) 按数据源类型注入方言规则；postgresql.md/mysql.md 参考文件就绪；测试覆盖 test_skills_loader.py
+- [x] T061: Slash command 扩展 — ✅ /ds <name> 切换数据源 + /sql 查看复制当前 SQL + /chart <type> 切换图表偏好 + /explain 解释当前查询；ChatView 参数解析实现
+- [x] T062: Checkpointer 恢复一致性校验 — ✅ OBS-004 turn 编号连续性校验 + JSON 解析失败容错 + 消息为空检测；测试覆盖 test_checkpointer.py
+- [x] T063: 清理死代码 — ✅ metric_expander.py 评估后接入 or 删除 + MemoryView 中 feedback 类型选项移除
+- [x] T064: 🔴 Dashboard SQL 注入修复 — ✅ 已完成
+- [x] T065: 🔴 init-chatbi.sql 同步 — ✅ 已完成（改为代码层面自动保证：auto_create_tables() 启动时建表+补列，init-chatbi.sql 退化为种子数据脚本）
+- [x] T066: CHANGE_ME 启动校验补全 — ✅ critical 级 (DATABASE_URL/SECRET_KEY/FERNET_KEY/LLM_URL/LLM_MODEL/LLM_API_KEY → 拒绝启动) + warning 级 (REDIS_URL/MILVUS_URL/MILVUS_TOKEN/CORS_ORIGINS/EMBEDDING_* → 降级警告)；测试覆盖 test_core.py
+- [x] T067: 补关键模块测试 — ✅ test_checkpointer.py (OBS-004 校验 9 项) + test_dashboard.py (CRUD 16 项) + test_rate_limit.py (单例 3 项) + test_skills_loader.py 补充 db_type/reference 测试 (4 项)；conftest 补 _add_missing_columns + LLM 环境变量；134 tests passed
+- [x] T068: .env.example 补全 — ✅ 从 49 行补全到 120+ 行，覆盖全部 Settings 字段 (Security/SQL/Agent/Compression/RAG/RateLimit/Memory/Audit/Scheduler/PromptDump/StartupProbe)；Redis URL 密码格式注释
+
+### 功能裁剪补充
+
+| 功能 | 决策 | 理由 |
+|---|---|---|
+| 改 SQL 审核闭环（T055-T059） | **不纳入** | 整条闭环砍掉，当前阶段不需要 |
+
+### 依赖关系
+
+```
+T060 (Skills 分层) — 独立
+T061 (Slash command) — 独立
+T062 (Checkpointer 校验) — 独立
+T066 (CHANGE_ME 校验) — 独立
+T067 (补测试) — 独立，可与其它任务并行
+T068 (.env.example) — 独立
+```
+
+### 建议实施顺序
+
+**Wave 0（已完成）**：T064 + T065 — 安全漏洞 + 数据库不同步 ✅
+**Wave 1（增强）**：T060 + T061 + T062
+**Wave 2（质量）**：T066 + T067 + T068
+
+### 冒烟测试
+
+- Phase 8 Wave 0 ✅: Dashboard widget SQL 走 validate_sql 校验 → 恶意 SQL 被拒绝；auto_create_tables() 启动时建表+补列
+- Phase 8 Wave 1 ✅: Skills reference/*.md 按数据源类型自动加载；/ds /chart /sql /explain 斜杠命令可用；Checkpointer 恢复后一致性校验生效
+- Phase 8 Wave 2 ✅: CHANGE_ME 占位符 critical+warning 两级校验；checkpointer/dashboard/rate_limit/skills 测试覆盖 (134 passed)；.env.example 完整 (120+ 行)
 
 ## 依赖关系
 
@@ -112,3 +171,46 @@ Phase 7 贯穿全程（前端可以随各 Phase 逐步交付）
 - Phase 5: 追问"上个月呢" → 复用上下文(不重新检索 schema) → 压缩触发 → 压缩后仍正确 → Relevant Recall 召回记忆
 - Phase 6: 修改 SKILL.md → 下次查询使用新规则 → 点踩 → 触发反馈表单
 - Phase 7: 50 个 QA 对准确率 ≥ 70% → Pipeline Trace 可用 → 可观测面板可用
+
+## Phase 9: 代码走查修复 ✅ 已完成
+
+> Phase 8 交付后全面代码走查，发现 H1-H5/M1-M7/L1-L9 问题，确认修复 H5+M2-M7（H4 反馈闭环不纳入）。
+
+- [x] M2: SSE event ID 支持 — ✅ chat_stream.py `_sse()` 加 `id:` 字段 + `emit()` helper auto-increment seq，支持 Last-Event-ID 重连
+- [x] M3: ChatView SSE 超时 — ✅ AbortController + 5min setTimeout + onBeforeUnmount abort+clearTimeout
+- [x] M4: ECharts 实例生命周期 — ✅ isDisposed() 检测复用 + onBeforeUnmount dispose + window resize 监听
+- [x] M5: Redis 降级监控 — ✅ redis_client.py `critical: bool` 参数 + `check_redis_health()` 连续3次失败→ERROR + scheduler 60s 定时检查
+- [x] M6: 跨租户数据隔离 — ✅ datasource_health/metadata_refresher 加 `tenant_id` 过滤 + data_sources.py 传 `tenant_id` + test_tenant_isolation.py 5 项测试
+- [x] M7: 审计日志独立提交 — ✅ 3 级降级: 独立 session → 调用方 session → logger.error（业务回滚不影响审计）
+- [x] H5: Token 分段统计 (OBS-002) — ✅ token_tracker.py NodeUsage dataclass + per-node tracking + 8 AI 模块调用点更新 (intent/thinking/generate_sql/heal_sql/generate_chart/generate_reply/question_generator/compress) + ChatView 前端 nodes 展示 + CSS
+
+### 实施顺序
+
+**Wave 0（前端）**：M3 SSE 超时 + M4 ECharts 生命周期 ✅
+**Wave 1（后端）**：M2 SSE event ID + M5 Redis 降级 + M7 审计独立提交 ✅
+**Wave 2（跨租户）**：M6 跨租户隔离 + 自动化测试 ✅
+**Wave 3（Token）**：H5 Token 分段统计 ✅
+
+### 冒烟测试
+
+- Phase 9 Wave 0 ✅: ChatView SSE 5min 超时自动断开 + AbortController abort + ECharts dispose + resize
+- Phase 9 Wave 1 ✅: SSE 流含 `id:` 字段 + Redis 不可用时 critical=True 打 ERROR + 审计日志独立 session 写入
+- Phase 9 Wave 2 ✅: 跨租户数据隔离 5 项测试通过 (Dashboard/DataSource/SemanticModel/AuditLog)
+- Phase 9 Wave 3 ✅: token_tracker per-node 统计 + 8 AI 节点 track_usage(node=) + 前端 nodes 展示
+- 全量测试: 511 passed + vue-tsc 0 errors
+
+## Phase 10: 技术债清理 ✅ 已完成
+
+> 清理 Phase 8 审计遗留的全部技术债 (B3+C5+C6+C8)。
+
+- [x] B3: saved_queries CSV 导出白名单列校验 — ✅ export_saved_query_csv 加载语义层 + extract_allowed_columns + validate_sql(allowed_columns=) + fail-closed 无语义层拒绝; test_saved_query_export.py 5 项测试
+- [x] C5: 移除未使用的 Pinia — ✅ npm uninstall pinia + main.ts 移除 createPinia + 删除空 stores 目录
+- [x] C6: 移除未使用的 savedQuery API 客户端 — ✅ api/index.ts 移除 SavedQuery 接口和 savedQuery 对象 (约 20 行死代码)
+- [x] C8: docker-compose.app.yml — ✅ 文件已存在 (非缺失, 更新文档标记)
+
+### 冒烟测试
+
+- Phase 10 B3 ✅: 无语义层 → 422 fail-closed; 非白名单列 → 422; 白名单列 → 校验通过; 数据源不存在 → 404; 查询不存在 → 404
+- Phase 10 C5 ✅: pinia 不在 package.json + main.ts 无 pinia 引用
+- Phase 10 C6 ✅: api/index.ts 无 SavedQuery/savedQuery
+- 全量测试: 516 passed + vue-tsc 0 errors

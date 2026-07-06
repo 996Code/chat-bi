@@ -24,6 +24,7 @@
               <b>{{ skill.description || skill.name }}</b>
               <el-tag size="small" style="margin-left: 8px">{{ skill.name }}</el-tag>
               <el-tag size="small" type="info" style="margin-left: 4px">v{{ skill.version }}</el-tag>
+              <el-tag v-if="skill.references && Object.keys(skill.references).length" size="small" type="success" style="margin-left: 4px">{{ Object.keys(skill.references).length }} 个参考</el-tag>
             </div>
             <div>
               <el-button size="small" :icon="Edit" @click="openEditor(skill)">编辑</el-button>
@@ -32,6 +33,15 @@
           </div>
         </template>
         <pre class="skill-content">{{ skill.content }}</pre>
+        <!-- T060: reference 子文件展示 -->
+        <div v-if="skill.references && Object.keys(skill.references).length" class="references-section">
+          <div class="references-label">参考规则 (reference)</div>
+          <el-collapse>
+            <el-collapse-item v-for="(content, key) in skill.references" :key="key" :title="key + '.md'">
+              <pre class="ref-content">{{ content }}</pre>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
       </el-card>
     </div>
 
@@ -202,6 +212,13 @@ onMounted(fetchData)
 .skill-content {
   margin: 0; white-space: pre-wrap; font-size: 0.85rem;
   line-height: 1.6; color: #606266; max-height: 300px; overflow-y: auto;
+}
+/* T060: reference 子文件样式 */
+.references-section { margin-top: 12px; border-top: 1px dashed #dcdfe6; padding-top: 12px; }
+.references-label { font-size: 0.8rem; color: #909399; margin-bottom: 6px; }
+.ref-content {
+  margin: 0; white-space: pre-wrap; font-size: 0.82rem;
+  line-height: 1.5; color: #606266; max-height: 200px; overflow-y: auto;
 }
 .empty-hint { text-align: center; padding: 60px 0; }
 /* T041: 预览结果 */

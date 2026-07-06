@@ -38,8 +38,6 @@ class Settings(BaseSettings):
     # ── Redis ────────────────────────────────────────────────
     # 占位符: url/凭证走 .env (生产有密码, 不能写死 localhost 无密码)
     redis_url: str = "CHANGE_ME_REDIS_URL"
-    redis_cache_ttl: int = 300
-    redis_semantic_cache_threshold: float = 0.95
 
     # ── Milvus ───────────────────────────────────────────────
     # 占位符: url/token 走 .env (root:Milvus 是默认凭证, 不能写死)
@@ -47,15 +45,22 @@ class Settings(BaseSettings):
     milvus_token: str = "CHANGE_ME_MILVUS_TOKEN"
     # 向量存储后端: milvus(生产) / mock(测试/降级, 纯内存)
     vector_store_backend: str = "milvus"
+    # collection 名前缀: 测试/开发/多实例隔离 (对标 PG 库隔离)。
+    # 加在所有 collection 名前 → 测试用 "test_" 前缀, 和开发数据物理隔离, 互不可见。
+    # 空 = 无前缀 (生产默认)。测试在 conftest 设 VECTOR_STORE_COLLECTION_PREFIX=test_。
+    vector_store_collection_prefix: str = ""
 
     # ── LLM ──────────────────────────────────────────────────
     # 占位符: v2 用 OpenAI 兼容协议 (讯飞 MAAS 等), url/model/key 走 .env
     llm_url: str = "CHANGE_ME_LLM_URL"
     llm_model: str = "CHANGE_ME_LLM_MODEL"
     llm_api_key: str = "CHANGE_ME_LLM_API_KEY"
-    llm_max_tokens: int = 8192
+    # 推理模型(如 Qwen3.6)思考阶段消耗大量 token (实测 SQL/图表 700~1500 reasoning_tokens),
+    # 输出预算必须覆盖"思考 + 正式输出", 否则 finish_reason=length 截断 → content 为空。
+    # 256K 是 Qwen3.6 上下文上限内的安全输出预算, 换模型走环境变量调整。
+    llm_max_tokens: int = 262144  # 256 * 1024
     llm_temperature: float = 0.0
-    llm_timeout: int = 60  # seconds
+    llm_timeout: int = 600  # seconds (批量推断 100+ 表需较长时间)
 
     # ── Embedding ────────────────────────────────────────────
     # 决策: 本地 BGE-large-zh (离线、确定、不依赖讯飞非标准协议)
@@ -99,10 +104,6 @@ class Settings(BaseSettings):
     compression_keep_recent_turns: int = 3
     compression_max_consecutive_failures: int = 3
 
-    # ── Semantic Cache ───────────────────────────────────────
-    semantic_cache_similarity_threshold: float = 0.95
-    semantic_cache_max_age_hours: int = 24
-
     # ── RAG ──────────────────────────────────────────────────
     rag_vector_top_k: int = 20
     rag_similarity_threshold: float = 0.35  # BGE 中文分数分布偏低, 0.5 漏召回; 可调
@@ -131,13 +132,19 @@ class Settings(BaseSettings):
     metadata_auto_refresh_interval_hours: int = 6  # 元数据自动刷新间隔 (6 小时)
     async_task_retention_hours: int = 24  # 已完成异步任务保留时长 (定时清理)
 
-    # ── Backup (备份恢复, 仅元数据库) ─────────────────────────
-    backup_enabled: bool = True  # 总开关; pg_dump 不存在时 fail-closed 提示
-    backup_timeout_seconds: int = 300  # pg_dump/psql 执行超时
-
     # ── Prompt Dump (debug/observability) ────────────────────
     prompt_dump_enabled: bool = False
     prompt_dump_dir: str = "logs/prompts"
+
+    # ── Startup Probe (fail-fast) ─────────────────────────────
+    # 对标 SEC-004 + SEC-005 + v1 根本模式 (安全 Fail-Closed):
+    #   - 必需服务 (startup_required_services) 探测失败 → 拒绝启动 (RuntimeError)
+    #   - 可选服务 (redis/milvus) 探测失败 → WARNING 降级, 不阻塞启动 (对标 SEC-005)
+    # PG 是元数据真相源 (auth/datasource/semantic/audit), 挂了系统无意义 → 默认必需。
+    # 可通过环境变量增减 (如本地开发只跑 PG: STARTUP_REQUIRED_SERVICES=postgres)。
+    startup_required_services: list[str] = ["postgres"]
+    # 启动探测连接超时 (秒); 每个 service 独立探测, 互不影响
+    startup_probe_timeout: int = 5
 
     model_config = {
         "env_file": os.getenv("ENV_FILE", str(Path(__file__).resolve().parent.parent.parent / ".env")),
@@ -155,18 +162,48 @@ def get_settings() -> Settings:
 
 def validate_settings_on_startup() -> None:
     """
-    Check for placeholder secrets on startup — refuse to start if found.
+    Check for placeholder secrets on startup — refuse to start if critical ones found.
 
     对标 Claude Code Trust 建立时序: 启动时检测 CHANGE_ME 占位符 → 拒绝启动
     v1 经验教训 #44: Fernet 密钥硬编码在 .env.example
+
+    分两级:
+      - critical: 缺失 → RuntimeError 拒绝启动 (安全 Fail-Closed)
+      - warning:  缺失 → WARNING 日志, 允许降级启动 (对标 SEC-005)
     """
+    import logging
+
     settings = get_settings()
     placeholder_prefix = "CHANGE_ME"
 
+    # ── 必需字段: 缺失拒绝启动 ────────────────────────────────
     critical_fields = [
+        ("DATABASE_URL", settings.database_url),
         ("SECRET_KEY", settings.secret_key),
         ("FERNET_KEY", settings.fernet_key),
+        ("LLM_URL", settings.llm_url),
+        ("LLM_MODEL", settings.llm_model),
+        ("LLM_API_KEY", settings.llm_api_key),
     ]
+
+    # ── 可选字段: 缺失降级警告 ────────────────────────────────
+    warning_fields: list[tuple[str, str]] = [
+        ("REDIS_URL", settings.redis_url),
+        ("MILVUS_URL", settings.milvus_url),
+        ("MILVUS_TOKEN", settings.milvus_token),
+    ]
+    # CORS_ORIGINS 是 list[str], 默认 ["CHANGE_ME_CORS_ORIGINS"], 需检查每个元素
+    for item in settings.cors_origins:
+        if item.startswith(placeholder_prefix):
+            warning_fields.append(("CORS_ORIGINS", item))
+            break  # 一个占位符就够了
+    # embedding API 模式才需要这 3 个, local 模式可忽略
+    if settings.embedding_backend == "api":
+        warning_fields += [
+            ("EMBEDDING_URL", settings.embedding_url),
+            ("EMBEDDING_MODEL", settings.embedding_model),
+            ("EMBEDDING_API_KEY", settings.embedding_api_key),
+        ]
 
     errors = []
     for name, value in critical_fields:
@@ -188,3 +225,13 @@ def validate_settings_on_startup() -> None:
             + "=" * 60 + "\n"
         )
         raise RuntimeError(msg)
+
+    # ── 可选字段: 只打 WARNING ────────────────────────────────
+    logger = logging.getLogger("app.config")
+    for name, value in warning_fields:
+        if value.startswith(placeholder_prefix):
+            logger.warning(
+                "⚠️  %s is set to placeholder '%s' — feature will be degraded. "
+                "Update .env for full functionality.",
+                name, value,
+            )

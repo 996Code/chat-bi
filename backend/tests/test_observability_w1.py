@@ -141,9 +141,14 @@ class TestSavedQueriesAPI:
     """T051: 已保存查询列表/详情 + 多租户隔离。"""
 
     async def _create_saved_query(self, db_session, tenant_id="tenant_A", user_id="admin_1"):
+        # PG 强制 conversation_id FK → 先建真实 Conversation 行, 用其 id (不再写死 "conv1")
+        from app.db.models import Conversation
+        conv = Conversation(tenant_id=tenant_id, user_id=user_id, title="测试会话")
+        db_session.add(conv)
+        await db_session.flush()
         sq = SavedQuery(
             tenant_id=tenant_id, user_id=user_id,
-            conversation_id="conv1",
+            conversation_id=conv.id,
             question="本月销售额", sql_text="SELECT SUM(amount) FROM orders",
             result_summary='{"row_count": 1}',
             chart_config={"series": [{"type": "bar"}]},

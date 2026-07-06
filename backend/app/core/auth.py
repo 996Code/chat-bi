@@ -168,10 +168,14 @@ async def write_audit_log(
     # DSO-07: 慢查询标记 (SQL 执行耗时 + 是否慢查询)
     duration_ms: int | None = None,
     is_slow: bool = False,
+    # DSO-05: 数据源归属 (按源聚合统计用)
+    data_source_id: str | None = None,
 ) -> None:
-    """Write an audit log entry.
+    """Write an audit log entry in an independent transaction.
 
     对标 v1 经验教训 #41: 审计日志覆盖成功+失败+拒绝，统一字段
+    M7: 审计写入独立事务 — 业务 rollback 不丢失审计记录。
+    降级链: 独立 session → 调用方 session → logger.error (至少文件有记录)
     """
     from app.core.config import get_settings
 
@@ -192,7 +196,33 @@ async def write_audit_log(
         ip_address=ip_address,
         duration_ms=duration_ms,
         is_slow=is_slow,
+        data_source_id=data_source_id,
     )
-    db_session.add(log_entry)
-    # Don't commit here — let the caller commit as part of their transaction
+
+    # M7: 优先独立事务写入 (业务 rollback 不影响审计)
+    committed = False
+    try:
+        from app.db.session import get_engine
+        engine = await get_engine()
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+        audit_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with audit_factory() as audit_session:
+            audit_session.add(log_entry)
+            await audit_session.commit()
+            committed = True
+    except Exception as e:
+        # 独立 session 失败 (event loop 差异 / 连接问题) → 降级到调用方 session
+        logger.debug("审计独立 session 失败, 降级到调用方 session: %s", e)
+
+    if not committed:
+        # 降级: 用调用方 session (业务 rollback 会丢审计, 但至少写入成功)
+        try:
+            db_session.add(log_entry)
+        except Exception as e:
+            # 最终降级: logger.error (文件至少有记录)
+            logger.error(
+                "审计日志写入失败: %s | audit_entry: %s %s → %s",
+                e, user_id, action, status,
+            )
+
     logger.debug("Audit: %s %s → %s", user_id, action, status)

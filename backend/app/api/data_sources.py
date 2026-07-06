@@ -14,6 +14,10 @@ T014: 数据源管理 API (DataSource CRUD + 扫描触发)
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -25,6 +29,8 @@ from app.db.models import DataSource, SemanticModel
 from app.db.session import get_db
 from app.services.datasource_engine import datasource_to_url, get_engine_pool
 from app.services.semantic_scanner import scan_data_source
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/data-sources", tags=["data-sources"])
 
@@ -51,6 +57,22 @@ class DataSourceOut(BaseModel):
     database: str
     username: str
     is_active: bool
+    # 扫描状态 (前端轮询展示进度条 + 步骤, 对标 V1 + 经验教训 #25)
+    scan_status: str = "idle"
+    scan_progress: int = 0
+    scan_stage: str | None = None
+    scan_error: str | None = None
+
+
+def _to_out(ds: DataSource) -> DataSourceOut:
+    """统一构造 DataSourceOut (避免各端点重复 + 漏字段)。"""
+    return DataSourceOut(
+        id=ds.id, tenant_id=ds.tenant_id, name=ds.name,
+        db_type=ds.db_type, host=ds.host, port=ds.port,
+        database=ds.database, username=ds.username, is_active=ds.is_active,
+        scan_status=ds.scan_status, scan_progress=ds.scan_progress,
+        scan_stage=ds.scan_stage, scan_error=ds.scan_error,
+    )
 
 
 # ── 端点 ──────────────────────────────────────────────────────
@@ -81,11 +103,7 @@ async def create_data_source(
     )
     await db.commit()
     await db.refresh(ds)
-    return DataSourceOut(
-        id=ds.id, tenant_id=ds.tenant_id, name=ds.name,
-        db_type=ds.db_type, host=ds.host, port=ds.port,
-        database=ds.database, username=ds.username, is_active=ds.is_active,
-    )
+    return _to_out(ds)
 
 
 @router.get("", response_model=list[DataSourceOut])
@@ -99,14 +117,7 @@ async def list_data_sources(
         DataSource.is_active == True,  # noqa: E712
     )
     result = await db.execute(stmt)
-    return [
-        DataSourceOut(
-            id=ds.id, tenant_id=ds.tenant_id, name=ds.name,
-            db_type=ds.db_type, host=ds.host, port=ds.port,
-            database=ds.database, username=ds.username, is_active=ds.is_active,
-        )
-        for ds in result.scalars()
-    ]
+    return [_to_out(ds) for ds in result.scalars()]
 
 
 @router.get("/{ds_id}", response_model=DataSourceOut)
@@ -122,11 +133,7 @@ async def get_data_source(
     ds = (await db.execute(stmt)).scalar_one_or_none()
     if ds is None:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    return DataSourceOut(
-        id=ds.id, tenant_id=ds.tenant_id, name=ds.name,
-        db_type=ds.db_type, host=ds.host, port=ds.port,
-        database=ds.database, username=ds.username, is_active=ds.is_active,
-    )
+    return _to_out(ds)
 
 
 class DataSourceToggle(BaseModel):
@@ -165,11 +172,7 @@ async def toggle_data_source(
     )
     await db.commit()
     await db.refresh(ds)
-    return DataSourceOut(
-        id=ds.id, tenant_id=ds.tenant_id, name=ds.name,
-        db_type=ds.db_type, host=ds.host, port=ds.port,
-        database=ds.database, username=ds.username, is_active=ds.is_active,
-    )
+    return _to_out(ds)
 
 
 # ── DSO-02: 数据源健康检查 ────────────────────────────────────
@@ -211,10 +214,11 @@ async def check_all_health(
 ):
     """手动触发全量数据源健康检查 (admin, DSO-02)。
 
+    M6: 限定本租户数据源 (跨租户隔离)。
     返回汇总 {checked, healthy, unhealthy, recovered, newly_error}。
     """
     from app.services.datasource_health import check_all_datasources_health
-    summary = await check_all_datasources_health(db)
+    summary = await check_all_datasources_health(db, tenant_id=user.tenant_id)
     await db.commit()
     return summary
 
@@ -226,23 +230,29 @@ async def refresh_all_metadata(
 ):
     """手动触发全量元数据刷新 (admin, DSO-04)。
 
+    M6: 限定本租户数据源 (跨租户隔离)。
     检测所有数据源表结构变更, 有变更自动写新版本。
     """
     from app.services.metadata_refresher import detect_and_refresh_metadata
-    summary = await detect_and_refresh_metadata(db)
+    summary = await detect_and_refresh_metadata(db, tenant_id=user.tenant_id)
     await db.commit()
     return summary
 
 
-@router.post("/{ds_id}/scan", status_code=status.HTTP_200_OK)
+@router.post("/{ds_id}/scan", status_code=status.HTTP_202_ACCEPTED)
 async def scan_data_source_endpoint(
     ds_id: str,
     user: AuthUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """触发扫描: 连接数据源 → inspect 表结构 → 生成语义层 v1。
+    """触发扫描 (异步任务模式, 对标 V1 + 经验教训 #25)。
 
-    对标 T013 扫描 + T014 版本管理: 首次扫描创建 v1, 重新扫描创建新版本。
+    扫描耗时长 (连库 + LLM 推断 + 建索引), 不能阻塞 HTTP:
+      - 立即返回 202 + scan_status=scanning
+      - 后台 asyncio.create_task 跑全流程, 分阶段更新 scan_progress/scan_stage
+      - 前端轮询 GET /data-sources/{id} 拿进度
+
+    防重复: scan_status=scanning 时拒绝 (409), 避免并发扫描污染。
     """
     stmt = select(DataSource).where(
         DataSource.id == ds_id,
@@ -252,136 +262,210 @@ async def scan_data_source_endpoint(
     if ds is None:
         raise HTTPException(status_code=404, detail="数据源不存在")
 
-    # 连接业务库扫描 (用动态引擎池)
-    pool = get_engine_pool()
-    try:
-        url = datasource_to_url(ds)
-        inspector = pool.get_inspector(ds_id, url)
-        # 同步扫描拿到结构 + 注释 (infer_llm 不在此传, 因为它是同步函数,
-        # 而 LLM 调用是 async。LLM 推断在扫描后单独跑, 再 patch 回结果)
-        content = scan_data_source(inspector)
-    except Exception as e:
-        await write_audit_log(
-            db, tenant_id=user.tenant_id, user_id=user.user_id,
-            resource_type="data_source", action="scan", status="fail",
-            resource_id=ds_id, error_message=str(e)[:500],
-        )
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"扫描失败: {type(e).__name__}",
-        )
+    # 防重复提交 (对标经验教训 #25: 同一资源不允许重复提交)
+    if ds.scan_status == "scanning":
+        raise HTTPException(status_code=409, detail="该数据源正在扫描中, 请等待完成")
 
-    # LLM 中文推断: 给无注释的表/列补 display_name (对标 v1 #15 元数据质量)
-    # scanner 是同步的, LLM 是 async, 所以扫描后单独跑再 patch 回 content
-    try:
-        await _enrich_with_llm(content)
-    except Exception:
-        pass  # LLM 推断失败不阻塞扫描 (宁缺毋滥, 退化列名已可用)
-
-    # 知识图谱: LLM 推断实体关系 (对标 ARC-05: name_pattern + AI 推断)
-    # 补充外键扫描发现不了的隐式关系 (如 orders.user_id → users.id), 失败不阻塞
-    try:
-        from app.services.knowledge_graph import infer_knowledge_graph
-        from app.core.llm_client import get_llm_client
-        inferred_rels = await infer_knowledge_graph(content, use_llm=True, llm_client=get_llm_client())
-        if inferred_rels:
-            # 写回各 model 的 relationships (去重: infer_knowledge_graph 已保证不重复)
-            _apply_inferred_relationships(content, inferred_rels)
-            logger.info("知识图谱: LLM 推断 %d 条新关系", len(inferred_rels))
-    except Exception as e:
-        logger.debug("知识图谱 LLM 推断失败, 跳过: %s", e)
-
-    # 生成示例问题: 基于扫描到的表/列/关系, LLM 生成可问的 BI 问题
-    # 对标 V1: 扫描完告诉用户这个数据源可以问什么 (fail-closed, LLM 失败有规则降级)
-    try:
-        from app.ai.question_generator import generate_sample_questions
-        from app.core.llm_client import get_llm_client
-        content.sample_questions = await generate_sample_questions(
-            content.models, get_llm_client(),
-        )
-    except Exception:
-        pass  # 失败不阻塞扫描 (sample_questions 留空, 前端用硬编码兜底)
-
-    # 版本管理: 新版本号 = max(version)+1, 旧版本 is_current=False
-    max_version = (
-        await db.execute(
-            select(SemanticModel.version)
-            .where(
-                SemanticModel.tenant_filter(user.tenant_id),
-                SemanticModel.data_source_id == ds_id,
-            )
-            .order_by(SemanticModel.version.desc()).limit(1)
-        )
-    ).scalar_one_or_none() or 0
-    new_version = max_version + 1
-
-    # 旧版本置 is_current=False
-    if max_version > 0:
-        old_currents = (
-            await db.execute(
-                select(SemanticModel).where(
-                    SemanticModel.tenant_filter(user.tenant_id),
-                    SemanticModel.data_source_id == ds_id,
-                    SemanticModel.is_current == True,  # noqa: E712
-                )
-            )
-        ).scalars().all()
-        for old in old_currents:
-            old.is_current = False
-
-    sm = SemanticModel(
-        tenant_id=user.tenant_id,
-        data_source_id=ds_id,
-        version=new_version,
-        content=content.model_dump(),
-        is_current=True,
-    )
-    db.add(sm)
-    await db.flush()
-    await write_audit_log(
-        db, tenant_id=user.tenant_id, user_id=user.user_id,
-        resource_type="semantic_model", action="scan", status="success",
-        resource_id=sm.id, detail={"version": new_version, "tables": len(content.models)},
-    )
+    # 标记扫描中, 立即提交 (前端能立刻看到状态变化)
+    ds.scan_status = "scanning"
+    ds.scan_progress = 5
+    ds.scan_stage = "排队中"
+    ds.scan_error = None
     await db.commit()
 
-    # T020: 扫描后重建向量索引 (删旧+建新, 对标 RAG-001)
-    # 用 rebuild_index 而非 build_index: 语义层内容可能变了 (表增删/LLM推断变化),
-    # 旧索引要清掉, 否则已删表的索引残留 → 检索到不存在的表
-    # 失败降级不阻塞扫描 (索引只是优化检索, 缺失时检索返回空)
-    index_count = 0
-    try:
-        from app.services.indexer_update import rebuild_index
-        from app.services.embedder import get_embedder
-        from app.services.vector_store import get_vector_store
-        result = await rebuild_index(
-            content=content,
-            data_source_id=ds_id,
-            store=get_vector_store(),
-            embedder=get_embedder(),
-        )
-        index_count = result.indexed_count
-    except Exception as e:
-        import logging
-        logging.getLogger("app.api.data_sources").warning(
-            "扫描后建索引失败, RAG 检索将降级: %s", e
-        )
+    # 后台执行全流程 (独立 session, 不共享请求 session)
+    asyncio.create_task(_run_scan_background(ds_id, user.tenant_id, user.user_id))
 
-    return {
-        "semantic_model_id": sm.id,
-        "version": new_version,
-        "table_count": len(content.models),
-        "index_count": index_count,
-        "models": [m.name for m in content.models],
-    }
+    return _to_out(ds)
+
+
+# ── 扫描后台任务 ──────────────────────────────────────────────
+
+async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None:
+    """后台跑扫描全流程 (独立 db session, 分阶段更新 DataSource 扫描状态)。
+
+    阶段进度 (对标经验教训 #25 "进度按步骤百分比"):
+      connecting 10% → scanning 35% → inferring 65% → enriching 85% → saving 95% → done 100%
+    任一阶段失败 → scan_status=failed + scan_error, 不留半成品状态。
+    """
+    from app.db.session import get_async_session_factory
+    factory = get_async_session_factory()
+
+    async with factory() as session:
+        ds = None  # 初始化, 防止 except 块引用未定义变量
+        try:
+            ds = (
+                await session.execute(
+                    select(DataSource).where(DataSource.id == ds_id)
+                )
+            ).scalar_one_or_none()
+            if ds is None:
+                return  # 数据源被删了
+
+            # ── Stage 1: 连库扫描 (10% → 35%) ──────────────────
+            await _update_scan(session, ds, progress=10, stage="连接数据库...")
+            pool = get_engine_pool()
+            url = datasource_to_url(ds)
+            inspector = pool.get_inspector(ds_id, url)
+            await _update_scan(session, ds, progress=20, stage="扫描表结构...")
+            content = scan_data_source(inspector)
+            await _update_scan(session, ds, progress=35, stage=f"扫描到 {len(content.models)} 张表")
+
+            # ── Stage 2: LLM 中文推断 (35% → 65%) ──────────────
+            await _update_scan(session, ds, progress=45, stage="LLM 推断中文名...")
+            try:
+                import asyncio
+                await asyncio.wait_for(_enrich_with_llm(content), timeout=600.0)
+            except asyncio.TimeoutError:
+                logger.warning("LLM 中文推断整体超时 10min, 退化列名")
+            except Exception as e:
+                logger.warning("LLM 推断失败, 退化列名: %s", e)
+
+            # ── Stage 3: 知识图谱 + 示例问题 (65% → 85%) ────────
+            await _update_scan(session, ds, progress=70, stage="推断表关系...")
+            try:
+                import asyncio
+                from app.services.knowledge_graph import infer_knowledge_graph
+                from app.core.llm_client import get_llm_client
+                # 整体超时 10min (本地小模型生成速度慢, 多批次需足够时间)
+                inferred_rels = await asyncio.wait_for(
+                    infer_knowledge_graph(
+                        content, use_llm=True, llm_client=get_llm_client(),
+                    ),
+                    timeout=600.0,
+                )
+                if inferred_rels:
+                    _apply_inferred_relationships(content, inferred_rels)
+            except asyncio.TimeoutError:
+                logger.warning("知识图谱推断整体超时 5min, 跳过 (name_pattern 关系已可用)")
+            except Exception as e:
+                logger.debug("知识图谱推断失败, 跳过: %s", e)
+
+            await _update_scan(session, ds, progress=80, stage="生成示例问题...")
+            try:
+                from app.ai.question_generator import generate_sample_questions
+                from app.core.llm_client import get_llm_client
+                content.sample_questions = await generate_sample_questions(
+                    content.models, get_llm_client(),
+                )
+            except Exception:
+                pass  # 失败不阻塞 (sample_questions 留空)
+
+            # ── Stage 4: 版本保存 (85% → 95%) ──────────────────
+            await _update_scan(session, ds, progress=88, stage="保存语义层...")
+            max_version = (
+                await session.execute(
+                    select(SemanticModel.version)
+                    .where(
+                        SemanticModel.tenant_filter(tenant_id),
+                        SemanticModel.data_source_id == ds_id,
+                    )
+                    .order_by(SemanticModel.version.desc()).limit(1)
+                )
+            ).scalar_one_or_none() or 0
+            new_version = max_version + 1
+
+            if max_version > 0:
+                old_currents = (
+                    await session.execute(
+                        select(SemanticModel).where(
+                            SemanticModel.tenant_filter(tenant_id),
+                            SemanticModel.data_source_id == ds_id,
+                            SemanticModel.is_current == True,  # noqa: E712
+                        )
+                    )
+                ).scalars().all()
+                for old in old_currents:
+                    old.is_current = False
+
+            sm = SemanticModel(
+                tenant_id=tenant_id,
+                data_source_id=ds_id,
+                version=new_version,
+                content=content.model_dump(),
+                is_current=True,
+            )
+            session.add(sm)
+            await session.flush()
+            await write_audit_log(
+                session, tenant_id=tenant_id, user_id=user_id,
+                resource_type="semantic_model", action="scan", status="success",
+                resource_id=sm.id, detail={"version": new_version, "tables": len(content.models)},
+            )
+            await session.commit()
+
+            # ── Stage 5: 建向量索引 (95% → 100%) ───────────────
+            await _update_scan(session, ds, progress=95, stage="构建检索索引...")
+            index_count = 0
+            try:
+                from app.services.indexer_update import rebuild_index
+                from app.services.embedder import get_embedder
+                from app.services.vector_store import get_vector_store
+                result = await rebuild_index(
+                    content=content,
+                    data_source_id=ds_id,
+                    store=get_vector_store(),
+                    embedder=get_embedder(),
+                )
+                index_count = result.indexed_count
+            except Exception as e:
+                logger.warning("建索引失败, RAG 检索将降级: %s", e)
+
+            # ── done ───────────────────────────────────────────
+            await _finish_scan(
+                session, ds,
+                stage=f"完成: v{new_version}, {len(content.models)} 表, {index_count} 索引",
+            )
+            logger.info("扫描完成 ds=%s v%d (%d 表)", ds_id, new_version, len(content.models))
+
+        except Exception as e:
+            logger.exception("扫描后台任务失败 ds=%s", ds_id)
+            await write_audit_log(
+                session, tenant_id=tenant_id, user_id=user_id,
+                resource_type="data_source", action="scan", status="fail",
+                resource_id=ds_id, error_message=str(e)[:500],
+            )
+            try:
+                if ds is not None:
+                    await _fail_scan(session, ds, error=str(e)[:500])
+            except Exception:
+                pass
+
+
+async def _update_scan(session: AsyncSession, ds: DataSource, progress: int, stage: str) -> None:
+    """更新扫描进度 (不抛异常, 失败只记日志)。"""
+    try:
+        ds.scan_progress = progress
+        ds.scan_stage = stage
+        await session.commit()
+    except Exception as e:
+        logger.warning("更新扫描进度失败 ds=%s: %s", ds.id, e)
+
+
+async def _finish_scan(session: AsyncSession, ds: DataSource, stage: str) -> None:
+    """扫描完成: scan_status=done + progress=100 + scanned_at。"""
+    ds.scan_status = "done"
+    ds.scan_progress = 100
+    ds.scan_stage = stage
+    ds.scan_error = None
+    ds.scanned_at = datetime.now(timezone.utc)
+    await session.commit()
+
+
+async def _fail_scan(session: AsyncSession, ds: DataSource, error: str) -> None:
+    """扫描失败: scan_status=failed + scan_error (对标 fail-closed, 明确告知失败)。"""
+    ds.scan_status = "failed"
+    ds.scan_error = error
+    ds.scan_progress = 0
+    ds.scan_stage = "failed"
+    await session.commit()
 
 
 # ChatBI 自己的系统表 (元数据表), 扫描时不调 LLM 推断
 # 这些表用户不会查, 跳过能省 60%+ LLM 调用
 _SYSTEM_TABLES = frozenset({
     "tenants", "users", "data_sources", "semantic_models",
-    "conversations", "saved_queries", "audit_logs", "feedback",
+    "conversations", "saved_queries", "audit_logs",
 })
 
 
@@ -416,11 +500,14 @@ async def _enrich_with_llm(content) -> None:
 
     优化:
       - 跳过系统表 (ChatBI 元数据表, 用户不查, 省 60%+ LLM 调用)
-      - 并行调 LLM (asyncio.gather, N 张表并发而非串行)
-    LLM 失败静默降级 (退化列名已可用, 不阻塞扫描)。
+      - 优先一次性全量发送 (200K 上下文足够容纳 200+ 表的列名)
+      - 若表数 > 200 则分批, 每批 100 张表
+    不设每批超时: asyncio.wait_for 会断开 LLM 连接中断生成,
+    靠外层整体超时兜底。LLM 失败静默降级 (退化列名已可用, 不阻塞扫描)。
     """
-    import asyncio
-    from app.core.llm_client import infer_column_chinese
+    from app.core.llm_client import get_llm_client, extract_content
+    from app.core.llm_json import parse_json_response
+    from app.core.config import get_settings
 
     # 筛出需要推断的业务表 (跳过系统表 + 全有注释的表)
     tasks = []  # (model, needs_infer)
@@ -432,25 +519,57 @@ async def _enrich_with_llm(content) -> None:
             if c.source == "auto_inferred" and c.confidence == 0.5
         ]
         if needs_infer:
-            cols_for_llm = [{"name": c.name, "data_type": c.data_type} for c in needs_infer]
-            tasks.append((model, needs_infer, cols_for_llm))
+            tasks.append((model, needs_infer))
 
     if not tasks:
         return  # 没有需要推断的, 直接返回
 
-    # 并行调 LLM (所有业务表同时推断, 而非串行)
-    results = await asyncio.gather(
-        *(infer_column_chinese(m.name, cols) for m, _, cols in tasks),
-        return_exceptions=True,  # 单个失败不影响其他
-    )
+    # 全量优先: 200 表以内一次性发送; 超过则分批 100 表
+    batch_size = 200 if len(tasks) <= 200 else 100
 
-    # patch 结果
-    for (model, needs_infer, _), inferred in zip(tasks, results):
-        if isinstance(inferred, Exception) or not inferred:
-            continue  # 失败/空, 保持退化列名
-        name_to_col = {c.name: c for c in needs_infer}
-        for col_name, display_name in inferred.items():
-            if col_name in name_to_col:
-                col = name_to_col[col_name]
-                col.display_name = display_name
-                col.confidence = 0.8  # LLM 推断, 升级置信度
+    for batch_start in range(0, len(tasks), batch_size):
+        batch = tasks[batch_start:batch_start + batch_size]
+        tables_desc = []
+        for model, needs_infer in batch:
+            col_desc = ", ".join(
+                f"{c.name}({c.data_type})" for c in needs_infer
+            )
+            tables_desc.append(f"表 {model.name}: {col_desc}")
+
+        prompt = (
+            "你是数据库语义推断助手。以下是多张表需要推断中文展示名的列。\n\n"
+            + "\n".join(tables_desc)
+            + "\n\n为每个列推断一个简洁的中文展示名（display_name）。"
+            "只返回 JSON，格式: {\"表名\": {\"列名\": \"中文名\"}}，不要解释。"
+        )
+
+        try:
+            client = get_llm_client()
+            settings = get_settings()
+            # 不设每批超时: asyncio.wait_for 会断开 LLM 连接中断生成
+            # 靠外层整体超时兜底
+            resp = await client.chat.completions.create(
+                model=settings.llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=settings.llm_max_tokens,
+                temperature=settings.llm_temperature,
+            )
+            result_text = extract_content(resp)
+            result = parse_json_response(result_text)
+            if not isinstance(result, dict):
+                continue
+        except Exception as e:
+            logger.warning("_enrich_with_llm: LLM 批量推断失败, 降级: %s", e)
+            continue
+
+        # patch 结果
+        for model, needs_infer in batch:
+            table_result = result.get(model.name, {})
+            if not isinstance(table_result, dict):
+                continue
+            name_to_col = {c.name: c for c in needs_infer}
+            for col_name, display_name in table_result.items():
+                if col_name in name_to_col:
+                    col = name_to_col[col_name]
+                    col.display_name = display_name
+                    col.confidence = 0.8  # LLM 推断, 升级置信度

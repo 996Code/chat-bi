@@ -195,7 +195,7 @@ class TestWriteAuditLog:
 
     async def test_write_success_status(self, db_session):
         await write_audit_log(
-            db_session, tenant_id="t1", user_id="u1",
+            db_session, tenant_id="tenant_A", user_id="admin_1",
             resource_type="query", action="execute", status="success",
             detail={"rows": 10},
         )
@@ -208,7 +208,7 @@ class TestWriteAuditLog:
     async def test_write_fail_status(self, db_session):
         """失败也要审计（v1 #41：之前只记成功，注入试探无痕）。"""
         await write_audit_log(
-            db_session, tenant_id="t1", user_id="u1",
+            db_session, tenant_id="tenant_A", user_id="admin_1",
             resource_type="query", action="execute", status="fail",
             error_message="syntax error near 'SELCT'",
         )
@@ -220,7 +220,7 @@ class TestWriteAuditLog:
     async def test_write_denied_status(self, db_session):
         """权限拒绝也要审计。"""
         await write_audit_log(
-            db_session, tenant_id="t1", user_id="u1",
+            db_session, tenant_id="tenant_A", user_id="admin_1",
             resource_type="query", action="execute", status="denied",
             error_message="role read_only cannot execute",
         )
@@ -235,7 +235,7 @@ class TestWriteAuditLog:
 
         before = len((await db_session.execute(select(AuditLog))).scalars().all())
         await write_audit_log(
-            db_session, tenant_id="t1", user_id="u1",
+            db_session, tenant_id="tenant_A", user_id="admin_1",
             resource_type="query", action="execute", status="success",
         )
         await db_session.flush()
@@ -245,7 +245,7 @@ class TestWriteAuditLog:
     async def test_audit_sql_text_captured(self, db_session):
         """SQL 审计要记录原始 SQL（用于追溯注入试探）。"""
         await write_audit_log(
-            db_session, tenant_id="t1", user_id="u1",
+            db_session, tenant_id="tenant_A", user_id="admin_1",
             resource_type="query", action="execute", status="success",
             sql_text="SELECT * FROM orders WHERE 1=1",
         )

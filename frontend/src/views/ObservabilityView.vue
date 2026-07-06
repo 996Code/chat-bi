@@ -23,32 +23,25 @@
       </div>
     </el-card>
 
-    <!-- T050: dump-prompts 导出 + token 用量统计 -->
+    <!-- T050: Prompt 调试 + token 用量统计 -->
     <el-card style="margin-top: 16px">
       <template #header>
         <div class="card-header-row">
           <b>Prompt 调试 & Token 用量 (T050)</b>
-          <div class="trace-actions">
-            <el-select
-              v-model="selectedConvId" placeholder="选择对话" size="small"
-              style="width: 280px" filterable
-            >
-              <el-option
-                v-for="c in conversations" :key="c.conversation_id"
-                :label="`${c.title} (${c.turn_count} 轮)`" :value="c.conversation_id"
-              />
-            </el-select>
-            <el-button
-              type="primary" size="small" :icon="Download"
-              :disabled="!selectedConvId" :loading="exporting"
-              @click="exportTrace"
-            >导出 dump-prompts</el-button>
-          </div>
+          <el-select
+            v-model="selectedConvId" placeholder="选择对话" size="small"
+            style="width: 280px" filterable
+          >
+            <el-option
+              v-for="c in conversations" :key="c.conversation_id"
+              :label="`${c.title} (${c.turn_count} 轮)`" :value="c.conversation_id"
+            />
+          </el-select>
         </div>
       </template>
 
       <!-- token 用量概览 -->
-      <div v-if="traceSummary" class="token-overview">
+      <div v-if="traceSummary" v-loading="traceLoading" class="token-overview">
         <div class="token-stat">
           <div class="token-num">{{ traceSummary.total_turns }}</div>
           <div class="token-label">总轮次</div>
@@ -67,7 +60,7 @@
         </div>
       </div>
 
-      <el-empty v-else description="选择对话查看 token 用量明细" :image-size="60" />
+      <el-empty v-if="!traceSummary && !traceLoading" description="选择对话查看 token 用量明细" :image-size="60" />
 
       <!-- 各轮 prompt 节点明细 (可展开查看 prompt 文本) -->
       <div v-if="traceTurns.length" class="turn-list">
@@ -132,40 +125,20 @@
       </el-table>
       <el-empty v-if="!metrics.length && !metricsLoading" description="最近 24h 无查询记录" :image-size="50" />
     </el-card>
-
-    <!-- OPS-02: 备份恢复 -->
-    <el-card style="margin-top: 16px">
-      <template #header><b>备份恢复 (OPS-02)</b></template>
-      <div class="backup-actions">
-        <el-button type="primary" :icon="Download" :loading="backupLoading" @click="doBackup">
-          备份元数据库
-        </el-button>
-        <el-upload
-          :show-file-list="false"
-          :before-upload="handleRestore"
-          accept=".sql"
-        >
-          <el-button type="danger" plain :loading="restoreLoading">恢复 (上传 .sql)</el-button>
-        </el-upload>
-      </div>
-      <el-alert type="warning" :closable="false" show-icon style="margin-top: 12px">
-        备份的是 ChatBI 元数据库 (用户/数据源/语义层), 业务库不备份。恢复会覆盖现有数据, 谨慎操作。
-      </el-alert>
-    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, ArrowDown, ArrowUp, Download } from '@element-plus/icons-vue'
-import { observability, backupApi, type ConversationItem } from '@/api'
+import { onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { ArrowLeft, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
+import { observability, type ConversationItem } from '@/api'
 
 const health = ref<any>({ components: {}, config: {} })
 const healthLoading = ref(false)
 const conversations = ref<ConversationItem[]>([])
 const selectedConvId = ref('')
-const exporting = ref(false)
+const traceLoading = ref(false)
 const traceSummary = ref<any>(null)
 const traceTurns = ref<any[]>([])
 const openTurns = reactive<Record<number, boolean>>({})
@@ -173,9 +146,6 @@ const openPrompts = reactive<Record<string, boolean>>({})
 // DSO-05: 数据源监控
 const metrics = ref<any[]>([])
 const metricsLoading = ref(false)
-// OPS-02: 备份恢复
-const backupLoading = ref(false)
-const restoreLoading = ref(false)
 
 onMounted(async () => {
   healthLoading.value = true
@@ -212,86 +182,29 @@ async function loadMetrics() {
   }
 }
 
-// OPS-02: 备份
-async function doBackup() {
-  backupLoading.value = true
-  try {
-    const res = await backupApi.create()
-    const blob = new Blob([res.data], { type: 'application/sql' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `chatbi-backup-${new Date().toISOString().slice(0, 10)}.sql`
-    a.click()
-    URL.revokeObjectURL(url)
-    ElMessage.success('备份已下载')
-  } catch (e: any) {
-    let detail = e.message || '备份失败'
-    if (e.response?.data instanceof Blob) {
-      try { detail = JSON.parse(await e.response.data.text()).detail || detail } catch { /* */ }
-    } else if (e.response?.data?.detail) {
-      detail = e.response.data.detail
-    }
-    ElMessage.error('备份失败: ' + detail)
-  } finally {
-    backupLoading.value = false
-  }
-}
-
-// OPS-02: 恢复 (before-upload 钩子, 返回 false 阻止自动上传)
-async function handleRestore(file: File) {
-  try {
-    await ElMessageBox.confirm(
-      `确认用「${file.name}」恢复? 这将覆盖现有元数据库数据, 操作不可逆!`,
-      '恢复确认', { type: 'error', confirmButtonText: '确认覆盖', cancelButtonText: '取消' },
-    )
-  } catch {
-    return false
-  }
-  restoreLoading.value = true
-  try {
-    const { data } = await backupApi.restore(file)
-    ElMessage.success(`恢复成功 (${data.size_bytes} bytes)`)
-    setTimeout(() => window.location.reload(), 1500)  // 恢复后刷新页面
-  } catch (e: any) {
-    let detail = e.message || '恢复失败'
-    if (e.response?.data instanceof Blob) {
-      try { detail = JSON.parse(await e.response.data.text()).detail || detail } catch { /* */ }
-    } else if (e.response?.data?.detail) {
-      detail = e.response.data.detail
-    }
-    ElMessage.error('恢复失败: ' + detail)
-  } finally {
-    restoreLoading.value = false
-  }
-  return false  // 阻止 el-upload 自动上传 (已手动处理)
-}
-
 // 导出某对话的完整 trace (prompt + token), 前端 Blob 下载 JSON
-async function exportTrace() {
-  if (!selectedConvId.value) return
-  exporting.value = true
+// 选择对话后自动加载 trace (prompt + token 明细)
+async function loadTrace() {
+  if (!selectedConvId.value) {
+    traceSummary.value = null
+    traceTurns.value = []
+    return
+  }
+  traceLoading.value = true
   try {
     const { data } = await observability.conversationTrace(selectedConvId.value)
     traceSummary.value = data.summary
     traceTurns.value = data.turns || []
-    // Blob 下载 (对标 Claude Code dump-prompts)
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `prompts-${selectedConvId.value}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-    ElMessage.success(`已导出 ${data.summary.total_turns} 轮 prompt (${data.summary.total_tokens} tokens)`)
-  } catch (e: any) {
-    // fail-closed: 非 DEBUG 模式 prompt 未持久化 → 404/空, 明确提示
-    const detail = e.response?.data?.detail || e.message || '导出失败'
-    ElMessage.error(`dump-prompts 导出失败: ${detail} (需 DEBUG 模式才持久化 prompt 文本)`)
+  } catch {
+    traceSummary.value = null
+    traceTurns.value = []
+    ElMessage.warning('加载 trace 失败 (需 DEBUG 模式才持久化 prompt 文本)')
   } finally {
-    exporting.value = false
+    traceLoading.value = false
   }
 }
+
+watch(selectedConvId, () => { loadTrace() })
 
 function toggleTurn(turn: number) {
   openTurns[turn] = !openTurns[turn]
@@ -349,6 +262,4 @@ function togglePrompt(turn: number, idx: number) {
   font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;
   max-height: 200px; overflow-y: auto; margin: 0;
 }
-/* OPS-02: 备份恢复 */
-.backup-actions { display: flex; gap: 12px; align-items: center; }
 </style>

@@ -18,7 +18,6 @@ T017: mine_implicit_relationships + apply_feedback_signals (算法先行，e2e �
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections import Counter
@@ -123,83 +122,123 @@ def _infer_relationships_by_name(
     return rels
 
 
-async def _infer_relationships_by_llm(
-    model: Model,
+async def _infer_relationships_batch_by_llm(
+    models: list[Model],
     all_model_names: list[str],
     llm_client: "AsyncOpenAI",
 ) -> list[Relationship]:
-    """LLM 推断表间关系 (confidence=0.7, source=ai_inferred)。
+    """LLM 批量推断表间关系 (confidence=0.7, source=ai_inferred)。
 
+    策略: 优先一次性全量发送 (200K 上下文足够容纳 121 表的列名)；
+    若表数 > 200 则分批，每批 100 张表，但始终在 prompt 中携带全部表名
+    列表 (表名列表很小，~500 tokens)，确保 LLM 能看到跨批的表进行关联，
+    结果按 source_model 天然去重合并，不会断层。
+
+    保留全列信息 (LLM 需要完整列上下文才能发现 name_pattern 漏掉的
+    语义关联, 如 order_no → orders.order_no 等非 _id 关系)。
     失败/异常/非法 JSON → 返回空 list (fail-closed 降级)。
+    不设每批超时: asyncio.wait_for 会断开 LLM 连接中断生成，
+    靠外层 infer_knowledge_graph 整体超时兜底。
     """
-    # 没有"可关联"的列就直接跳过，省一次 LLM 调用
-    if not any(c.name.endswith("_id") for c in model.columns):
+    # 只对有 _id 列的表调 LLM (这些表最可能有外键关系)
+    candidates = [m for m in models if any(c.name.endswith("_id") for c in m.columns)]
+    if not candidates:
         return []
 
-    other_tables = [n for n in all_model_names if n != model.name]
-    if not other_tables:
-        return []
+    all_names_set = set(all_model_names)
 
-    col_desc = ", ".join(c.name for c in model.columns)
-    prompt = (
-        f"你是数据库关系推断助手。当前表: {model.name}\n"
-        f"当前表列: {col_desc}\n"
-        f"其他表: {', '.join(other_tables)}\n\n"
-        f"判断当前表与其他表的可能关联关系（基于列名语义）。\n"
-        f"只返回 JSON 数组，每项: "
-        f'{{"target_model": "表名", "on": "ON条件", "type": "N:1|1:N|1:1"}}。\n'
-        f"没有关联就返回空数组 []。不要解释。"
-    )
+    # 全量优先: 200 表以内一次性发送 (输入 ~5K tokens, 输出 ~8K tokens, 200K 上下文绰绰有余)
+    batch_size = 200 if len(candidates) <= 200 else 100
+    all_rels: list[Relationship] = []
 
-    try:
-        from app.core.config import get_settings
-        model_name = get_settings().llm_model
-        resp = await llm_client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=800,
-            temperature=0.1,
+    # 全部表名列表 (很小，每批都带上，确保 LLM 能跨批关联)
+    all_names_str = ", ".join(all_model_names[:500])
+
+    for batch_start in range(0, len(candidates), batch_size):
+        batch = candidates[batch_start:batch_start + batch_size]
+
+        # 保留全列: LLM 需要完整上下文发现语义关联 (非 _id 列也有价值)
+        tables_desc = []
+        for m in batch:
+            col_desc = ", ".join(c.name for c in m.columns)
+            tables_desc.append(f"{m.name}: [{col_desc}]")
+
+        prompt = (
+            "你是数据库关系推断助手。以下是多张表的列信息，"
+            "请判断它们之间的关联关系"
+            "（基于列名语义，特别是 xxx_id 列指向其他表主键的关联）。\n\n"
+            "所有表名: " + all_names_str + "\n\n"
+            "需要推断的表:\n"
+            + "\n".join(tables_desc)
+            + "\n\n为每张表推断它与其他表的关联关系。"
+            "只返回 JSON 数组，每项: "
+            '{"source_model": "表名", "target_model": "表名", '
+            '"on": "ON条件", "type": "N:1|1:N|1:1"}。\n'
+            "没有关联就返回空数组 []。不要解释。"
         )
-        content = resp.choices[0].message.content or ""
-        from app.core.llm_json import parse_json_response
-        raw_list = parse_json_response(content)
-        if raw_list is None:
-            logger.warning("_infer_relationships_by_llm: LLM 返回非法 JSON, 降级为空")
-            return []
-    except Exception as e:
-        logger.warning("_infer_relationships_by_llm: LLM 调用失败, 降级为空: %s", e)
-        return []
 
-    if not isinstance(raw_list, list):
-        return []
-
-    rels: list[Relationship] = []
-    valid_targets = set(all_model_names)
-    for item in raw_list:
-        if not isinstance(item, dict):
-            continue
-        target = item.get("target_model")
-        if target not in valid_targets or target == model.name:
-            continue  # 过滤幻觉：目标表不存在或自引用
-        on_clause = item.get("on", "").strip()
-        if not on_clause:
-            continue
         try:
-            card = item.get("type", "N:1")
-            if card not in ("N:1", "1:N", "1:1", "N:N"):
-                card = "N:1"
-            rels.append(Relationship(
-                name=f"{model.name}_to_{target}",
-                target_model=target,
-                join_type="LEFT",
-                on=on_clause,
-                type=card,
-                source="ai_inferred",
-                confidence=AI_INFERRED_CONFIDENCE,
-            ))
-        except Exception:
-            continue  # 单条非法不阻塞整体
-    return rels
+            from app.core.config import get_settings
+            from app.core.llm_client import extract_content
+
+            settings = get_settings()
+            model_name = settings.llm_model
+
+            # 不设每批超时: asyncio.wait_for 会断开 LLM 连接中断生成
+            # 靠外层 infer_knowledge_graph 整体超时兜底
+            resp = await llm_client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=settings.llm_max_tokens,
+                temperature=0.1,
+            )
+            content = extract_content(resp)
+            from app.core.llm_json import parse_json_response
+            raw_list = parse_json_response(content)
+            if raw_list is None or not isinstance(raw_list, list):
+                logger.warning(
+                    "_infer_relationships_batch_by_llm: LLM 返回非法 JSON, 降级为空"
+                )
+                continue
+        except Exception as e:
+            logger.warning(
+                "_infer_relationships_batch_by_llm: LLM 调用失败, 降级为空: %s", e
+            )
+            continue
+
+        # 解析结果
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source_model", "")
+            target = item.get("target_model")
+            # 校验 source 和 target 都在表名集合里
+            if not source or not target:
+                continue
+            if source not in all_names_set or target not in all_names_set:
+                continue  # 过滤幻觉：表名不存在
+            if source == target:
+                continue  # 自引用跳过
+            on_clause = item.get("on", "").strip()
+            if not on_clause:
+                continue
+            try:
+                card = item.get("type", "N:1")
+                if card not in ("N:1", "1:N", "1:1", "N:N"):
+                    card = "N:1"
+                all_rels.append(Relationship(
+                    name=f"{source}_to_{target}",
+                    target_model=target,
+                    join_type="LEFT",
+                    on=on_clause,
+                    type=card,
+                    source="ai_inferred",
+                    confidence=AI_INFERRED_CONFIDENCE,
+                ))
+            except Exception:
+                continue  # 单条非法不阻塞整体
+
+    return all_rels
 
 
 async def infer_knowledge_graph(
@@ -249,10 +288,15 @@ async def infer_knowledge_graph(
         for r in _infer_relationships_by_name(model, all_names):
             suggestions.append(r)
 
-        # ai_inferred 按需
-        if use_llm and client is not None:
-            for r in await _infer_relationships_by_llm(model, all_names, client):
-                suggestions.append(r)
+    # ai_inferred: 一次性批量推断 (利用 200K 上下文, 1 次调用替代 N 次)
+    if use_llm and client is not None:
+        try:
+            batch_rels = await _infer_relationships_batch_by_llm(
+                content.models, all_names, client,
+            )
+            suggestions.extend(batch_rels)
+        except Exception as e:
+            logger.warning("infer_knowledge_graph: LLM 批量推断失败, 降级: %s", e)
 
     # 去重：已存在的跳过；同表对只保留最高 confidence
     best: dict[tuple[str, str], Relationship] = {}

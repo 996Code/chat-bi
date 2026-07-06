@@ -167,11 +167,12 @@ class TestInferKnowledgeGraph:
         """注入 mock LLM client，验证 ai_inferred 来源标注。"""
         content = _orders_content()
 
-        # mock LLM 返回一条 ai_inferred 建议
+        # mock LLM 返回一条 ai_inferred 建议 (批量格式: 含 source_model)
         fake_response = MagicMock()
         fake_response.choices = [MagicMock()]
         fake_response.choices[0].message.content = json.dumps([
             {
+                "source_model": "biz_orders",
                 "target_model": "biz_users",
                 "on": "biz_orders.user_id = biz_users.id",
                 "type": "N:1",

@@ -16,8 +16,11 @@ env/
 
 # Environment files — 所有 .env* 一律忽略，防止密钥泄露 (v1 教训 #44)
 # 真实配置不入库；模板文件放 deploy/.env.example 和 backend/.env.example
+# 例外: 前端 .env.development / .env.production 只含端口约定, 无密钥, 需提交
 .env
 .env.*
+!frontend/.env.development
+!frontend/.env.production
 !.gitignore
 
 # Database

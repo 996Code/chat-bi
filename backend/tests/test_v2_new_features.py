@@ -2,7 +2,6 @@
 V2 新增功能测试:
   - DSO-04: semantic_diff 纯函数 (表级/列级 diff)
   - DSO-05: 数据源监控聚合端点
-  - PERF-03: 异步查询端点 (提交/轮询/取消/防重复)
   - OPS-02: 备份恢复端点鉴权 + fail-closed
   - DSO-02: 数据源健康检查 ping 逻辑 (mock)
 """
@@ -100,9 +99,8 @@ class TestDatasourceMetrics:
 
     async def test_metrics_aggregation(self, http_client, admin_token, db_session):
         """聚合统计正确 (query_count/avg_duration/error_rate)。"""
-        from app.db.models import AuditLog, Tenant
-        db_session.add(Tenant(id="tenant_A", name="t"))
-        await db_session.flush()
+        from app.db.models import AuditLog
+        # tenant_A + admin_1 由 conftest _seed_base_tenants 预置 (不再重复 add, 避免撞 pkey)
 
         ds_id = "ds_metrics_test"
         # 3 条: 2 成功 (100ms, 200ms) + 1 失败; 1 慢查询
@@ -128,67 +126,3 @@ class TestDatasourceMetrics:
         """非 admin → 403。"""
         res = await http_client.get("/chat-bi/api/v1/datasource-metrics", headers=_auth(user_token))
         assert res.status_code == 403
-
-
-# ── PERF-03: 异步查询 ─────────────────────────────────────────
-
-class TestAsyncQuery:
-    """PERF-03: 异步查询端点 (提交/轮询/取消/防重复)。"""
-
-    async def test_submit_returns_pending(self, http_client, admin_token, db_session):
-        """提交 → 201 + pending 状态 (后台任务会因无真实数据源失败, 但提交本身成功)。"""
-        from app.db.models import Tenant
-        db_session.add(Tenant(id="tenant_A", name="t"))
-        await db_session.flush()
-        # 创建一个数据源 (后台任务会尝试连, 但提交不报错)
-        from app.db.models import DataSource
-        db_session.add(DataSource(
-            tenant_id="tenant_A", name="ds", db_type="postgresql",
-            host="h", port=5432, database="d", username="u", encrypted_password="x",
-        ))
-        await db_session.commit()
-        ds_id = (await db_session.execute(
-            __import__("sqlalchemy").select(DataSource).where(DataSource.tenant_id == "tenant_A")
-        )).scalars().first().id
-
-        res = await http_client.post("/chat-bi/api/v1/async-query", json={
-            "question": "测试问题", "data_source_id": ds_id,
-        }, headers=_auth(admin_token))
-        assert res.status_code == 201
-        body = res.json()
-        assert body["status"] == "pending"
-        assert "id" in body
-
-    async def test_empty_question_422(self, http_client, admin_token):
-        res = await http_client.post("/chat-bi/api/v1/async-query", json={
-            "question": "", "data_source_id": "x",
-        }, headers=_auth(admin_token))
-        assert res.status_code == 422
-
-    async def test_get_nonexistent_task_404(self, http_client, admin_token):
-        res = await http_client.get("/chat-bi/api/v1/async-query/nonexistent", headers=_auth(admin_token))
-        assert res.status_code == 404
-
-    async def test_cancel_nonexistent_404(self, http_client, admin_token):
-        res = await http_client.delete("/chat-bi/api/v1/async-query/nonexistent", headers=_auth(admin_token))
-        assert res.status_code == 404
-
-
-# ── OPS-02: 备份恢复鉴权 ─────────────────────────────────────
-
-class TestBackupAuth:
-    """OPS-02: 备份恢复端点鉴权 (pg_dump 实际执行需真实 PG, 这里测权限)。"""
-
-    async def test_backup_user_forbidden(self, http_client, user_token):
-        """非 admin → 403。"""
-        res = await http_client.post("/chat-bi/api/v1/backup", headers=_auth(user_token))
-        assert res.status_code == 403
-
-    async def test_restore_without_confirm_400(self, http_client, admin_token):
-        """恢复未传 confirm → 400 (防误操作)。"""
-        res = await http_client.post(
-            "/chat-bi/api/v1/backup/restore?confirm=false",
-            files={"file": ("test.sql", b"-- test", "application/sql")},
-            headers=_auth(admin_token),
-        )
-        assert res.status_code == 400

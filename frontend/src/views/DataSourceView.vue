@@ -40,9 +40,25 @@
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="扫描" width="200">
+        <template #default="{ row }">
+          <!-- 扫描中: 进度条 + 步骤文字 (对标 V1 + 经验教训 #25) -->
+          <template v-if="row.scan_status === 'scanning'">
+            <el-progress :percentage="row.scan_progress" :stroke-width="14" :text-inside="true" status="success" />
+            <div class="scan-stage">{{ row.scan_stage }}</div>
+          </template>
+          <!-- 扫描完成 -->
+          <el-tag v-else-if="row.scan_status === 'done'" type="success" size="small">已扫描</el-tag>
+          <!-- 扫描失败: 红色 + hover 显示错误 -->
+          <el-tooltip v-else-if="row.scan_status === 'failed'" :content="row.scan_error || '扫描失败'" placement="top">
+            <el-tag type="danger" size="small">扫描失败</el-tag>
+          </el-tooltip>
+          <span v-else class="scan-idle">未扫描</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="420" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="primary" :loading="scanningId === row.id" @click="scan(row)">
+          <el-button size="small" type="primary" :loading="row.scan_status === 'scanning'" @click="scan(row)">
             扫描
           </el-button>
           <el-button size="small" @click="viewSemantic(row)">
@@ -107,7 +123,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
@@ -118,7 +134,6 @@ const list = ref<DataSource[]>([])
 const loading = ref(false)
 const showCreate = ref(false)
 const creating = ref(false)
-const scanningId = ref<string | null>(null)
 const togglingId = ref<string | null>(null)
 // DSO-02/04
 const healthCheckingId = ref<string | null>(null)
@@ -163,16 +178,58 @@ async function create() {
   }
 }
 
+// 扫描轮询: 每个数据源一个定时器 (key=ds_id), 触发后轮询 get 拿进度
+const scanTimers = new Map<string, ReturnType<typeof setInterval>>()
+
 async function scan(row: DataSource) {
-  scanningId.value = row.id
+  if (row.scan_status === 'scanning') {
+    ElMessage.warning('该数据源正在扫描中，请等待完成')
+    return
+  }
   try {
-    ElMessage.info('扫描中（含 LLM 中文推断，稍等）...')
-    const { data } = await datasource.scan(row.id)
-    ElMessage.success(`扫描完成: v${data.version}, ${data.table_count} 张表`)
+    await datasource.scan(row.id)
+    ElMessage.info('扫描已启动（含 LLM 中文推断），进度会实时更新...')
+    startPollingScan(row.id)
   } catch (e: any) {
-    ElMessage.error('扫描失败: ' + (e.response?.data?.detail || e.message))
-  } finally {
-    scanningId.value = null
+    ElMessage.error('启动扫描失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function startPollingScan(dsId: string) {
+  // 已有定时器则不重复
+  if (scanTimers.has(dsId)) return
+  const poll = async () => {
+    try {
+      const { data } = await datasource.get(dsId)
+      // 更新列表中对应行 (响应式: 直接改对象属性触发刷新)
+      const row = list.value.find(d => d.id === dsId)
+      if (row) {
+        row.scan_status = data.scan_status
+        row.scan_progress = data.scan_progress
+        row.scan_stage = data.scan_stage
+        row.scan_error = data.scan_error
+      }
+      // 终态: 停止轮询
+      if (data.scan_status === 'done') {
+        stopPollingScan(dsId)
+        ElMessage.success(`扫描完成: ${data.scan_stage || ''}`)
+      } else if (data.scan_status === 'failed') {
+        stopPollingScan(dsId)
+        ElMessage.error('扫描失败: ' + (data.scan_error || '未知错误'))
+      }
+    } catch {
+      // 网络抖动静默重试 (下个 tick)
+    }
+  }
+  poll() // 立即查一次
+  scanTimers.set(dsId, setInterval(poll, 2000)) // 2s 轮询扫描进度
+}
+
+function stopPollingScan(dsId: string) {
+  const t = scanTimers.get(dsId)
+  if (t) {
+    clearInterval(t)
+    scanTimers.delete(dsId)
   }
 }
 
@@ -249,6 +306,12 @@ async function refreshAllMetadata() {
 }
 
 onMounted(fetchList)
+
+// 组件卸载时清理所有扫描轮询定时器 (防内存泄漏)
+onUnmounted(() => {
+  scanTimers.forEach(t => clearInterval(t))
+  scanTimers.clear()
+})
 </script>
 
 <style scoped>
@@ -263,5 +326,17 @@ onMounted(fetchList)
 }
 .page-header h2 {
   margin: 0;
+}
+.scan-stage {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scan-idle {
+  font-size: 12px;
+  color: #c0c4cc;
 }
 </style>

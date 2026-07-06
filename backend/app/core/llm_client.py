@@ -53,6 +53,21 @@ def get_embedding_client() -> AsyncOpenAI:
     return _embedding_client
 
 
+def extract_content(resp, default: str = "") -> str:
+    """从 LLM 响应安全提取 content (防御 choices 为 None/空)。
+
+    LLM 服务异常 (如 endpoint 不匹配) 可能返回空 choices,
+    直接 resp.choices[0] 会抛 'NoneType' object is not subscriptable。
+    本函数统一防御, 失败返回 default (宁缺毋滥)。
+    """
+    try:
+        if resp and resp.choices:
+            return resp.choices[0].message.content or default
+    except (AttributeError, IndexError, TypeError) as e:
+        logger.warning("extract_content: LLM 响应结构异常, 降级为空: %s", e)
+    return default
+
+
 def reset_clients() -> None:
     """重置单例（测试用）。"""
     global _llm_client, _embedding_client
@@ -92,7 +107,7 @@ async def infer_column_chinese(table_name: str, columns: list[dict]) -> dict[str
             max_tokens=settings.llm_max_tokens,
             temperature=settings.llm_temperature,
         )
-        content = resp.choices[0].message.content or ""
+        content = extract_content(resp)
         from app.core.llm_json import parse_json_response
         result = parse_json_response(content)
         return result if isinstance(result, dict) else {}

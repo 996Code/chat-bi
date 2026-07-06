@@ -101,3 +101,50 @@ class TestSkillsLoader:
     def test_empty_skills_empty_prompt(self, tmp_path):
         loader = SkillsLoader(base_dir=str(tmp_path))
         assert loader.format_for_prompt() == ""
+
+    def test_format_for_prompt_with_db_type(self, tmp_path):
+        """T060: format_for_prompt(db_type=) 注入匹配的方言规则。"""
+        # 创建带 reference 子目录的 skill
+        skill_dir = tmp_path / "sql-rules"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: sql\ndescription: SQL规则\n---\nGMV = SUM(total_amount)"
+        )
+        ref_dir = skill_dir / "reference"
+        ref_dir.mkdir(exist_ok=True)
+        (ref_dir / "postgresql.md").write_text("PostgreSQL 用 ILIKE 做模糊匹配")
+        (ref_dir / "mysql.md").write_text("MySQL 用 BINARY 做大小写敏感")
+
+        loader = SkillsLoader(base_dir=str(tmp_path))
+        # 不传 db_type → 不注入方言规则
+        text_default = loader.format_for_prompt()
+        assert "ILIKE" not in text_default
+        assert "BINARY" not in text_default
+
+        # 传 db_type=postgresql → 注入 PostgreSQL 方言
+        text_pg = loader.format_for_prompt(db_type="postgresql")
+        assert "ILIKE" in text_pg
+        assert "BINARY" not in text_pg
+
+        # 传 db_type=mysql → 注入 MySQL 方言
+        text_mysql = loader.format_for_prompt(db_type="mysql")
+        assert "BINARY" in text_mysql
+        assert "ILIKE" not in text_mysql
+
+    def test_skill_from_file_loads_references(self, tmp_path):
+        """T060: Skill.from_file 加载 reference/*.md 子文件。"""
+        skill_dir = tmp_path / "sql-rules"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: sql\ndescription: SQL规则\n---\n规则内容"
+        )
+        ref_dir = skill_dir / "reference"
+        ref_dir.mkdir(exist_ok=True)
+        (ref_dir / "postgresql.md").write_text("PG 规则")
+        (ref_dir / "mysql.md").write_text("MySQL 规则")
+
+        skill = Skill.from_file(skill_dir / "SKILL.md")
+        assert "postgresql" in skill.references
+        assert "mysql" in skill.references
+        assert skill.references["postgresql"] == "PG 规则"
+        assert skill.references["mysql"] == "MySQL 规则"

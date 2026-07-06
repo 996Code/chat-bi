@@ -4,14 +4,22 @@ ChatBI v2 — Database Session Management
 Engine creation is lazy to support SQLite in tests (no pool_size for SQLite).
 
 对标: v1 db/session.py — SQLAlchemy async session factory
+
+自动建表: get_engine() 后调 auto_create_tables(), 根据模型定义自动创建缺失表。
+  - PostgreSQL: 用 create_all() 建表 + 增量 ALTER ADD COLUMN 补新列
+  - SQLite: 仅 create_all() (测试用, 不做 ALTER)
+  - init-chatbi.sql 退化为种子数据脚本, 表结构以 models.py 为单一真相源
 """
 from __future__ import annotations
 
 import asyncio
-from functools import lru_cache
+import logging
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -21,7 +29,15 @@ class Base(DeclarativeBase):
 
 _engine = None
 _async_session_factory = None
-_engine_lock = asyncio.Lock()
+_engine_lock: asyncio.Lock | None = None
+
+
+def _get_engine_lock() -> asyncio.Lock:
+    """Lazy-create asyncio.Lock (must be created inside a running event loop)."""
+    global _engine_lock
+    if _engine_lock is None:
+        _engine_lock = asyncio.Lock()
+    return _engine_lock
 
 
 def _get_engine_kwargs(database_url: str, debug: bool) -> dict:
@@ -61,7 +77,7 @@ async def get_engine():
     if _engine is not None:
         return _engine
 
-    async with _engine_lock:
+    async with _get_engine_lock():
         if _engine is not None:  # Double-check after acquiring lock
             return _engine
         from app.core.config import get_settings
@@ -104,3 +120,87 @@ async def get_db() -> AsyncSession:
             yield session
         finally:
             await session.close()
+
+
+async def auto_create_tables():
+    """根据模型定义自动创建缺失表 + 增量补列.
+
+    - create_all() 建缺失的表 (已存在的表不受影响)
+    - PostgreSQL: 逐表检查已有列, ALTER ADD COLUMN 补模型中新加的列
+    - SQLite: 仅 create_all() (测试用, 不做 ALTER — SQLite ALTER 支持有限)
+    - 枚举类型: PostgreSQL 自动补缺 (CREATE TYPE ... IF NOT EXISTS)
+
+    设计原则: 模型(models.py)是表结构的单一真相源, init-chatbi.sql 仅负责种子数据。
+    """
+    engine = await get_engine()
+    is_sqlite = "sqlite" in str(engine.url)
+
+    # 1. create_all() — 建缺失的表 (已存在的表不会重建/不会丢数据)
+    async with engine.begin() as conn:
+        # PostgreSQL: 先确保枚举类型存在
+        if not is_sqlite:
+            await _ensure_enum_types(conn)
+        await conn.run_sync(Base.metadata.create_all)
+
+    # 2. PostgreSQL 增量补列 — 模型新加的列自动 ALTER ADD
+    if not is_sqlite:
+        async with engine.begin() as conn:
+            await _add_missing_columns(conn)
+
+    logger.info("auto_create_tables: 表结构同步完成")
+
+
+async def _ensure_enum_types(conn):
+    """确保 PostgreSQL 枚举类型存在 (CREATE TYPE IF NOT EXISTS 等效)."""
+    # 从所有模型收集枚举类型定义
+    enum_types: dict[str, list[str]] = {}
+    for table in Base.metadata.tables.values():
+        for col in table.columns:
+            type_name = getattr(col.type, "name", None)
+            if type_name and hasattr(col.type, "enums"):
+                enum_types[type_name] = list(col.type.enums)
+
+    for type_name, values in enum_types.items():
+        # PostgreSQL: DO block 实现 IF NOT EXISTS
+        values_sql = ", ".join(f"'{v}'" for v in values)
+        await conn.execute(text(
+            f"DO $$ BEGIN "
+            f"CREATE TYPE {type_name} AS ENUM ({values_sql}); "
+            f"EXCEPTION WHEN duplicate_object THEN NULL; "
+            f"END $$;"
+        ))
+
+
+async def _add_missing_columns(conn):
+    """检查每个模型表, 补上模型中有但表中没有的列 (ALTER ADD COLUMN)."""
+    for table in Base.metadata.tables.values():
+        # 获取表中已有的列名
+        result = await conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = :table_name AND table_schema = current_schema()"
+        ), {"table_name": table.name})
+        existing_cols = {row[0] for row in result}
+
+        for col in table.columns:
+            if col.name not in existing_cols:
+                col_type = col.type.compile(dialect=conn.dialect)
+                nullable = "" if col.nullable else " NOT NULL"
+                default = ""
+                if col.server_default is not None:
+                    default = f" DEFAULT {col.server_default.arg}"
+                elif col.default is not None:
+                    # Python-side default: 用 SQL 友好的值
+                    val = col.default.arg
+                    if callable(val):
+                        continue  # 跳过 callable default (如 new_uuid), 启动后 ORM 层处理
+                    if isinstance(val, bool):
+                        default = f" DEFAULT {'TRUE' if val else 'FALSE'}"
+                    elif isinstance(val, int):
+                        default = f" DEFAULT {val}"
+                    elif isinstance(val, str):
+                        default = f" DEFAULT '{val}'"
+
+                await conn.execute(text(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type}{nullable}{default}'
+                ))
+                logger.info("auto_create_tables: 补列 %s.%s", table.name, col.name)

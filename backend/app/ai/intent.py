@@ -94,11 +94,17 @@ def strip_visualization(question: str, return_hint: bool = False) -> str | tuple
 _INTENT_PROMPT = """你是 BI 系统的意图识别器。判断用户问题的意图, 只返回 JSON。
 
 5 种意图:
-- TEXT_TO_SQL: 查询数据 (如"本月销售额"、"各品类销量排名")
-- CLARIFICATION: 模糊追问, 需上下文补全 (如"那个呢"、"上个月呢")
+- TEXT_TO_SQL: 查询数据。包括基于对话历史的追问和复用——只要能从历史或当前问题中
+  明确知道要查什么数据, 就是 TEXT_TO_SQL (如"本月销售额"、"上个月呢"、"再查一次"、
+  "换成北京的数据")。
+- CLARIFICATION: 无法确定用户要查什么。即: 当前问题模糊, 且对话历史也无法消解
+  (如没有上下文时的"那个呢"、"然后呢")。只要历史里有明确的上轮查询, 就不该判此意图。
 - GENERAL: 闲聊/打招呼, 不涉及数据查询 (如"你好"、"谢谢")
 - CHART_MODIFY: 只修改图表展示方式, 不改数据 (如"换成饼图"、"用柱状图")
 - EXPLANATION: 解释已有 SQL 或结果 (如"这个查询什么意思"、"为什么是这个数")
+
+核心原则: 如果对话历史里有上轮查询, 用户的追问/复用/修改条件都属于 TEXT_TO_SQL,
+不是 CLARIFICATION。只有完全无法判断用户意图时才用 CLARIFICATION。
 
 规则:
 1. normalized_question: 剥离可视化措辞后的纯净业务问题 ("用折线图展示本月销售" → "本月销售")
@@ -122,6 +128,7 @@ async def classify_intent(question: str, llm_client, history: str | None = None)
         IntentOutput — 始终返回 (不抛), 低置信/失败降级 CLARIFICATION
     """
     from app.core.config import get_settings
+    from app.core.llm_client import extract_content
     from app.core.text_sanitize import sanitize_text
     settings = get_settings()
 
@@ -131,6 +138,12 @@ async def classify_intent(question: str, llm_client, history: str | None = None)
     user_content = clean_question
     if history:
         user_content = f"【对话历史】\n{history}\n\n【当前问题】{clean_question}"
+    # 有些模型不认 system 角色, 把格式指令也放进 user message
+    user_content = (
+        f"{_INTENT_PROMPT}\n\n"
+        f"用户问题: {user_content}\n\n"
+        f"只返回 JSON, 不要解释:"
+    )
 
     last_error = None
     for attempt in range(MAX_RETRIES + 1):
@@ -141,14 +154,16 @@ async def classify_intent(question: str, llm_client, history: str | None = None)
                     {"role": "system", "content": _INTENT_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=300,
+                max_tokens=settings.llm_max_tokens,
                 temperature=0.0,
             )
-            content = resp.choices[0].message.content or ""
+            content = extract_content(resp)
+            # Debug: 记录 LLM 原始返回, 排查非 JSON 问题
+            logger.debug("意图识别 LLM 原始返回 (attempt %d): %r", attempt + 1, content[:500])
             # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
             from app.core.token_tracker import track_usage
             from app.core.prompt_capture import record_prompt
-            track_usage(getattr(resp, "usage", None))
+            track_usage(getattr(resp, "usage", None), node="intent")
             record_prompt("intent", _INTENT_PROMPT, user_content, getattr(resp, "usage", None))
             from app.core.llm_json import parse_json_response
             parsed = parse_json_response(content)
@@ -172,7 +187,7 @@ async def classify_intent(question: str, llm_client, history: str | None = None)
 
             return output
 
-        except (json.JSONDecodeError, ValidationError, KeyError) as e:
+        except (json.JSONDecodeError, ValidationError, KeyError, ValueError) as e:
             # schema 不匹配 → 重试
             last_error = e
             logger.warning("意图识别 schema 不匹配 (attempt %d): %s", attempt + 1, e)

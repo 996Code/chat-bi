@@ -1,5 +1,6 @@
 """
 T040: Skills 加载 — SKILL.md 解析 + 热更新 + prompt 注入
+T060: Skills 分层子目录 — reference/*.md 按数据源类型自动加载
 
 对标:
   - SKL-001: SKILL.md 格式 (YAML frontmatter + Markdown 正文, 多文件)
@@ -8,16 +9,21 @@ T040: Skills 加载 — SKILL.md 解析 + 热更新 + prompt 注入
   - Claude Code: Skills memoize + 文件监听
 
 设计:
-  - Skill: 单个 SKILL.md 解析结果 (name/description/content)
-  - SkillsLoader: 扫描目录加载所有 SKILL.md, 带缓存 + invalidate
-  - format_for_prompt: 拼接所有 Skills 为约束规则文本
-  - 目录结构: skills/<name>/SKILL.md (如 skills/sql-rules/SKILL.md)
+  - Skill: 单个 SKILL.md 解析结果 (name/description/content/references)
+  - SkillsLoader: 扫描目录加载所有 SKILL.md + reference/*.md, 带缓存 + invalidate
+  - format_for_prompt: 拼接所有 Skills 为约束规则文本, 按 db_type 自动加载对应 reference
+  - 目录结构:
+      skills/<name>/SKILL.md              # 通用规则
+      skills/<name>/reference/mysql.md     # MySQL 方言规则
+      skills/<name>/reference/postgresql.md # PostgreSQL 方言规则
+      skills/<name>/reference/bar.md       # 柱状图规则
+      skills/<name>/reference/line.md      # 折线图规则
 """
 from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -31,10 +37,12 @@ class Skill:
     version: str = ""
     content: str = ""  # Markdown 正文 (业务规则)
     file_path: str = ""
+    # T060: reference 子文件 — key 为文件名(不含 .md), value 为内容
+    references: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_file(cls, path: Path) -> "Skill":
-        """解析 SKILL.md (YAML frontmatter + Markdown 正文)。"""
+        """解析 SKILL.md (YAML frontmatter + Markdown 正文) + reference/*.md。"""
         text = path.read_text(encoding="utf-8")
         name = path.parent.name  # 默认 name = 目录名
         description = ""
@@ -58,14 +66,25 @@ class Skill:
                     elif key == "version":
                         version = val
 
+        # T060: 加载 reference/*.md 子文件
+        references: dict[str, str] = {}
+        ref_dir = path.parent / "reference"
+        if ref_dir.is_dir():
+            for ref_file in sorted(ref_dir.glob("*.md")):
+                ref_key = ref_file.stem  # mysql, postgresql, bar, line ...
+                try:
+                    references[ref_key] = ref_file.read_text(encoding="utf-8").strip()
+                except Exception as e:
+                    logger.warning("Skill reference 加载失败 %s: %s", ref_file, e)
+
         return cls(name=name, description=description, version=version,
-                   content=content, file_path=str(path))
+                   content=content, file_path=str(path), references=references)
 
 
 class SkillsLoader:
-    """Skills 加载器 (对标 SKL-002 热更新)。
+    """Skills 加载器 (对标 SKL-002 热更新 + T060 分层子目录)。
 
-    扫描 base_dir 下的所有 <name>/SKILL.md。
+    扫描 base_dir 下的所有 <name>/SKILL.md 及 <name>/reference/*.md。
     带缓存: invalidate() 后下次 load_all 重新读取文件。
     """
 
@@ -73,19 +92,23 @@ class SkillsLoader:
         self._base_dir = Path(base_dir)
         self._cache: list[Skill] | None = None
         # 热更新: 记录上次加载时的目录 mtime, 变化则自动失效缓存重载
+        # T060: mtime 检测范围包含 reference/ 子目录
         self._last_mtime: float = 0.0
 
     def _current_dir_mtime(self) -> float:
-        """取 skills 目录下所有 SKILL.md 的最新 mtime (检测文件改动)。"""
+        """取 skills 目录下所有 SKILL.md + reference/*.md 的最新 mtime。"""
         if not self._base_dir.exists():
             return 0.0
         try:
-            return max(f.stat().st_mtime for f in self._base_dir.glob("*/SKILL.md"))
+            mtimes = [f.stat().st_mtime for f in self._base_dir.glob("*/SKILL.md")]
+            # T060: 也监控 reference/ 子文件
+            mtimes.extend(f.stat().st_mtime for f in self._base_dir.glob("*/reference/*.md"))
+            return max(mtimes)
         except (ValueError, OSError):
             return 0.0
 
     def load_all(self) -> list[Skill]:
-        """加载所有 SKILL.md (带缓存 + mtime 热更新)。
+        """加载所有 SKILL.md + reference/*.md (带缓存 + mtime 热更新)。
 
         热更新 (对标 SKL-002): 每次调用比对目录 mtime, 文件改动自动重载,
         无需重启也无需手动 invalidate (admin HTTP 编辑 / 直接改文件都生效)。
@@ -113,17 +136,22 @@ class SkillsLoader:
                 logger.warning("Skill 加载失败 %s: %s", skill_file, e)
 
         self._cache = skills
-        logger.info("Skills 加载: %d 个", len(skills))
+        ref_count = sum(len(s.references) for s in skills)
+        logger.info("Skills 加载: %d 个, %d 个 reference 文件", len(skills), ref_count)
         return skills
 
     def invalidate(self) -> None:
         """缓存失效 (对标 SKL-002 热更新: 文件改动后调此方法)。"""
         self._cache = None
 
-    def format_for_prompt(self) -> str:
-        """格式化所有 Skills 为 prompt 注入文本 (对标 SKL-003)。
+    def format_for_prompt(self, db_type: str | None = None) -> str:
+        """格式化所有 Skills 为 prompt 注入文本 (对标 SKL-003 + T060)。
 
         作为约束规则注入 SQL 生成 prompt 静态段。
+        T060: db_type 匹配时自动拼接对应的 reference/*.md 内容。
+
+        Args:
+            db_type: 数据源类型 (mysql/postgresql), 匹配 reference/<db_type>.md
         """
         skills = self.load_all()
         if not skills:
@@ -134,6 +162,14 @@ class SkillsLoader:
             if skill.description:
                 lines.append(f"### {skill.description}")
             lines.append(skill.content)
+
+            # T060: 按 db_type 注入对应 reference
+            if db_type and skill.references:
+                ref_content = skill.references.get(db_type)
+                if ref_content:
+                    lines.append(f"### {db_type} 方言规则")
+                    lines.append(ref_content)
+
         return "\n".join(lines)
 
 

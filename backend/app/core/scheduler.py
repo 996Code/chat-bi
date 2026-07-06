@@ -1,5 +1,5 @@
 """
-调度器基础设施 — APScheduler AsyncIOScheduler 单例 (DSO-02/04, PERF-03 清理 的公共底座)
+调度器基础设施 — APScheduler AsyncIOScheduler 单例 (DSO-02/04 的公共底座)
 
 设计:
   - 全局单例 AsyncIOScheduler (仿 get_redis/get_embedder 模式)
@@ -39,7 +39,7 @@ async def start_scheduler() -> None:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.interval import IntervalTrigger
     except ImportError:
-        logger.warning("APScheduler 未安装, 定时任务不可用 (健康检查/元数据刷新/任务清理将不执行)")
+        logger.warning("APScheduler 未安装, 定时任务不可用 (健康检查/元数据刷新将不执行)")
         return
 
     _scheduler = AsyncIOScheduler(logger=logger)
@@ -88,20 +88,20 @@ def _register_jobs(scheduler: Any, settings: Any) -> None:
     except Exception as e:
         logger.warning("注册元数据刷新任务失败: %s", e)
 
-    # 3. 异步任务清理 (PERF-03, 每小时清理过期已完成任务)
+    # 3. Redis 健康检查 (M5: 持续监控, 连续失败 → ERROR 告警)
     try:
         scheduler.add_job(
-            _run_async_task_cleanup,
+            _run_redis_health_check,
             trigger="interval",
-            hours=1,
-            id="async_task_cleanup",
+            seconds=60,
+            id="redis_health_check",
             replace_existing=True,
             max_instances=1,
             coalesce=True,
         )
-        logger.info("定时任务已注册: 异步任务清理 (每小时)")
+        logger.info("定时任务已注册: Redis 健康检查 (每 60s)")
     except Exception as e:
-        logger.warning("注册异步任务清理失败: %s", e)
+        logger.warning("注册 Redis 健康检查任务失败: %s", e)
 
 
 def shutdown_scheduler() -> None:
@@ -170,15 +170,10 @@ async def _run_metadata_refresh() -> None:
         logger.warning("定时元数据刷新执行失败: %s", e)
 
 
-async def _run_async_task_cleanup() -> None:
-    """定时执行: 清理过期已完成异步任务 (PERF-03)。"""
+async def _run_redis_health_check() -> None:
+    """M5: 定时执行: Redis 健康检查 (持续监控, 对标 SEC-005)。"""
     try:
-        from app.api.async_query import cleanup_expired_tasks
-        session = await _new_db_session()
-        try:
-            await cleanup_expired_tasks(session)
-            await session.commit()
-        finally:
-            await session.close()
+        from app.core.redis_client import check_redis_health
+        await check_redis_health()
     except Exception as e:
-        logger.warning("定时任务清理执行失败: %s", e)
+        logger.warning("Redis 健康检查执行失败: %s", e)

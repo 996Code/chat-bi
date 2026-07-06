@@ -178,49 +178,6 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         state.stage = AgentStage.SCHEMA_SEARCH
         question = state.intent_output.normalized_question or state.question
 
-        # 语义缓存 (RAG-003): 相似问题复用 SQL, 命中则跳过 schema/sql 生成直接执行
-        # (重新执行而非返回旧结果, 因数据可能变化; 缓存 SQL 仍过白名单校验保安全)
-        cached_sql = await _check_semantic_cache(question)
-        if cached_sql:
-            from app.ai.schema_utils import extract_allowed_columns
-            allowed_columns = extract_allowed_columns(state.semantic_content)
-            if allowed_columns:
-                from app.core.sql_validator import validate_sql
-                validation = validate_sql(cached_sql, allowed_columns)
-                if not validation.ok:
-                    logger.warning("语义缓存 SQL 校验失败, 丢弃缓存: %s", validation.reason)
-                    cached_sql = ""
-
-        if cached_sql:
-            logger.info("语义缓存命中, 复用 SQL: %s", cached_sql[:80])
-            state.sql = cached_sql
-            state.stage = AgentStage.GENERATE_SQL
-            # 跳过 schema/sql 生成, 直接执行缓存 SQL → 自检 → 图表
-            exec_result = await deps.execute_sql(state.sql)
-            state.execute_result = exec_result
-            if exec_result.error:
-                state.error = f"缓存 SQL 执行失败: {exec_result.error}"
-                state.stage = AgentStage.FINAL
-                return state
-            # 自检 + 图表 (与正常流程 Stage 6/7 一致)
-            check = deps.check_result(
-                rows=exec_result.rows if hasattr(exec_result, "rows") else [],
-                columns=exec_result.columns if hasattr(exec_result, "columns") else [],
-                sql=state.sql,
-            )
-            state.check_result = check
-            chart = await deps.generate_chart(
-                question=question,
-                columns=exec_result.columns if hasattr(exec_result, "columns") else [],
-                rows=exec_result.rows if hasattr(exec_result, "rows") else [],
-                chart_type_hint=state.intent_output.chart_type_hint if hasattr(state.intent_output, "chart_type_hint") else None,
-            )
-            state.llm_call_count += 1
-            state.chart_option = chart.option if hasattr(chart, "option") else None
-            state.stage = AgentStage.FINAL
-            state.success = True
-            return state
-
         retrieval = await deps.retrieve(question)
         state.llm_call_count += 1
         state.retrieved_models = retrieval.models if hasattr(retrieval, "models") else []
@@ -413,8 +370,6 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         review = getattr(state.thinking, "prev_sql_review", "") if state.thinking else ""
         if review and state.history:
             state.reply = (state.reply + "\n\n" if state.reply else "") + f"💡 优化建议: {review}"
-        # 语义缓存写入 (RAG-003): 成功的 question→sql 存缓存, 下次相似问题复用
-        await _write_semantic_cache(question, state.sql)
         return state
 
     except Exception as e:
@@ -424,38 +379,6 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         state.success = False
         state.error = f"Agent 执行异常: {e}"
         return state
-
-
-async def _check_semantic_cache(question: str) -> str:
-    """语义缓存查询 (RAG-003): 相似问题命中则返回缓存的 SQL。
-
-    失败/无缓存返回空串 (降级不阻塞, 对标 fail-closed)。
-    """
-    try:
-        from app.services.semantic_cache import get_semantic_cache
-        cache = get_semantic_cache()
-        if cache is None:
-            return ""
-        return await cache.get(question) or ""
-    except Exception as e:
-        logger.debug("语义缓存查询失败, 跳过: %s", e)
-        return ""
-
-
-async def _write_semantic_cache(question: str, sql: str) -> None:
-    """语义缓存写入 (RAG-003): 成功的 question→sql 存缓存。
-
-    失败静默跳过 (不阻塞主流程)。
-    """
-    if not question or not sql:
-        return
-    try:
-        from app.services.semantic_cache import get_semantic_cache
-        cache = get_semantic_cache()
-        if cache is not None:
-            await cache.put(question, sql)
-    except Exception as e:
-        logger.debug("语义缓存写入失败, 跳过: %s", e)
 
 
 def _build_schema_context_fallback(models: list[dict]) -> str:

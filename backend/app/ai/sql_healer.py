@@ -164,7 +164,8 @@ _SECURITY_RULES = """严格规则 (违反则拒绝):
 2. 只能使用下方"允许的列"里的列名, 禁止臆造
 3. 禁止危险函数: LOAD_FILE/SLEEP/BENCHMARK/INTO OUTFILE
 4. 遵守 data_type 约束 (不对 VARCHAR 做 SUM)
-5. 只返回 SQL, 不要解释"""
+5. 只返回 SQL, 不要解释
+6. 为每个 SELECT 输出列添加 AS 中文别名 (schema 中有中文名的用中文名, 聚合列也要有中文别名)"""
 
 # 专项纠正提示 (按错误类别)
 _CATEGORY_HINTS = {
@@ -211,6 +212,7 @@ async def heal_sql(
 
     # ── 自愈 prompt (保留全部安全规则, 对标 v1 #32) ───────────
     from app.core.config import get_settings
+    from app.core.llm_client import extract_content
     from app.core.text_sanitize import sanitize_text
     settings = get_settings()
 
@@ -232,14 +234,14 @@ async def heal_sql(
         resp = await llm_client.chat.completions.create(
             model=settings.llm_model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000,
+            max_tokens=settings.llm_max_tokens,
             temperature=0.0,
         )
-        content = resp.choices[0].message.content or ""
+        content = extract_content(resp)
         # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
         from app.core.token_tracker import track_usage
         from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None))
+        track_usage(getattr(resp, "usage", None), node="heal_sql")
         record_prompt("heal_sql", "", prompt, getattr(resp, "usage", None))
     except Exception as e:
         logger.warning("自愈 LLM 调用失败: %s", e)

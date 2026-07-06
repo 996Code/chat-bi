@@ -50,9 +50,18 @@ def _chat_rate():
     return f"{get_settings().rate_limit_queries_per_minute}/minute"
 
 
-def _sse(event: str, data: dict) -> str:
-    """格式化一条 SSE 事件 (标准两行格式)。"""
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+def _sse(event: str, data: dict, seq: int | None = None) -> str:
+    """格式化一条 SSE 事件 (标准格式 + event ID)。
+
+    M2: 加 event ID 字段, 支持断线重连 (Last-Event-ID)。
+    seq=None 时不输出 id 行 (兼容旧调用)。
+    """
+    parts = []
+    if seq is not None:
+        parts.append(f"id: {seq}")
+    parts.append(f"event: {event}")
+    parts.append(f"data: {json.dumps(data, ensure_ascii=False, default=str)}")
+    return "\n".join(parts) + "\n\n"
 
 
 def _normalize_value(v):
@@ -151,25 +160,30 @@ async def chat_stream(
         state.history = history_text  # 注入多轮上下文 (intent/think/generate_sql 都用)
         state.prev_sql = prev_sql  # CHART_MODIFY 复用上轮 SQL
         conv_id = conversation_id or str(uuid.uuid4()).replace("-", "")[:32]
+        # M2: SSE event ID 自增序号 (断线重连用)
+        _seq = 0
+
+        def emit(event: str, data: dict, node: str | None = None) -> str:
+            """格式化 SSE 事件并自增序号。
+
+            Args:
+                node: AI 节点名, 传入后自动附带该节点的 LLM 调用信息
+                      (call_count + total_tokens), 前端在 pipeline 步骤上展示。
+            """
+            nonlocal _seq
+            _seq += 1
+            if node:
+                nu = get_node_usage(node)
+                if nu:
+                    data["node_usage"] = nu
+            return _sse(event, data, _seq)
         # OBS-002: 启动 token 追踪 (请求级)
         # T050: 启动 prompt 捕获 (请求级, dump-prompts 导出用)
-        from app.core.token_tracker import start_token_tracking, stop_token_tracking
+        from app.core.token_tracker import start_token_tracking, stop_token_tracking, get_node_usage
         from app.core.prompt_capture import start_prompt_capture, stop_prompt_capture
         _tt_token = start_token_tracking()
         _pc_token = start_prompt_capture()
         try:
-            # FBK-003 负面信号检测: 用户追问含"不对/错了"→ 主动收集反馈 (对标 MEM-02)
-            # 宁缺毋滥: 只在追问时触发 (有上下文), 新对话不触发
-            if conversation_id:
-                from app.services.feedback_detector import detect_negative_signal
-                if detect_negative_signal(question):
-                    yield _sse("clarify", {
-                        "question": "看起来上次结果可能不太对, 能具体说下哪里有问题吗? (你的反馈会帮助改进)",
-                        "reason": "negative_signal",
-                        "options": None,
-                    })
-                    return
-
             # ── Stage 1: 意图识别 ───────────────────────────────
             t0 = time.monotonic()
             state.intent_output = await deps.classify_intent(state.question, history=state.history)
@@ -183,24 +197,24 @@ async def chat_stream(
                     state.llm_call_count += 1
                 state.success = True
                 state.persist = False  # 纯闲聊不入对话历史
-                yield _sse("intent", {
+                yield emit("intent", {
                     "intent": intent,
                     "reply": state.reply,
                     "duration_ms": round((time.monotonic() - t0) * 1000),
-                })
+                }, node="intent")
                 return
 
-            yield _sse("intent", {
+            yield emit("intent", {
                 "intent": intent,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
-            })
+            }, node="intent")
 
             # CHART_MODIFY → 复用上轮 SQL, 只换图表类型 (对标 ARC-04)
             if intent == "CHART_MODIFY":
                 if not state.prev_sql:
                     state.reply = '图表修改需要对话上下文, 请先查询数据后再换图表类型。'
                     state.error = state.reply
-                    yield _sse("intent", {"intent": intent, "reply": state.reply})
+                    yield emit("intent", {"intent": intent, "reply": state.reply}, node="intent")
                     return
                 state.sql = state.prev_sql
                 chart_hint = state.intent_output.chart_type_hint if hasattr(state.intent_output, "chart_type_hint") else None
@@ -209,10 +223,10 @@ async def chat_stream(
                 state.execute_result = exec_result
                 if exec_result.error:
                     state.error = f"上轮 SQL 执行失败: {exec_result.error}"
-                    yield _sse("error", {"error": state.error})
+                    yield emit("error", {"error": state.error})
                     return
                 # 数据事件 (前端展示)
-                yield _sse("data", {
+                yield emit("data", {
                     "columns": list(exec_result.columns) if hasattr(exec_result, "columns") else [],
                     "rows": [[_normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
                     "row_count": len(exec_result.rows) if hasattr(exec_result, "rows") else 0,
@@ -229,10 +243,10 @@ async def chat_stream(
                 state.llm_call_count += 1
                 state.chart_option = chart.option if hasattr(chart, "option") else None
                 if state.chart_option:
-                    yield _sse("chart", {
+                    yield emit("chart", {
                         "option": state.chart_option,
                         "duration_ms": round((time.monotonic() - t0) * 1000),
-                    })
+                    }, node="generate_chart")
                 state.reply = f"已将图表切换为 {chart_hint or '新'} 类型。"
                 state.success = True
                 return
@@ -245,7 +259,7 @@ async def chat_stream(
                     question=state.intent_output.reason or "请提供更具体的问题",
                 )
                 state.error = f"需要澄清: {state.intent_output.reason}"
-                yield _sse("clarify", {
+                yield emit("clarify", {
                     "question": state.ask_user_request.question,
                     "reason": state.ask_user_request.reason,
                     "options": getattr(state.ask_user_request, "options", None),
@@ -259,17 +273,17 @@ async def chat_stream(
             state.llm_call_count += 1
             state.retrieved_models = retrieval.models if hasattr(retrieval, "models") else []
             tables = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
-            yield _sse("schema", {
+            yield emit("schema", {
                 "tables": tables,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
-            })
+            }, node="retrieve")
 
             # schema 不确定 / 无召回 → ask_user 或结束
             ask = deps.should_ask_for_schema(retrieval)
             if ask is not None:
                 state.ask_user_request = ask
                 state.error = "Schema 不确定, 需要用户确认"
-                yield _sse("clarify", {
+                yield emit("clarify", {
                     "question": getattr(ask, "question", "请确认要查询的表"),
                     "reason": getattr(ask, "reason", ""),
                     "options": getattr(ask, "options", None),
@@ -298,13 +312,13 @@ async def chat_stream(
             # 预思考 SSE 事件 (REF-001: 推送选表理由+聚合+陷阱, 前端可展开查看)
             thinking = state.thinking
             if thinking and not getattr(thinking, "error", None):
-                yield _sse("thinking", {
+                yield emit("thinking", {
                     "tables": getattr(thinking, "tables", []),
                     "aggregation": getattr(thinking, "aggregation", ""),
                     "caveats": getattr(thinking, "caveats", []),
                     "prev_sql_review": getattr(thinking, "prev_sql_review", ""),
                     "duration_ms": round((time.monotonic() - t_think) * 1000),
-                })
+                }, node="thinking")
 
             # ── Stage 4+5: SQL 生成/校验/执行 + 自愈循环 ──────────
             t0 = time.monotonic()
@@ -316,7 +330,7 @@ async def chat_stream(
 
             if gen_result.error and not gen_result.sql:
                 state.error = gen_result.error
-                yield _sse("sql", {"error": gen_result.error, "duration_ms": round((time.monotonic() - t0) * 1000)})
+                yield emit("sql", {"error": gen_result.error, "duration_ms": round((time.monotonic() - t0) * 1000)}, node="generate_sql")
                 return
 
             state.sql = gen_result.sql
@@ -326,12 +340,12 @@ async def chat_stream(
                 validation_ok = False
                 violated = gen_result.validation.reason
 
-            yield _sse("sql", {
+            yield emit("sql", {
                 "sql": state.sql,
                 "validation_ok": validation_ok,
                 "validation_reason": violated,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
-            })
+            }, node="generate_sql")
 
             last_error = None if validation_ok else f"校验失败: {violated}"
             exec_result = None
@@ -357,18 +371,18 @@ async def chat_stream(
                 # 记录自愈前的 SQL (OBS-003: 展示修复前后对比)
                 before_sql = state.sql
                 if not heal_result.success:
-                    yield _sse("heal", {
+                    yield emit("heal", {
                         "retry": state.self_heal_rounds, "success": False,
                         "error": heal_result.error, "before_sql": before_sql,
-                    })
+                    }, node="heal_sql")
                     break
                 state.sql = heal_result.sql
-                yield _sse("heal", {
+                yield emit("heal", {
                     "retry": state.self_heal_rounds, "success": True,
                     "sql": state.sql, "before_sql": before_sql,
                     "error": last_error,
                     "duration_ms": round((time.monotonic() - t0) * 1000),
-                })
+                }, node="heal_sql")
                 # 重新校验 + 执行
                 heal_valid = True
                 if hasattr(heal_result, "validation") and not heal_result.validation.ok:
@@ -381,7 +395,7 @@ async def chat_stream(
 
             # 执行结果事件
             if exec_result and not exec_result.error:
-                yield _sse("data", {
+                yield emit("data", {
                     "columns": list(exec_result.columns) if hasattr(exec_result, "columns") else [],
                     "rows": [[_normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
                     "row_count": len(exec_result.rows) if hasattr(exec_result, "rows") else 0,
@@ -425,7 +439,7 @@ async def chat_stream(
                                 check = recheck
                             else:
                                 # 重发修正后的数据
-                                yield _sse("data", {
+                                yield emit("data", {
                                     "columns": list(exec_result.columns) if hasattr(exec_result, "columns") else [],
                                     "rows": [[_normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
                                     "row_count": len(exec_result.rows) if hasattr(exec_result, "rows") else 0,
@@ -438,7 +452,7 @@ async def chat_stream(
                     if ask_result is not None:
                         state.ask_user_request = ask_result
                         state.error = f"结果异常: {check.reason}"
-                        yield _sse("clarify", {
+                        yield emit("clarify", {
                             "question": getattr(ask_result, "question", "结果可能异常"),
                             "reason": getattr(ask_result, "reason", ""),
                             "options": getattr(ask_result, "options", None),
@@ -457,10 +471,10 @@ async def chat_stream(
             state.llm_call_count += 1
             state.chart_option = chart.option if hasattr(chart, "option") else None
             if state.chart_option:
-                yield _sse("chart", {
+                yield emit("chart", {
                     "option": state.chart_option,
                     "duration_ms": round((time.monotonic() - t0) * 1000),
-                })
+                }, node="generate_chart")
 
             # ── Stage 8: 完成 ────────────────────────────────────
             state.stage = AgentStage.FINAL
@@ -469,7 +483,7 @@ async def chat_stream(
         except Exception as e:
             logger.exception("流式 Agent 异常")
             state.error = f"Agent 执行异常: {e}"
-            yield _sse("error", {"error": str(e)})
+            yield emit("error", {"error": str(e)})
         finally:
             # 统一持久化 + complete 事件 (单一出口, 对标 V1: 审计在管线末尾一次性)
             # 纯闲聊 (GENERAL) 不入对话历史
@@ -484,7 +498,7 @@ async def chat_stream(
                 await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps)
             # OBS-002: 结束 token 追踪, 带入 complete 事件
             token_stats = stop_token_tracking(_tt_token)
-            yield _sse("complete", {
+            yield emit("complete", {
                 "success": state.success,
                 "conversation_id": conv_id if should_persist else None,
                 "error": state.error if not state.success else None,
@@ -506,6 +520,25 @@ def _build_fallback(models: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _serialize_thinking(thinking) -> dict | None:
+    """把 ThinkingResult 序列化为 dict (供 ConversationState.thinking 持久化)。
+
+    没有 thinking 或解析失败时返回 None (历史对话恢复时显示为空)。
+    """
+    if not thinking:
+        return None
+    if hasattr(thinking, "tables"):
+        return {
+            "tables": list(getattr(thinking, "tables", [])),
+            "aggregation": getattr(thinking, "aggregation", "") or "",
+            "caveats": list(getattr(thinking, "caveats", [])),
+            "prev_sql_review": getattr(thinking, "prev_sql_review", "") or "",
+        }
+    if isinstance(thinking, dict):
+        return thinking
+    return None
+
+
 async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
     """持久化对话状态 + 标题 + 审计 (流式版, 复用 chat.py 同款逻辑)。"""
     # StateStore 持久化
@@ -516,7 +549,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
         is_new = prev_state is None
         title = ""
         if is_new:
-            from app.core.llm_client import get_llm_client
+            from app.core.llm_client import extract_content, get_llm_client
             from app.core.config import get_settings
             try:
                 settings = get_settings()
@@ -527,9 +560,9 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
                         {"role": "system", "content": "把用户的提问总结为一个简短的对话标题(不超过16个字, 不要标点)。只输出标题文字。"},
                         {"role": "user", "content": state.question},
                     ],
-                    max_tokens=30, temperature=0.0,
+                    max_tokens=settings.llm_max_tokens, temperature=0.0,
                 )
-                title = (resp.choices[0].message.content or "").strip().strip('"\'""')[:16] or state.question[:16]
+                title = extract_content(resp).strip().strip('"\'""')[:16] or state.question[:16]
             except Exception:
                 title = state.question[:16] or "新对话"
         exec_result = state.execute_result
@@ -557,11 +590,34 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             columns=cols,
             rows_sample=rows_sample,
             chart_option=state.chart_option,
+            # 预思考 (历史对话恢复展示)
+            thinking=_serialize_thinking(state.thinking),
             # T050: prompt 记录 (DEBUG 模式, dump-prompts 导出用)
             prompts=getattr(state, "_prompt_records", None),
         )
         turn = (prev_state.turn + 1) if hasattr(prev_state, "turn") and prev_state else 1
         store.save(user.tenant_id, conv_id, turn, conv_state)
+
+        # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供看板展示 / fewshot 回流
+        # 对标 ARC-05 + Dashboard: 看板页从 saved_queries 拉图表
+        if state.success and state.sql:
+            try:
+                from app.db.models import SavedQuery
+                import json
+                saved = SavedQuery(
+                    tenant_id=user.tenant_id,
+                    user_id=user.user_id,
+                    conversation_id=conv_id,
+                    question=state.question,
+                    sql_text=state.sql,
+                    result_summary=json.dumps({
+                        "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
+                    }, ensure_ascii=False),
+                    chart_config=state.chart_option,
+                )
+                db.add(saved)
+            except Exception as e:
+                logger.warning("SavedQuery 写入失败 (不阻塞): %s", e)
 
         # MEM-01 自主记忆写入: 记录用户查询 (question+表), 让后续 recall 能召回
         try:

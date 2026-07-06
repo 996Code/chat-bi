@@ -62,6 +62,11 @@ export interface DataSource {
   database: string
   username: string
   is_active: boolean
+  // 扫描状态 (对标 V1 + 经验教训 #25: 异步任务进度)
+  scan_status: 'idle' | 'scanning' | 'done' | 'failed'
+  scan_progress: number  // 0-100
+  scan_stage: string | null
+  scan_error: string | null
 }
 
 export interface DataSourceCreate {
@@ -84,14 +89,9 @@ export const datasource = {
   create(data: DataSourceCreate) {
     return apiClient.post<DataSource>('/data-sources', data)
   },
-  /** 触发扫描 → 生成/更新语义层 (含 LLM 推断, 慢操作, 单独设 5 分钟超时) */
+  /** 触发扫描 (异步: 立即返回 202 + scan_status=scanning, 后台跑, 前端轮询 get 拿进度) */
   scan(id: string) {
-    return apiClient.post<{
-      semantic_model_id: string
-      version: number
-      table_count: number
-      models: string[]
-    }>(`/data-sources/${id}/scan`, null, { timeout: 300000 })
+    return apiClient.post<DataSource>(`/data-sources/${id}/scan`)
   },
   /** 启停数据源 (DSO-08) */
   toggle(id: string, is_active: boolean) {
@@ -274,7 +274,7 @@ export const observability = {
 // ── 流式问答 (SSE) ────────────────────────────────────────
 
 /** SSE 流式问答端点 (前端用原生 fetch + ReadableStream 解析, 非走 axios) */
-export const STREAM_URL = `${apiClient.defaults.baseURL}/chat/stream`
+export const STREAM_URL = `${apiClient.defaults.baseURL || '/chat-bi/api/v1'}/chat/stream`
 
 export interface ConversationItem {
   conversation_id: string
@@ -292,6 +292,7 @@ export interface Skill {
   description: string
   version: string
   content: string
+  references?: Record<string, string>  // T060: reference 子文件 (key=文件名, value=内容)
 }
 
 export const skills = {
@@ -322,94 +323,76 @@ export const memory = {
   delete(name: string) { return apiClient.delete(`/memory/${name}`) },
 }
 
-// ── 已保存查询 / 看板 (T051) ───────────────────────────────
+// ── 看板 (V1 Dashboard + Widget) ─────────────────────────────
 
-export interface SavedQuery {
+export interface DashboardItem {
   id: string
-  user_id: string | null
-  conversation_id: string | null
+  name: string
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface DashboardWidget {
+  id: string
+  dashboard_id: string
   question: string
-  sql_text: string
-  result_summary: string | null
-  chart_config: Record<string, any> | null
+  query_sql: string | null
+  datasource_id: string
+  chart_type: string
+  columns: any[]
+  rows: any[]
+  row_count: number | null
+  position_x: number
+  position_y: number
+  width: number
+  height: number
   created_at: string | null
+  updated_at: string | null
+  /** refresh 端点返回的实时生成图表 (list/get 端点不含此字段) */
+  chart_option?: Record<string, any> | null
 }
 
-export const savedQuery = {
-  list() { return apiClient.get<SavedQuery[]>('/saved-queries') },
-  get(id: string) { return apiClient.get<SavedQuery>(`/saved-queries/${id}`) },
-  /** 导出为 CSV (UX-08, 需指定数据源重跑) */
-  exportCsv(id: string, data_source_id: string) {
-    return apiClient.get(`/saved-queries/${id}/export`, {
-      params: { data_source_id },
-      responseType: 'blob', timeout: 120000,
-    })
-  },
-}
-
-// ── 反馈系统 (FBK-001/002) ─────────────────────────────────
-
-export interface FeedbackCreate {
-  saved_query_id?: string
-  feedback_type: 'like' | 'dislike' | 'sql_correction' | 'chart_correction' | 'comment'
-  rating?: number
-  corrected_sql?: string
-  comment?: string
-}
-
-export const feedback = {
-  /** 提交反馈 (点赞/点踩/纠正) */
-  create(data: FeedbackCreate) {
-    return apiClient.post('/feedback', data)
-  },
-}
-
-// ── 异步查询 (PERF-03) ───────────────────────────────────────
-
-export interface AsyncTask {
+export interface DashboardDetail {
   id: string
-  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
-  progress: number
-  current_stage: string | null
-  result: {
-    reply?: string | null
-    sql?: string | null
-    columns: string[]
-    rows: any[][]
-    row_count: number
-    chart?: Record<string, any> | null
-  } | null
-  error: string | null
+  name: string
+  widgets: DashboardWidget[]
   created_at: string | null
+  updated_at: string | null
 }
 
-export const asyncQuery = {
-  /** 提交异步查询 */
-  create(data: { question: string; data_source_id: string }) {
-    return apiClient.post<AsyncTask>('/async-query', data)
+export const dashboard = {
+  /** 列出所有看板 */
+  list() { return apiClient.get<DashboardItem[]>('/dashboards') },
+  /** 新建看板 */
+  create(data: { name: string }) { return apiClient.post<DashboardItem>('/dashboards', data) },
+  /** 更新看板名称 */
+  update(id: string, data: { name: string }) { return apiClient.put<DashboardItem>(`/dashboards/${id}`, data) },
+  /** 删除看板 */
+  delete(id: string) { return apiClient.delete(`/dashboards/${id}`) },
+  /** 获取看板详情 (含所有 widget) */
+  get(id: string) { return apiClient.get<DashboardDetail>(`/dashboards/${id}`) },
+  /** 向看板添加 widget (只保存 SQL + 数据源, 不存结果快照 — 实时查询模式) */
+  addWidget(dashboardId: string, data: {
+    question: string
+    query_sql: string
+    datasource_id: string
+    chart_type?: string
+    position_x?: number
+    position_y?: number
+    width?: number
+    height?: number
+  }) { return apiClient.post<DashboardWidget>(`/dashboards/${dashboardId}/widgets`, data) },
+  /** 删除 widget */
+  deleteWidget(dashboardId: string, widgetId: string) {
+    return apiClient.delete(`/dashboards/${dashboardId}/widgets/${widgetId}`)
   },
-  /** 轮询任务状态 */
-  get(id: string) {
-    return apiClient.get<AsyncTask>(`/async-query/${id}`)
+  /** 批量更新 widget 布局 (拖拽/缩放后保存) */
+  updateLayout(dashboardId: string, items: { id: string; x: number; y: number; w: number; h: number }[]) {
+    return apiClient.put(`/dashboards/${dashboardId}/widgets/layout`, items)
   },
-  /** 取消任务 */
-  cancel(id: string) {
-    return apiClient.delete(`/async-query/${id}`)
-  },
-}
-
-// ── 备份恢复 (OPS-02) ────────────────────────────────────────
-
-export const backupApi = {
-  /** 备份元数据库 → 下载 .sql */
-  create() {
-    return apiClient.post('/backup', null, { responseType: 'blob', timeout: 300000 })
-  },
-  /** 恢复 (上传 .sql, 需 confirm) */
-  restore(file: File) {
-    const form = new FormData()
-    form.append('file', file)
-    return apiClient.post('/backup/restore?confirm=true', form, { timeout: 300000 })
+  /** 刷新 widget (重跑 SQL, 用缓存配置注入数据) */
+  refreshWidget(dashboardId: string, widgetId: string) {
+    return apiClient.put<DashboardWidget>(`/dashboards/${dashboardId}/widgets/${widgetId}/refresh`)
   },
 }
 

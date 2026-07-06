@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent import AgentDeps, AgentState, run_agent
 from app.core.auth import AuthUser, require_user, write_audit_log
-from app.core.llm_client import get_llm_client
+from app.core.llm_client import extract_content, get_llm_client
 from app.db.models import DataSource, SemanticModel
 from app.db.session import get_db
 from app.schemas.semantic_layer import SemanticModelContent
@@ -89,10 +89,20 @@ async def build_agent_deps(
     llm = get_llm_client()
     store = get_vector_store()
 
-    # Skills: 加载业务规则注入 prompt (T040)
+    # Skills: 加载业务规则注入 prompt (T040 + T060: 按 db_type 自动加载 reference)
     try:
         from app.services.skills_loader import get_skills_loader
-        skills_text = get_skills_loader().format_for_prompt()
+        # T060: 从数据源获取 db_type, 让 format_for_prompt 注入对应方言规则
+        ds_for_skill = (
+            await db.execute(
+                select(DataSource).where(
+                    DataSource.tenant_filter(tenant_id),
+                    DataSource.id == data_source_id,
+                )
+            )
+        ).scalar_one_or_none()
+        db_type = ds_for_skill.db_type if ds_for_skill else None
+        skills_text = get_skills_loader().format_for_prompt(db_type=db_type)
     except Exception:
         skills_text = ""
 
@@ -118,9 +128,11 @@ async def build_agent_deps(
         )
     ).scalar_one_or_none()
     # DSO-08: 禁用的数据源拒绝查询 (对标 v1 经验教训 #18, 避免 Partial 陷阱)
-    if ds is not None and not ds.is_active:
+    if ds is None:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    if not ds.is_active:
         raise HTTPException(status_code=403, detail="数据源已禁用, 无法查询")
-    url = datasource_to_url(ds) if ds else ""
+    url = datasource_to_url(ds)
 
     # Few-shot 检索闭包 (对标 RAG-004: 相似审核 SQL 作 few-shot 注入 prompt)
     # 独立 fewshot collection, 标量过滤防跨数据源召回; 失败降级返回空 (宁缺毋滥)
@@ -184,17 +196,25 @@ def _get_embedder():
 
 
 def _normalize_value(v):
-    """DB 行值 → JSON 安全类型 (Decimal/datetime/UUID/bytes 等)。"""
+    """DB 行值 → JSON 安全类型 (Decimal/datetime/UUID/bytes/Enum 等)。"""
     from decimal import Decimal
     import datetime
+    from uuid import UUID
+    from enum import Enum
     if v is None:
         return None
+    if isinstance(v, bool):
+        return v
     if isinstance(v, Decimal):
         return float(v)
     if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
         return v.isoformat()
     if isinstance(v, bytes):
         return v.decode("utf-8", errors="replace")
+    if isinstance(v, UUID):
+        return str(v)
+    if isinstance(v, Enum):
+        return v.value
     return v
 
 
@@ -202,6 +222,22 @@ def _chat_rate():
     """查询限流值 (从 config 读, 对标 rate_limit_queries_per_minute)。"""
     from app.core.config import get_settings
     return f"{get_settings().rate_limit_queries_per_minute}/minute"
+
+
+def _serialize_thinking(thinking) -> dict | None:
+    """把 ThinkingResult 序列化为 dict (供 ConversationState.thinking 持久化)。"""
+    if not thinking:
+        return None
+    if hasattr(thinking, "tables"):
+        return {
+            "tables": list(getattr(thinking, "tables", [])),
+            "aggregation": getattr(thinking, "aggregation", "") or "",
+            "caveats": list(getattr(thinking, "caveats", [])),
+            "prev_sql_review": getattr(thinking, "prev_sql_review", "") or "",
+        }
+    if isinstance(thinking, dict):
+        return thinking
+    return None
 
 
 async def _generate_conversation_title(question: str, deps) -> str:
@@ -221,10 +257,10 @@ async def _generate_conversation_title(question: str, deps) -> str:
                 {"role": "system", "content": "把用户的提问总结为一个简短的对话标题(不超过16个字, 不要标点)。只输出标题文字。"},
                 {"role": "user", "content": question},
             ],
-            max_tokens=30,
+            max_tokens=50,
             temperature=0.0,
         )
-        title = (resp.choices[0].message.content or "").strip().strip('"\'""')
+        title = extract_content(resp).strip().strip('"\'""')
         return title[:16] if title else fallback
     except Exception as e:
         logger.warning("标题生成失败, 降级为问题截断: %s", e)
@@ -306,6 +342,7 @@ async def chat(
     if getattr(state, "persist", True):
         try:
             from app.ai.state_store import ConversationState, StateStore
+            from app.core.config import get_settings
             exec_result = state.execute_result
             is_new_conv = prev_state is None
             # 新对话: 生成标题 (LLM 总结 ≤16 字, 失败降级为首条问题截断)
@@ -336,6 +373,10 @@ async def chat(
                 columns=cols,
                 rows_sample=rows_sample,
                 chart_option=state.chart_option,
+                # 预思考 (历史对话恢复展示)
+                thinking=_serialize_thinking(state.thinking),
+                # T050: prompt 记录 (DEBUG 模式才持久化, dump-prompts 导出用)
+                prompts=prompt_capture.get("records", []) if get_settings().debug and prompt_capture else None,
             )
             turn_number = (prev_state.turn + 1) if hasattr(prev_state, "turn") and prev_state else 1
             StateStore().save(user.tenant_id, conversation_id, turn_number, conv_state)

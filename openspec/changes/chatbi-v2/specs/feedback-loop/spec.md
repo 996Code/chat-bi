@@ -1,10 +1,20 @@
 # Feedback Loop
 
-## Status: ADDED
+## Status: PARTIAL — 裁剪后仅保留改 SQL + 审核回流
+
+## 裁剪说明
+
+| 功能 | 决策 | 理由 |
+|---|---|---|
+| 点赞/点踩 | **不纳入** | 轻量反馈价值有限，改 SQL 审核已覆盖核心需求 |
+| 纠正图表 | **不纳入** | 非核心，图表偏好可通过 Skills 规则实现 |
+| 写评论 | **不纳入** | 非核心，改 SQL 时可附带说明 |
+| 负面信号自动触发 (FBK-003) | **不纳入** | 依赖点赞/点踩，随整体裁剪 |
+| **改 SQL + 审核回流 (FBK-001/002)** | **考虑恢复** | 核心闭环：用户改 SQL → admin 审核 → 回流知识库 |
 
 ## 概述
 
-对标 WrenAI 反馈闭环（Question-SQL Pair）+ Claude Code frustration detection + transcript sharing。v2 支持全方位反馈：点赞/点踩 + 直接改 SQL + 纠正图表 + 写评论。反馈需人工审核后回流到知识库，防止错误反馈污染。
+对标 WrenAI 反馈闭环（Question-SQL Pair）+ Claude Code frustration detection + transcript sharing。v2 裁剪后仅保留核心闭环：用户直接改 SQL → admin 审核 → 回流知识库。点赞/点踩、纠正图表、写评论、负面信号自动触发不再纳入。
 
 ## 需求
 

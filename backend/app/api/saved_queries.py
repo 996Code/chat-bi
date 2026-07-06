@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthUser, require_user
-from app.db.models import DataSource, SavedQuery
+from app.db.models import DataSource, SavedQuery, SemanticModel
 from app.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -135,8 +135,29 @@ async def export_saved_query_csv(
         raise HTTPException(status_code=403, detail="数据源已禁用, 无法导出")
 
     # 复用三层校验 (不信任历史 sql_text, 防注入)
+    # B3: 加载语义层提取白名单列, Layer3 校验生效; 无语义层 fail-closed 拒绝
     from app.core.sql_validator import validate_sql
-    validation = validate_sql(q.sql_text)
+    from app.ai.schema_utils import extract_allowed_columns
+    from app.schemas.semantic_layer import SemanticModelContent
+
+    sm = (
+        await db.execute(
+            select(SemanticModel).where(
+                SemanticModel.tenant_filter(user.tenant_id),
+                SemanticModel.data_source_id == data_source_id,
+                SemanticModel.is_current == True,  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+    if sm is None:
+        raise HTTPException(
+            status_code=422,
+            detail="该数据源无语义层, 无法校验列白名单, 拒绝导出 (fail-closed)",
+        )
+
+    semantic_content = SemanticModelContent.model_validate(sm.content)
+    allowed_columns = extract_allowed_columns(semantic_content)
+    validation = validate_sql(q.sql_text, allowed_columns=allowed_columns)
     if not validation.ok:
         raise HTTPException(status_code=422, detail=f"SQL 校验失败: {validation.reason}")
 

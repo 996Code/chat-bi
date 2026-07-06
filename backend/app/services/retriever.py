@@ -17,7 +17,6 @@ T022: 两阶段检索 — 向量召回 + LLM 精筛
 """
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -139,14 +138,15 @@ async def _llm_refine(
 
     try:
         from app.core.config import get_settings
+        from app.core.llm_client import extract_content
         settings = get_settings()
         resp = await llm_client.chat.completions.create(
             model=settings.llm_model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
+            max_tokens=settings.llm_max_tokens,
             temperature=0.0,
         )
-        content = resp.choices[0].message.content or ""
+        content = extract_content(resp)
         from app.core.llm_json import parse_json_response
         parsed = parse_json_response(content)
         if parsed is None:

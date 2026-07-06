@@ -23,18 +23,20 @@ from app.db.models import DataSource, SemanticModel
 logger = logging.getLogger(__name__)
 
 
-async def detect_and_refresh_metadata(db_session) -> dict:
+async def detect_and_refresh_metadata(db_session, tenant_id: str | None = None) -> dict:
     """定时任务: 检测所有数据源的元数据变更并刷新。
 
     遍历所有 active 数据源 → 全量扫描 → diff 当前语义层 → 有变更写新版本。
+    M6: tenant_id 限定本租户 (定时任务不传=全量, API 调用传=租户隔离)。
     返回汇总 dict。不抛异常 (定时任务容错)。
     """
     summary = {"checked": 0, "refreshed": 0, "unchanged": 0, "failed": 0}
 
-    # 查所有 active 数据源
-    result = await db_session.execute(
-        select(DataSource).where(DataSource.is_active == True)  # noqa: E712
-    )
+    # 查所有 active 数据源 (M6: 加租户过滤)
+    query = select(DataSource).where(DataSource.is_active == True)  # noqa: E712
+    if tenant_id:
+        query = query.where(DataSource.tenant_id == tenant_id)
+    result = await db_session.execute(query)
     datasources = result.scalars().all()
 
     for ds in datasources:

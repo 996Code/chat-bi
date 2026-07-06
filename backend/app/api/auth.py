@@ -162,6 +162,8 @@ def _check_login_lock(email: str) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"账号已锁定, 请 {remaining} 分钟后再试 (连续失败 {settings.max_login_attempts} 次)",
         )
+    # 锁已过期: 清除记录 + 重置计数, 避免内存泄漏和单次失败就重锁
+    _login_locks.pop(email, None)
 
 
 def _record_login_failure(email: str) -> None:
@@ -204,9 +206,9 @@ async def login(
     # 3. 用户不存在 or 密码错 → 统一返回 "邮箱或密码错误" (不泄露用户是否存在)
     if user is None or not verify_password(body.password, user.hashed_password):
         _record_login_failure(email)
-        # 审计失败 (user_id 可能为 None)
+        # 审计失败: 用户不存在时无合法租户 → tenant_id=None (audit_logs.tenant_id 可空, 不设 FK)
         await write_audit_log(
-            db, tenant_id=user.tenant_id if user else "unknown",
+            db, tenant_id=user.tenant_id if user else None,
             user_id=user.id if user else None,
             resource_type="auth", action="login", status="fail",
             error_message="邮箱或密码错误",
@@ -236,7 +238,7 @@ async def login(
         raise HTTPException(status_code=403, detail="邮箱未验证, 请先完成验证")
 
     # 6. 成功
-    _clear_login_lock(body.email)
+    _clear_login_lock(email)
     await write_audit_log(
         db, tenant_id=user.tenant_id, user_id=user.id,
         resource_type="auth", action="login", status="success",
@@ -255,11 +257,16 @@ async def login(
 
 # ── 刷新 token ────────────────────────────────────────────────
 
+@_limiter.limit(_login_rate)
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(body: RefreshRequest):
+async def refresh_token(
+    request: Request,
+    body: RefreshRequest,
+):
     """刷新 access token (AUTH-03, 对标经验教训#20)。
 
     refresh token 必须含完整鉴权字段, 刷新后新 token 同样完整。
+    同时校验用户仍存在且活跃, 避免已禁用用户持续刷新 (fail-closed)。
     """
     try:
         payload = decode_token(body.refresh_token)
@@ -268,6 +275,18 @@ async def refresh_token(body: RefreshRequest):
 
     if payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="token 类型错误, 需要 refresh token")
+
+    # 校验用户仍存在且活跃 (对标 fail-closed: 禁用用户不应持续刷新)
+    user_id = payload.get("user_id")
+    if user_id:
+        from app.db.session import get_db
+        async for db in get_db():
+            user = (
+                await db.execute(select(User).where(User.id == user_id))
+            ).scalar_one_or_none()
+            if user is None or not user.is_active:
+                raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+            break
 
     # 提取完整鉴权字段 (经验教训#20: 不能丢字段)
     token_data = {
