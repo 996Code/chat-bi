@@ -336,9 +336,10 @@ async def chat(
                 # T050: prompt 记录 (DEBUG 模式才持久化, dump-prompts 导出用)
                 prompts=prompt_capture.get("records", []) if get_settings().debug and prompt_capture else None,
             )
-            # turn_number: 从已有轮次数推算 (ConversationState 无 turn 字段)
+            # turn_number: 从已有轮次推算 (防御: 取 max(行数, 最大turn值) + 1, 自愈历史脏数据)
             existing_turns = StateStore().list_turns(user.tenant_id, conversation_id)
-            turn_number = len(existing_turns) + 1
+            max_existing_turn = max((t.get("turn", 0) for t in existing_turns), default=0)
+            turn_number = max(len(existing_turns), max_existing_turn) + 1
             StateStore().save(user.tenant_id, conversation_id, turn_number, conv_state)
 
             # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供 fewshot 回流 / 历史挖掘用

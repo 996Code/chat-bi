@@ -283,6 +283,9 @@ export interface ConversationItem {
   last_sql: string
   last_tables: string[]
   timestamp: string
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  total_tokens: number
 }
 
 // ── Skills 管理 (T041) ─────────────────────────────────────

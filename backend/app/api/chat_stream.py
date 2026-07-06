@@ -538,9 +538,10 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             # T050: prompt 记录 (DEBUG 模式, dump-prompts 导出用)
             prompts=getattr(state, "_prompt_records", None),
         )
-        # turn: 从已有轮次数推算 (ConversationState 无 turn 字段)
+        # turn: 从已有轮次推算 (防御: 取 max(行数, 最大turn值) + 1, 自愈历史脏数据)
         existing_turns = store.list_turns(user.tenant_id, conv_id)
-        turn = len(existing_turns) + 1
+        max_existing_turn = max((t.get("turn", 0) for t in existing_turns), default=0)
+        turn = max(len(existing_turns), max_existing_turn) + 1
         store.save(user.tenant_id, conv_id, turn, conv_state)
 
         # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供看板展示 / fewshot 回流

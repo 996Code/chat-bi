@@ -138,6 +138,17 @@ async def list_conversations(
             title = state.get("title") or first_state.get("first_question") or state.get("current_sql", "")[:40]
             if not title:
                 title = "新对话"
+            # 汇总全对话 token (从各轮 prompts 字段累加)
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+            for line in lines:
+                if not line:
+                    continue
+                entry = json.loads(line)
+                prompts = entry.get("state", {}).get("prompts")
+                if prompts:
+                    total_prompt_tokens += sum(p.get("prompt_tokens", 0) for p in prompts)
+                    total_completion_tokens += sum(p.get("completion_tokens", 0) for p in prompts)
             conversations.append({
                 "conversation_id": conv_id,
                 "title": title,
@@ -145,9 +156,14 @@ async def list_conversations(
                 "last_sql": state.get("current_sql", "")[:60],
                 "last_tables": state.get("current_tables", []),
                 "timestamp": last.get("timestamp", ""),
+                "total_prompt_tokens": total_prompt_tokens,
+                "total_completion_tokens": total_completion_tokens,
+                "total_tokens": total_prompt_tokens + total_completion_tokens,
             })
         except (json.JSONDecodeError, KeyError):
             continue
+    # 按 token 消耗倒序 (T050: Top 50 高消耗对话)
+    conversations.sort(key=lambda c: c["total_tokens"], reverse=True)
     return conversations
 
 
@@ -159,7 +175,13 @@ async def get_conversation_detail(
     """对话详情 — 所有轮次 (T052)。"""
     from app.ai.state_store import StateStore
     store = StateStore()
-    return store.list_turns(user.tenant_id, conv_id)
+    turns = store.list_turns(user.tenant_id, conv_id)
+    # 自愈: 如果所有 turn 值相同 (历史脏数据全为 1), 按行序重新编号
+    turn_values = [t.get("turn", 0) for t in turns]
+    if turns and len(set(turn_values)) == 1:
+        for i, t in enumerate(turns):
+            t["turn"] = i + 1
+    return turns
 
 
 @router.get("/conversations/{conv_id}/trace")
@@ -175,6 +197,11 @@ async def get_conversation_trace(
     from app.ai.state_store import StateStore
     store = StateStore()
     turns = store.list_turns(user.tenant_id, conv_id)
+    # 自愈: 如果所有 turn 值相同 (历史脏数据全为 1), 按行序重新编号
+    turn_values = [t.get("turn", 0) for t in turns]
+    if turns and len(set(turn_values)) == 1:
+        for i, t in enumerate(turns):
+            t["turn"] = i + 1
     trace = []
     total_prompt = 0
     total_completion = 0

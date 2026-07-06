@@ -23,25 +23,42 @@
       </div>
     </el-card>
 
-    <!-- T050: Prompt 调试 + token 用量统计 -->
+    <!-- T050: Prompt 调试 + token 用量统计 — 以对话为单位展示 -->
     <el-card style="margin-top: 16px">
-      <template #header>
-        <div class="card-header-row">
-          <b>Prompt 调试 & Token 用量 (T050)</b>
-          <el-select
-            v-model="selectedConvId" placeholder="选择对话" size="small"
-            style="width: 280px" filterable
-          >
-            <el-option
-              v-for="c in conversations" :key="c.conversation_id"
-              :label="`${c.title} (${c.turn_count} 轮)`" :value="c.conversation_id"
-            />
-          </el-select>
-        </div>
-      </template>
+      <template #header><b>Prompt 调试 & Token 用量 (T050)</b></template>
 
-      <!-- token 用量概览 -->
-      <div v-if="traceSummary" v-loading="traceLoading" class="token-overview">
+      <!-- 对话卡片列表 (max-height + 滚动条) -->
+      <div v-if="conversations.length" class="conv-list">
+        <div v-for="c in conversations" :key="c.conversation_id" class="conv-card">
+          <div class="conv-info">
+            <span class="conv-title">{{ c.title || '(无标题)' }}</span>
+            <span class="conv-meta">{{ c.turn_count }} 轮</span>
+            <span class="conv-meta">{{ c.last_tables.join(', ') || '—' }}</span>
+            <span class="conv-meta conv-token-badge" v-if="c.total_tokens > 0">
+              <el-icon size="12"><Coin /></el-icon>
+              {{ formatTokens(c.total_tokens) }}
+            </span>
+          </div>
+          <div class="conv-right">
+            <span class="conv-time">{{ formatTime(c.timestamp) }}</span>
+            <el-button size="small" type="primary" text @click="openTraceDialog(c)">
+              查看详情
+            </el-button>
+          </div>
+        </div>
+      </div>
+      <el-empty v-if="!conversations.length && !convListLoading" description="暂无对话记录" :image-size="60" />
+    </el-card>
+
+    <!-- 弹窗: 对话 Prompt & Token 详情 -->
+    <el-dialog
+      v-model="showTraceDialog"
+      :title="`Prompt & Token 详情 — ${dialogConvTitle}`"
+      width="800px"
+      top="5vh"
+      destroy-on-close
+    >
+      <div v-if="traceSummary" class="token-overview">
         <div class="token-stat">
           <div class="token-num">{{ traceSummary.total_turns }}</div>
           <div class="token-label">总轮次</div>
@@ -60,10 +77,12 @@
         </div>
       </div>
 
+      <div v-if="traceLoading" v-loading="true" style="min-height: 120px" />
+
       <el-empty v-if="!traceSummary && !traceLoading" description="选择对话查看 token 用量明细" :image-size="60" />
 
       <!-- 各轮 prompt 节点明细 (可展开查看 prompt 文本) -->
-      <div v-if="traceTurns.length" class="turn-list">
+      <div v-if="traceTurns.length" class="dialog-turn-list">
         <div v-for="t in traceTurns" :key="t.turn" class="turn-item">
           <div class="turn-head" @click="toggleTurn(t.turn)">
             <span class="turn-badge">第 {{ t.turn }} 轮</span>
@@ -96,7 +115,7 @@
           </div>
         </div>
       </div>
-    </el-card>
+    </el-dialog>
 
     <!-- DSO-05: 数据源状态监控 -->
     <el-card style="margin-top: 16px" v-loading="metricsLoading">
@@ -129,14 +148,18 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowDown, ArrowUp, Coin } from '@element-plus/icons-vue'
 import { observability, type ConversationItem } from '@/api'
 
 const health = ref<any>({ components: {}, config: {} })
 const healthLoading = ref(false)
 const conversations = ref<ConversationItem[]>([])
+const convListLoading = ref(false)
+// 弹窗状态
+const showTraceDialog = ref(false)
+const dialogConvTitle = ref('')
 const selectedConvId = ref('')
 const traceLoading = ref(false)
 const traceSummary = ref<any>(null)
@@ -153,17 +176,19 @@ onMounted(async () => {
     const { data } = await observability.healthDetail()
     health.value = data
   } catch {
-    // fail-closed: 加载失败明确提示 (原版本吞掉了错误)
     ElMessage.warning('系统状态加载失败, 可能权限不足或服务异常')
   } finally {
     healthLoading.value = false
   }
-  // 加载对话列表供 dump-prompts 选择
+  // 加载对话列表
+  convListLoading.value = true
   try {
     const { data } = await observability.conversations()
     conversations.value = data
   } catch {
-    // 静默: 不阻塞页面
+    conversations.value = []
+  } finally {
+    convListLoading.value = false
   }
   // DSO-05: 加载数据源监控指标
   await loadMetrics()
@@ -182,17 +207,21 @@ async function loadMetrics() {
   }
 }
 
-// 导出某对话的完整 trace (prompt + token), 前端 Blob 下载 JSON
-// 选择对话后自动加载 trace (prompt + token 明细)
-async function loadTrace() {
-  if (!selectedConvId.value) {
-    traceSummary.value = null
-    traceTurns.value = []
-    return
-  }
+/** 打开对话 trace 弹窗 */
+async function openTraceDialog(conv: ConversationItem) {
+  selectedConvId.value = conv.conversation_id
+  dialogConvTitle.value = conv.title || '(无标题)'
+  // 清空旧数据
+  traceSummary.value = null
+  traceTurns.value = []
+  // 清空展开状态
+  Object.keys(openTurns).forEach(k => delete openTurns[k as unknown as number])
+  Object.keys(openPrompts).forEach(k => delete openPrompts[k])
+  showTraceDialog.value = true
+  // 加载 trace
   traceLoading.value = true
   try {
-    const { data } = await observability.conversationTrace(selectedConvId.value)
+    const { data } = await observability.conversationTrace(conv.conversation_id)
     traceSummary.value = data.summary
     traceTurns.value = data.turns || []
   } catch {
@@ -204,8 +233,6 @@ async function loadTrace() {
   }
 }
 
-watch(selectedConvId, () => { loadTrace() })
-
 function toggleTurn(turn: number) {
   openTurns[turn] = !openTurns[turn]
 }
@@ -213,6 +240,24 @@ function toggleTurn(turn: number) {
 function togglePrompt(turn: number, idx: number) {
   const key = `${turn}-${idx}`
   openPrompts[key] = !openPrompts[key]
+}
+
+/** 格式化 token 数: >1000 显示 x.xk, 否则原值 */
+function formatTokens(n: number): string {
+  if (!n) return '0'
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
+
+/** 格式化时间戳: ISO → 可读 */
+function formatTime(ts: string): string {
+  if (!ts) return '—'
+  try {
+    const d = new Date(ts)
+    return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return ts
+  }
 }
 </script>
 
@@ -223,8 +268,59 @@ function togglePrompt(turn: number, idx: number) {
 .comp-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
 .comp-name { font-weight: 500; }
 
-.card-header-row { display: flex; justify-content: space-between; align-items: center; }
-.trace-actions { display: flex; gap: 8px; align-items: center; }
+/* 对话卡片列表 */
+.conv-list {
+  max-height: 420px;
+  overflow-y: auto;
+}
+.conv-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.2s;
+}
+.conv-card:hover { background: #f5f7fa; }
+.conv-card:last-child { border-bottom: none; }
+.conv-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.conv-title {
+  font-weight: 500;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+.conv-meta {
+  font-size: 0.75rem;
+  color: #909399;
+  background: #f5f7fa;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.conv-token-badge {
+  color: #667eea;
+  background: #f0f2ff;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.conv-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.conv-time {
+  font-size: 0.72rem;
+  color: #c0c4cc;
+}
 
 /* token 概览 */
 .token-overview { display: flex; gap: 16px; margin: 12px 0; }
@@ -232,8 +328,12 @@ function togglePrompt(turn: number, idx: number) {
 .token-num { font-size: 1.5rem; font-weight: 700; color: #667eea; }
 .token-label { font-size: 0.75rem; color: #909399; margin-top: 4px; }
 
-/* 各轮明细 */
-.turn-list { margin-top: 12px; }
+/* 弹窗内各轮明细 */
+.dialog-turn-list {
+  max-height: 70vh;
+  overflow-y: auto;
+  margin-top: 12px;
+}
 .turn-item { border: 1px solid #ebeef5; border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
 .turn-head {
   display: flex; align-items: center; gap: 10px;
