@@ -85,7 +85,6 @@ _COMPACT_PROMPT = """你是对话压缩器。将下面的对话历史压缩成�
 async def compact_history(
     messages: list[dict],
     keep_recent: int | None = None,
-    llm_client=None,
 ) -> CompactResult:
     """压缩对话历史: 旧轮次 → 摘要, 保留最近 N 轮。
 
@@ -95,7 +94,6 @@ async def compact_history(
     Args:
         messages: 完整对话历史
         keep_recent: 保留最近几轮 (None → config.compression_keep_recent_turns=3)
-        llm_client: LLM client
 
     Returns:
         CompactResult — summary + recent_messages + (state_compensation 由调用方填充)

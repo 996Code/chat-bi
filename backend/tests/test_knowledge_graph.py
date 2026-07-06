@@ -180,7 +180,7 @@ class TestInferKnowledgeGraph:
         ])
 
         with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=(llm_content, mock_resp)):
-            suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=None)
+            suggestions = await infer_knowledge_graph(content, use_llm=True)
 
         ai_rels = [r for r in suggestions if r.source == "ai_inferred"]
         assert len(ai_rels) >= 1, "应有 ai_inferred 来源的建议"
@@ -193,7 +193,7 @@ class TestInferKnowledgeGraph:
         content = _orders_content()
 
         with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, side_effect=Exception("LLM down")):
-            suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=None)
+            suggestions = await infer_knowledge_graph(content, use_llm=True)
 
         # 不抛异常，且仍有 name_pattern 建议
         name_pattern_rels = [r for r in suggestions if r.source == "name_pattern"]
@@ -213,7 +213,7 @@ class TestInferKnowledgeGraph:
         mock_resp = MagicMock()
         mock_resp.usage = None
         with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=("这不是JSON{{{", mock_resp)):
-            suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=None)
+            suggestions = await infer_knowledge_graph(content, use_llm=True)
 
         # 降级：只剩 name_pattern，不抛
         sources = {r.source for r in suggestions}

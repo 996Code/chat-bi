@@ -59,12 +59,14 @@ async def think(
     question: str,
     schema_context: str,
     retrieved_models: list[dict],
-    llm_client,
     history: str | None = None,
 ) -> ThinkingResult:
     """预思考: 选表理由 + 聚合 + 陷阱 (对标 REF-001)。
 
     Args:
+        question: 用户问题
+        schema_context: schema 上下文
+        retrieved_models: 检索到的候选表
         history: 多轮对话历史文本 (追问时注入, 让预思考能继承上轮选表/聚合思路;
                  对标 ARC-04)
 

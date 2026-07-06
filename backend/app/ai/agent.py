@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from app.ai.chat_utils import build_schema_context_fallback
+
 logger = logging.getLogger(__name__)
 
 
@@ -208,7 +210,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         schema_context = build_schema_context(state.semantic_content, retrieved_names)
         if not schema_context:
             # 语义层为空时退化用检索文本 (兜底)
-            schema_context = _build_schema_context_fallback(state.retrieved_models)
+            schema_context = build_schema_context_fallback(state.retrieved_models)
         state.schema_context = schema_context
         state.thinking = await deps.think(question, schema_context, state.retrieved_models, history=state.history)
         state.llm_call_count += 1
@@ -235,7 +237,6 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             question=question,
             schema_context=schema_context,
             allowed_columns=allowed_columns,
-            llm_client=None,  # 实际由 deps 内部注入
             history=state.history,
         )
         state.llm_call_count += 1
@@ -380,19 +381,3 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         state.success = False
         state.error = f"Agent 执行异常: {e}"
         return state
-
-
-def _build_schema_context_fallback(models: list[dict]) -> str:
-    """兜底: 语义层为空时, 从检索结果 text 构建 schema_context。
-
-    正常路径用 schema_utils.build_schema_context (从语义层完整定义),
-    这个仅当 semantic_content 缺失时兜底 (不靠正则猜列名)。
-    """
-    if not models:
-        return ""
-    lines = []
-    for m in models:
-        name = m.get("name", "")
-        text = m.get("text", "")
-        lines.append(f"{name}: {text}")
-    return "\n".join(lines)

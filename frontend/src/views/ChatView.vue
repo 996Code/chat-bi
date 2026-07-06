@@ -454,12 +454,7 @@ function setChartRef(el: any, idx: number) {
   if (el) chartRefs[idx] = el
 }
 
-// Pipeline 整体展开/折叠 (图表独立在外, 不受此影响)
-function togglePipeline(msg: Message, _msgIdx: number) {
-  msg.pipelineCollapsed = !msg.pipelineCollapsed
-}
-
-// 步骤折叠: 点击 step label 展开/收起 (用 splice 触发响应式)
+	// 步骤折叠: 点击 step label 展开/收起 (用 splice 触发响应式)
 // 图表独立在外, 步骤展开只影响 SQL / 结果表格的显示
 function toggleStep(msg: Message, si: number, _msgIdx?: number) {
   const step = msg.steps?.[si]
@@ -1048,10 +1043,21 @@ function renderChart(idx: number, retries = 3) {
   // M4: 复用已有实例而非重新 init (避免内存泄漏)
   let chart = chartInstances[idx]
   if (!chart || chart.isDisposed()) {
-    chart = echarts.init(el)
-    chartInstances[idx] = chart
+    try {
+      chart = echarts.init(el)
+      chartInstances[idx] = chart
+    } catch (e) {
+      console.warn(`[ChatView] echarts.init failed for msg ${idx}:`, e)
+      return
+    }
   }
-  chart.setOption(msg.chart, true)  // true = notMerge, 替换而非合并
+  try {
+    chart.setOption(msg.chart, true)  // true = notMerge, 替换而非合并
+  } catch (e) {
+    console.warn(`[ChatView] chart.setOption failed for msg ${idx}:`, e)
+    try { chart.dispose() } catch { /* ignore */ }
+    delete chartInstances[idx]
+  }
 }
 
 /** 当前图表类型 (从 series 推断) */
@@ -1172,15 +1178,7 @@ function findLastSql(): string | null {
   return null
 }
 
-// T061: 辅助函数 — 找最后一条有图表的消息索引
-function findLastChartIndex(): number {
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    if (messages.value[i].chart) return i
-  }
-  return -1
-}
-
-// 用户回答 Agent 的澄清问题 (ARC-03: 暂停后恢复对话流)
+	// 用户回答 Agent 的澄清问题 (ARC-03: 暂停后恢复对话流)
 // 用户选择候选或输入补充后, 把答案作为新问题发送 (带上 conversation_id 续接上下文)
 function answerClarify(answer: string) {
   const ans = (answer || '').trim()

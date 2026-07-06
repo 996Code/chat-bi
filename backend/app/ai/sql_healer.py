@@ -182,7 +182,6 @@ async def heal_sql(
     error: str,
     allowed_columns: set[str],
     schema_context: str,
-    llm_client,
     circuit_breaker: SelfHealCircuitBreaker | None = None,
 ) -> HealResult:
     """根据执行错误自愈 SQL。
@@ -192,7 +191,6 @@ async def heal_sql(
         error: 执行错误信息 (含错误码)
         allowed_columns: 白名单列
         schema_context: schema 上下文
-        llm_client: LLM client
         circuit_breaker: 熔断器 (None → 全局单例)
 
     Returns:

@@ -41,7 +41,6 @@ _REPLY_PROMPT = """你是 ChatBI 智能助手, 一个基于自然语言的数据
 async def generate_reply(
     question: str,
     intent: str,
-    llm_client,
 ) -> str:
     """为非 SQL 意图生成自然语言回复。
 
@@ -50,7 +49,6 @@ async def generate_reply(
     Args:
         question: 用户原始问题
         intent: 意图类型 (GENERAL / EXPLANATION / CHART_MODIFY 等)
-        llm_client: AsyncOpenAI client
 
     Returns:
         始终返回非空字符串 (fail-closed, 前端永不空白)

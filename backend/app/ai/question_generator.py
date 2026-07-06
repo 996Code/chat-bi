@@ -41,13 +41,11 @@ _QUESTION_PROMPT = """你是 BI 数据分析师。根据下面的数据库表结
 
 async def generate_sample_questions(
     models: list[Model],
-    llm_client,
 ) -> list[str]:
     """基于语义层生成示例 BI 问题 (LLM → 规则降级)。
 
     Args:
         models: 扫描到的语义层表列表 (含列/关系)
-        llm_client: AsyncOpenAI client
 
     Returns:
         6-8 个示例问题 (fail-closed: LLM 失败用规则降级, 不返回空)

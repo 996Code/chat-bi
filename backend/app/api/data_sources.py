@@ -326,12 +326,9 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
             try:
                 import asyncio
                 from app.services.knowledge_graph import infer_knowledge_graph
-                from app.core.llm_client import get_llm_client
                 # 整体超时 10min (本地小模型生成速度慢, 多批次需足够时间)
                 inferred_rels = await asyncio.wait_for(
-                    infer_knowledge_graph(
-                        content, use_llm=True, llm_client=get_llm_client(),
-                    ),
+                    infer_knowledge_graph(content, use_llm=True),
                     timeout=600.0,
                 )
                 if inferred_rels:
@@ -344,9 +341,8 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
             await _update_scan(session, ds, progress=80, stage="生成示例问题...")
             try:
                 from app.ai.question_generator import generate_sample_questions
-                from app.core.llm_client import get_llm_client
                 content.sample_questions = await generate_sample_questions(
-                    content.models, get_llm_client(),
+                    content.models,
                 )
             except Exception:
                 pass  # 失败不阻塞 (sample_questions 留空)

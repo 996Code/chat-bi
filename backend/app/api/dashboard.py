@@ -322,14 +322,11 @@ async def add_widget(
                 cols = list(result.columns) if hasattr(result, "columns") else []
                 rows_data = [list(r) for r in (result.rows or [])]
                 # 生成图表配置 (LLM 选型, 一次性), 缓存 config 供 refresh 复用
-                from app.core.llm_client import get_llm_client
                 from app.ai.chart_agent import generate_chart
-                llm = get_llm_client()
                 chart_result = await generate_chart(
                     question=question,
                     columns=cols,
                     rows=rows_data,
-                    llm_client=llm,
                     chart_type_hint=data.get("chart_type", "bar"),
                 )
                 if chart_result.ok and chart_result.config:

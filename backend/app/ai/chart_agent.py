@@ -485,7 +485,6 @@ async def generate_chart(
     question: str,
     columns: list[str],
     rows: list[tuple],
-    llm_client,
     chart_type_hint: str | None = None,
 ) -> ChartResult:
     """生成 ECharts 图表 (LLM → 自愈 → 规则降级)。
@@ -494,7 +493,6 @@ async def generate_chart(
         question: 用户问题
         columns: 结果列名
         rows: 结果行
-        llm_client: LLM client
         chart_type_hint: 来自 T026 的图表类型提示
 
     Returns:

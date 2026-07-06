@@ -21,9 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent import AgentDeps, AgentState, run_agent
 from app.core.auth import AuthUser, require_user, write_audit_log
-from app.core.llm_client import extract_content, get_llm_client
 from app.db.models import DataSource, SemanticModel
 from app.db.session import get_db
+from app.ai.chat_utils import normalize_value, serialize_thinking
 from app.schemas.semantic_layer import SemanticModelContent
 from app.services.datasource_engine import datasource_to_url, get_engine_pool
 
@@ -86,7 +86,6 @@ async def build_agent_deps(
     from app.ai.replier import generate_reply
     from app.ai.ask_user import should_ask_for_schema, should_ask_for_result
 
-    llm = get_llm_client()
     store = get_vector_store()
 
     # Skills: 加载业务规则注入 prompt (T040 + T060: 按 db_type 自动加载 reference)
@@ -143,8 +142,9 @@ async def build_agent_deps(
 
     async def _generate_sql_with_fewshot(
         question: str, schema_context: str, allowed_columns: set[str],
-        llm_client=None, history: str | None = None, **kw,
+        history: str | None = None, **kw,
     ):
+        """生成 SQL (含 few-shot 检索 + 记忆召回 + skills 注入)。"""
         # 1. 检索相似审核 SQL (few-shot)
         fewshot_text = ""
         try:
@@ -163,26 +163,26 @@ async def build_agent_deps(
         combined_skills = "\n\n".join(s for s in [skills_text, memory_text] if s) or None
         return await generate_sql(
             question=question, schema_context=schema_context,
-            allowed_columns=allowed_columns, llm_client=llm,
+            allowed_columns=allowed_columns,
             skills=combined_skills, history=history, fewshot_examples=fewshot_text or None,
         )
 
     deps = AgentDeps(
-        classify_intent=lambda q, history=None, **kw: classify_intent(q, llm, history=history),
-        retrieve=lambda q: _retrieve(q, store, _get_embedder(), llm_client=llm, data_source_id=data_source_id),
-        think=lambda q, ctx, models, history=None, **kw: think(q, ctx, models, llm, history=history),
+        classify_intent=lambda q, history=None, **kw: classify_intent(q, history=history),
+        retrieve=lambda q: _retrieve(q, store, _get_embedder(), data_source_id=data_source_id),
+        think=lambda q, ctx, models, history=None, **kw: think(q, ctx, models, history=history),
         generate_sql=_generate_sql_with_fewshot,
         execute_sql=lambda sql: execute_sql(sql, data_source_id, url, get_engine_pool()),
         heal_sql=lambda sql, error, allowed_columns, schema_context, **kw: heal_sql(
             sql=sql, error=error, allowed_columns=allowed_columns,
-            schema_context=schema_context, llm_client=llm,
+            schema_context=schema_context,
         ),
         check_result=lambda rows, columns, sql: check_result(rows, columns, sql),
         generate_chart=lambda question, columns, rows, chart_type_hint=None, **kw: generate_chart(
             question=question, columns=columns, rows=rows,
-            llm_client=llm, chart_type_hint=chart_type_hint,
+            chart_type_hint=chart_type_hint,
         ),
-        generate_reply=lambda question, intent, **kw: generate_reply(question, intent, llm),
+        generate_reply=lambda question, intent, **kw: generate_reply(question, intent),
         should_ask_for_schema=should_ask_for_schema,
         should_ask_for_result=should_ask_for_result,
     )
@@ -195,55 +195,12 @@ def _get_embedder():
     return get_embedder()
 
 
-def _normalize_value(v):
-    """DB 行值 → JSON 安全类型 (Decimal/datetime/UUID/Enum/bytes/其他复杂对象)。
-
-    对未知类型走 str() 兜底, 保证 json.dumps 能序列化。
-    """
-    from decimal import Decimal
-    import datetime
-    from uuid import UUID
-    from enum import Enum
-    if v is None:
-        return None
-    if isinstance(v, bool):
-        return v  # bool 是 int 子类, 必须在 int 之前判断
-    if isinstance(v, (int, float, str)):
-        return v
-    if isinstance(v, Decimal):
-        return float(v)
-    if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
-        return v.isoformat()
-    if isinstance(v, UUID):
-        return str(v)
-    if isinstance(v, Enum):
-        return v.value
-    if isinstance(v, bytes):
-        return v.decode("utf-8", errors="replace")
-    # 兜底: 其他不可序列化类型 (numpy/自定义对象) 转 str, 避免 json.dumps 抛 TypeError
-    return str(v)
-
 
 def _chat_rate():
     """查询限流值 (从 config 读, 对标 rate_limit_queries_per_minute)。"""
     from app.core.config import get_settings
     return f"{get_settings().rate_limit_queries_per_minute}/minute"
 
-
-def _serialize_thinking(thinking) -> dict | None:
-    """把 ThinkingResult 序列化为 dict (供 ConversationState.thinking 持久化)。"""
-    if not thinking:
-        return None
-    if hasattr(thinking, "tables"):
-        return {
-            "tables": list(getattr(thinking, "tables", [])),
-            "aggregation": getattr(thinking, "aggregation", "") or "",
-            "caveats": list(getattr(thinking, "caveats", [])),
-            "prev_sql_review": getattr(thinking, "prev_sql_review", "") or "",
-        }
-    if isinstance(thinking, dict):
-        return thinking
-    return None
 
 
 async def _generate_conversation_title(question: str, deps) -> str:
@@ -318,7 +275,7 @@ async def chat(
                 # 状态补偿用上一轮涉及的表 (追问时"当前在查的表")
                 prev_tables = (prev_state.current_tables if prev_state else None)
                 history_text = await format_history_text(
-                    turns, llm_client=get_llm_client(), semantic_tables=prev_tables,
+                    turns, semantic_tables=prev_tables,
                 )
         except Exception as e:
             logger.warning("历史恢复失败, 当新对话处理: %s", e)
@@ -355,7 +312,7 @@ async def chat(
             cols = []
             if exec_result and hasattr(exec_result, "rows"):
                 rows_sample = [
-                    [_normalize_value(v) for v in r] for r in (exec_result.rows or [])[:50]
+                    [normalize_value(v) for v in r] for r in (exec_result.rows or [])[:50]
                 ]
                 cols = list(exec_result.columns) if hasattr(exec_result, "columns") else []
             conv_state = ConversationState(
@@ -375,7 +332,7 @@ async def chat(
                 rows_sample=rows_sample,
                 chart_option=state.chart_option,
                 # 预思考 (历史对话恢复展示)
-                thinking=_serialize_thinking(state.thinking),
+                thinking=serialize_thinking(state.thinking),
                 # T050: prompt 记录 (DEBUG 模式才持久化, dump-prompts 导出用)
                 prompts=prompt_capture.get("records", []) if get_settings().debug and prompt_capture else None,
             )
@@ -452,7 +409,7 @@ async def chat(
         question=state.intent_output.normalized_question if state.intent_output else req.question,
         sql=state.sql or None,
         columns=list(exec_result.columns) if exec_result and hasattr(exec_result, "columns") else [],
-        rows=[[_normalize_value(v) for v in r] for r in exec_result.rows] if exec_result and hasattr(exec_result, "rows") else [],
+        rows=[[normalize_value(v) for v in r] for r in exec_result.rows] if exec_result and hasattr(exec_result, "rows") else [],
         row_count=len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
         truncated=exec_result.truncated if exec_result and hasattr(exec_result, "truncated") else False,
         chart=state.chart_option,

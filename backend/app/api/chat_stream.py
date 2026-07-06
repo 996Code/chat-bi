@@ -31,6 +31,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent import AgentDeps, AgentState, AgentStage
+from app.ai.chat_utils import normalize_value, serialize_thinking, build_schema_context_fallback
+from app.api.chat import ChatRequest
 from app.core.auth import AuthUser, require_user, write_audit_log
 from app.db.models import DataSource
 from app.db.session import get_db
@@ -64,47 +66,18 @@ def _sse(event: str, data: dict, seq: int | None = None) -> str:
     return "\n".join(parts) + "\n\n"
 
 
-def _normalize_value(v):
-    """DB 行值 → JSON 安全类型 (Decimal/datetime/UUID/Enum/bytes/其他复杂对象)。
-
-    对未知类型走 str() 兜底, 保证 result_json 能被 json.dumps 序列化 (中-8 修复)。
-    """
-    from decimal import Decimal
-    import datetime
-    import enum
-    import uuid
-    if v is None:
-        return None
-    if isinstance(v, bool):
-        return v  # bool 是 int 子类, 必须在 int 之前判断
-    if isinstance(v, (int, float, str)):
-        return v
-    if isinstance(v, Decimal):
-        return float(v)
-    if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
-        return v.isoformat()
-    if isinstance(v, uuid.UUID):
-        return str(v)
-    if isinstance(v, enum.Enum):
-        return v.value
-    if isinstance(v, bytes):
-        return v.decode("utf-8", errors="replace")
-    # 兜底: 其他不可序列化类型 (numpy/自定义对象) 转 str, 避免 json.dumps 抛 TypeError
-    return str(v)
-
-
 @_limiter.limit(_chat_rate)
 @router.post("/stream")
 async def chat_stream(
     request: Request,
-    body: dict,
+    body: ChatRequest,
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """SSE 流式问答 — 分步 yield 管线事件 (对标 V1 pipeline_executor)。"""
-    question = (body.get("question") or "").strip()
-    data_source_id = body.get("data_source_id")
-    conversation_id = body.get("conversation_id")
+    question = body.question.strip()
+    data_source_id = body.data_source_id
+    conversation_id = body.conversation_id
 
     if not question:
         raise HTTPException(status_code=422, detail="question 不能为空")
@@ -143,9 +116,8 @@ async def chat_stream(
             turns = store.list_turns(user.tenant_id, conversation_id)
             if turns:
                 prev_tables = (prev_state.current_tables if prev_state else None)
-                from app.core.llm_client import get_llm_client
                 history_text = await format_history_text(
-                    turns, llm_client=get_llm_client(), semantic_tables=prev_tables,
+                    turns, semantic_tables=prev_tables,
                 )
         except Exception as e:
             logger.warning("流式历史恢复失败, 当新对话处理: %s", e)
@@ -228,7 +200,7 @@ async def chat_stream(
                 # 数据事件 (前端展示)
                 yield emit("data", {
                     "columns": list(exec_result.columns) if hasattr(exec_result, "columns") else [],
-                    "rows": [[_normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
+                    "rows": [[normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
                     "row_count": len(exec_result.rows) if hasattr(exec_result, "rows") else 0,
                     "truncated": exec_result.truncated if hasattr(exec_result, "truncated") else False,
                 })
@@ -299,7 +271,7 @@ async def chat_stream(
             tables = expand_with_relationships(state.semantic_content, tables)
             schema_context = build_schema_context(state.semantic_content, tables)
             if not schema_context:
-                schema_context = _build_fallback(state.retrieved_models)
+                schema_context = build_schema_context_fallback(state.retrieved_models)
             state.schema_context = schema_context
             # 白名单列: 取整个语义层的全部列 (语义层本身是安全边界)
             allowed_columns = extract_allowed_columns(state.semantic_content)
@@ -324,7 +296,7 @@ async def chat_stream(
             t0 = time.monotonic()
             gen_result = await deps.generate_sql(
                 question=norm_q, schema_context=schema_context,
-                allowed_columns=allowed_columns, llm_client=None, history=state.history,
+                allowed_columns=allowed_columns, history=state.history,
             )
             state.llm_call_count += 1
 
@@ -397,7 +369,7 @@ async def chat_stream(
             if exec_result and not exec_result.error:
                 yield emit("data", {
                     "columns": list(exec_result.columns) if hasattr(exec_result, "columns") else [],
-                    "rows": [[_normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
+                    "rows": [[normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
                     "row_count": len(exec_result.rows) if hasattr(exec_result, "rows") else 0,
                     "truncated": exec_result.truncated if hasattr(exec_result, "truncated") else False,
                     "duration_ms": round((time.monotonic() - t_exec) * 1000),
@@ -442,7 +414,7 @@ async def chat_stream(
                                 # 重发修正后的数据
                                 yield emit("data", {
                                     "columns": list(exec_result.columns) if hasattr(exec_result, "columns") else [],
-                                    "rows": [[_normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
+                                    "rows": [[normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
                                     "row_count": len(exec_result.rows) if hasattr(exec_result, "rows") else 0,
                                     "truncated": exec_result.truncated if hasattr(exec_result, "truncated") else False,
                                 })
@@ -514,32 +486,6 @@ async def chat_stream(
     )
 
 
-def _build_fallback(models: list[dict]) -> str:
-    if not models:
-        return ""
-    lines = [f"{m.get('name', '')}: {m.get('text', '')}" for m in models]
-    return "\n".join(lines)
-
-
-def _serialize_thinking(thinking) -> dict | None:
-    """把 ThinkingResult 序列化为 dict (供 ConversationState.thinking 持久化)。
-
-    没有 thinking 或解析失败时返回 None (历史对话恢复时显示为空)。
-    """
-    if not thinking:
-        return None
-    if hasattr(thinking, "tables"):
-        return {
-            "tables": list(getattr(thinking, "tables", [])),
-            "aggregation": getattr(thinking, "aggregation", "") or "",
-            "caveats": list(getattr(thinking, "caveats", [])),
-            "prev_sql_review": getattr(thinking, "prev_sql_review", "") or "",
-        }
-    if isinstance(thinking, dict):
-        return thinking
-    return None
-
-
 async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
     """持久化对话状态 + 标题 + 审计 (流式版, 复用 chat.py 同款逻辑)。"""
     # StateStore 持久化
@@ -568,7 +514,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
         cols = []
         if exec_result and hasattr(exec_result, "rows"):
             rows_sample = [
-                [_normalize_value(v) for v in r] for r in (exec_result.rows or [])[:50]
+                [normalize_value(v) for v in r] for r in (exec_result.rows or [])[:50]
             ]
             cols = list(exec_result.columns) if hasattr(exec_result, "columns") else []
         conv_state = ConversationState(
@@ -588,7 +534,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             rows_sample=rows_sample,
             chart_option=state.chart_option,
             # 预思考 (历史对话恢复展示)
-            thinking=_serialize_thinking(state.thinking),
+            thinking=serialize_thinking(state.thinking),
             # T050: prompt 记录 (DEBUG 模式, dump-prompts 导出用)
             prompts=getattr(state, "_prompt_records", None),
         )

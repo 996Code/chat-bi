@@ -176,7 +176,6 @@ class TestGenerateChart:
                 question="各品类销售额",
                 columns=["category", "amount"],
                 rows=[("a", 100), ("b", 200)],
-                llm_client=None,
             )
         assert result.ok
         assert result.option is not None
@@ -191,7 +190,6 @@ class TestGenerateChart:
                 question="销售",
                 columns=["c", "v"],
                 rows=[("a", 1), ("b", 2)],
-                llm_client=None,
             )
         assert result.ok  # 自愈成功
         assert "series" in result.option
@@ -204,7 +202,6 @@ class TestGenerateChart:
                 question="销售",
                 columns=["category", "count"],
                 rows=[("a", 10), ("b", 20)],
-                llm_client=None,
             )
         assert result.ok  # 降级到规则推断, 仍返回 option
         assert result.degraded is True
@@ -218,7 +215,6 @@ class TestGenerateChart:
                 question="占比",
                 columns=["c", "v"],
                 rows=[("a", 1), ("b", 2)],
-                llm_client=None,
                 chart_type_hint="pie",
             )
         messages = mock_chat.call_args.kwargs.get("messages", [])
@@ -233,7 +229,6 @@ class TestGenerateChart:
                 question="x",
                 columns=["c", "v"],
                 rows=[("a", 1), ("b", 2)],
-                llm_client=None,
             )
         assert result.ok  # 降级成功
         assert result.degraded is True

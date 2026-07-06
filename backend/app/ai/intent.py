@@ -115,12 +115,11 @@ _INTENT_PROMPT = """你是 BI 系统的意图识别器。判断用户问题的�
 """
 
 
-async def classify_intent(question: str, llm_client, history: str | None = None) -> IntentOutput:
+async def classify_intent(question: str, history: str | None = None) -> IntentOutput:
     """调 LLM 识别意图, 失败/低置信度降级 CLARIFICATION。
 
     Args:
         question: 用户原始问题
-        llm_client: AsyncOpenAI client
         history: 多轮对话历史文本 (追问时注入, 让"再查一遍/上个月呢"能正确消解指代
                  并判为 TEXT_TO_SQL 而非 CLARIFICATION; 对标 ARC-04)
 

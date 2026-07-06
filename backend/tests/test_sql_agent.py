@@ -7,7 +7,7 @@ T029: SQL 生成 — 单元测试
   - RAG-005: data_type 必须注入 prompt (防 SUM on VARCHAR)
 
 设计:
-  - generate_sql(question, schema_context, allowed_columns, llm, ...) → GenerateResult
+  - generate_sql(question, schema_context, allowed_columns, ...) → GenerateResult
   - prompt 分层组装 (prompt_cache: 静态 schema/约束, 动态 问题/fewshot/历史)
   - 生成后立即调 T030 校验 (失败 → 返回校验错误, 不执行)
   - 白名单列 + data_type 约束注入 prompt
@@ -42,7 +42,6 @@ class TestGenerateSuccess:
                 question="所有订单",
                 schema_context="orders 表: id, total_amount, user_id",
                 allowed_columns={"id", "total_amount", "user_id"},
-                llm_client=None,
             )
         assert result.error is None
         assert "SELECT" in result.sql.upper()
@@ -56,7 +55,6 @@ class TestGenerateSuccess:
                 question="订单",
                 schema_context="orders(id)",
                 allowed_columns={"id"},
-                llm_client=None,
             )
         assert result.error is None
         assert "SELECT" in result.sql
@@ -76,7 +74,6 @@ class TestValidationIntegration:
                 question="订单",
                 schema_context="orders(id)",
                 allowed_columns={"id"},
-                llm_client=None,
             )
         assert result.error is not None
         assert not result.validation.ok
@@ -89,7 +86,6 @@ class TestValidationIntegration:
                 question="用户",
                 schema_context="users(id, name)",
                 allowed_columns={"id", "name"},  # password 不在
-                llm_client=None,
             )
         assert result.error is not None
         assert not result.validation.ok
@@ -108,7 +104,6 @@ class TestPromptAssembly:
                 question="订单",
                 schema_context="orders 表包含 id total_amount",
                 allowed_columns={"id", "total_amount"},
-                llm_client=None,
             )
         prompt = mock_chat.call_args.kwargs.get("messages", [])
         full = json.dumps(prompt, ensure_ascii=False)
@@ -123,7 +118,6 @@ class TestPromptAssembly:
                 question="订单",
                 schema_context="orders(id)",
                 allowed_columns={"id", "total_amount", "user_id"},
-                llm_client=None,
             )
         prompt = mock_chat.call_args.kwargs.get("messages", [])
         full = json.dumps(prompt, ensure_ascii=False)
@@ -138,7 +132,6 @@ class TestPromptAssembly:
                 question="总销售额",
                 schema_context="orders(total_amount DECIMAL, status VARCHAR)",
                 allowed_columns={"id", "total_amount", "status"},
-                llm_client=None,
             )
         prompt = mock_chat.call_args.kwargs.get("messages", [])
         full = json.dumps(prompt, ensure_ascii=False)
@@ -152,7 +145,6 @@ class TestPromptAssembly:
                 question="订单",
                 schema_context="orders(id)",
                 allowed_columns={"id"},
-                llm_client=None,
                 fewshot_examples="参考 SQL: SELECT id FROM orders WHERE status='paid'",
             )
         prompt = mock_chat.call_args.kwargs.get("messages", [])
@@ -172,7 +164,6 @@ class TestDegradation:
                 question="订单",
                 schema_context="orders(id)",
                 allowed_columns={"id"},
-                llm_client=None,
             )
         assert result.error is not None
         assert result.sql == ""
@@ -184,7 +175,6 @@ class TestDegradation:
                 question="订单",
                 schema_context="orders(id)",
                 allowed_columns={"id"},
-                llm_client=None,
             )
         assert result.error is not None
         assert result.sql == ""

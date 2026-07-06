@@ -8,7 +8,7 @@ T022: 两阶段检索 — 向量召回 + LLM 精筛
   - v1 教训: 检索无结果不 fallback 不随机选表 → 返回友好提示
 
 设计要点:
-  - retrieve(question, store, embedder, llm_client, data_source_id):
+  - retrieve(question, store, embedder, data_source_id):
     阶段1: embed → store.search(top_k=20, score_threshold=0.5)
     阶段2: 召回候选 + 问题 → LLM 精筛
   - 无召回 → 空结果 + 原因 (不 fallback)
@@ -40,7 +40,6 @@ async def retrieve(
     question: str,
     store: VectorStore,
     embedder: Embedder,
-    llm_client: Any | None = None,
     data_source_id: str | None = None,
     skip_llm_refine: bool = False,
 ) -> RetrievalResult:
@@ -50,7 +49,6 @@ async def retrieve(
         question: 用户自然语言问题
         store: VectorStore (Mock/Milvus)
         embedder: Embedder (BGE)
-        llm_client: 已弃用 (llm_chat 内部获取 client), 保留兼容签名
         data_source_id: 限定数据源 (多租户/多源隔离, 对标 RAG-005)
         skip_llm_refine: 跳过阶段2, 直接返回向量召回结果
 
@@ -88,7 +86,7 @@ async def retrieve(
         return RetrievalResult(models=_candidates_to_models(candidates))
 
     # ── 阶段 2: LLM 精筛 ──────────────────────────────────────
-    return await _llm_refine(question, candidates, llm_client)
+    return await _llm_refine(question, candidates)
 
 
 def _candidates_to_models(candidates: list[SearchResult]) -> list[dict[str, Any]]:
@@ -108,7 +106,6 @@ def _candidates_to_models(candidates: list[SearchResult]) -> list[dict[str, Any]
 async def _llm_refine(
     question: str,
     candidates: list[SearchResult],
-    llm_client: Any,
 ) -> RetrievalResult:
     """阶段 2: LLM 从召回候选里选真正相关的 (宁缺毋滥)。
 

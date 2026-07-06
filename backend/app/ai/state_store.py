@@ -250,7 +250,6 @@ def _format_state_compensation(latest_state: dict[str, Any], semantic_tables: li
 
 async def format_history_text(
     turns: list[dict[str, Any]],
-    llm_client=None,
     semantic_tables: list[str] | None = None,
 ) -> str:
     """把历史轮次格式化为注入 LLM 的上下文文本 (多轮对话核心, 对标 ARC-04 + Claude compact)。
@@ -265,7 +264,6 @@ async def format_history_text(
 
     Args:
         turns: list_turns() 返回值 [{turn, timestamp, state}, ...]
-        llm_client: LLM client (压缩摘要用; None 则超阈也只能截断)
         semantic_tables: 当前查询涉及的语义层表名 (状态补偿用)
 
     Returns:
@@ -293,7 +291,7 @@ async def format_history_text(
             recent_messages = messages[-(keep * 2):] if len(messages) > keep * 2 else messages
         else:
             # compact_history 是 async def (内部调 LLM 生成摘要), 必须 await
-            result = await compact_history(messages, keep_recent=keep, llm_client=llm_client)
+            result = await compact_history(messages, keep_recent=keep)
             if result.error:
                 cb.record_failure()
             elif result.summary:

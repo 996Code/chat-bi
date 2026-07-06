@@ -102,7 +102,6 @@ async def generate_sql(
     question: str,
     schema_context: str,
     allowed_columns: set[str],
-    llm_client,
     fewshot_examples: str | None = None,
     history: str | None = None,
     skills: str | None = None,
@@ -113,7 +112,6 @@ async def generate_sql(
         question: 用户问题 (已 normalize, 剥离可视化)
         schema_context: 检索到的表/列/类型上下文 (Phase 3 retriever 输出)
         allowed_columns: 语义层白名单列 (T030 Layer3 用)
-        llm_client: AsyncOpenAI
         fewshot_examples: few-shot 示例文本 (Phase 3 format_fewshot_prompt)
         history: 多轮历史上下文 (Phase 5 State Store)
 

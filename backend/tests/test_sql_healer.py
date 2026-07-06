@@ -94,7 +94,6 @@ class TestHealSql:
                 error="(1054, \"Unknown column 'passwrod'\")",
                 allowed_columns={"id", "password", "name"},
                 schema_context="orders(id, password, name)",
-                llm_client=None,
             )
         assert result.success
         assert "SELECT" in result.sql.upper()
@@ -109,7 +108,6 @@ class TestHealSql:
                 error="(1054, \"Unknown column 'bad'\")",
                 allowed_columns={"id", "name"},
                 schema_context="orders(id, name)",
-                llm_client=None,
             )
         prompt = mock_chat.call_args.kwargs.get("messages", [])
         full = json.dumps(prompt, ensure_ascii=False)
@@ -126,7 +124,6 @@ class TestHealSql:
                 error="(1054, \"Unknown column 'bad'\")",
                 allowed_columns={"id", "name", "total_amount"},
                 schema_context="orders(id, name, total_amount)",
-                llm_client=None,
             )
         prompt = mock_chat.call_args.kwargs.get("messages", [])
         full = json.dumps(prompt, ensure_ascii=False)
@@ -141,7 +138,6 @@ class TestHealSql:
                 error="(1054, \"Unknown column 'bad'\")",
                 allowed_columns={"id"},
                 schema_context="orders(id)",
-                llm_client=None,
             )
         assert not result.success  # 校验拦截
         assert not result.validation.ok
@@ -155,7 +151,6 @@ class TestHealSql:
                 error="(1054, \"Unknown column 'bad'\")",
                 allowed_columns={"id"},
                 schema_context="t(id)",
-                llm_client=None,
             )
         assert not result.success
         assert result.error is not None
@@ -197,7 +192,7 @@ class TestCircuitBreaker:
         with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm_content("SELECT 1")) as mock_chat:
             result = await heal_sql(
                 sql="SELECT bad", error="(1054)", allowed_columns={"id"},
-                schema_context="t(id)", llm_client=None, circuit_breaker=cb,
+                schema_context="t(id)", circuit_breaker=cb,
             )
         assert not result.success
         mock_chat.assert_not_called()  # 熔断, 没调 LLM

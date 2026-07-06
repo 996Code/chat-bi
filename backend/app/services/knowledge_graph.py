@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from typing import TYPE_CHECKING
 
 from app.schemas.semantic_layer import (
     Cardinality,
@@ -29,9 +28,6 @@ from app.schemas.semantic_layer import (
     Relationship,
     SemanticModelContent,
 )
-
-if TYPE_CHECKING:
-    from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +121,6 @@ def _infer_relationships_by_name(
 async def _infer_relationships_batch_by_llm(
     models: list[Model],
     all_model_names: list[str],
-    llm_client: "AsyncOpenAI",
 ) -> list[Relationship]:
     """LLM 批量推断表间关系 (confidence=0.7, source=ai_inferred)。
 
@@ -237,14 +232,12 @@ async def _infer_relationships_batch_by_llm(
 async def infer_knowledge_graph(
     content: SemanticModelContent,
     use_llm: bool = True,
-    llm_client: "AsyncOpenAI | None" = None,
 ) -> list[Relationship]:
     """聚合 name_pattern + ai_inferred，产出**新**关系建议（不写回）。
 
     Args:
         content: 语义层内容（**不会被修改**）
         use_llm: 是否启用 LLM 推断（False 则只用 name_pattern，测试用）
-        llm_client: 可注入 LLM client（None 则用全局 get_llm_client）
 
     Returns:
         新关系建议列表。已存在的 FK/name_pattern/手动关系会被去重。
@@ -266,15 +259,6 @@ async def infer_knowledge_graph(
             key = (m.name, r.target_model)
             existing[key] = max(existing.get(key, 0.0), r.confidence)
 
-    # 解析 client（惰性 import 避免循环）
-    client = llm_client
-    if use_llm and client is None:
-        try:
-            from app.core.llm_client import get_llm_client
-            client = get_llm_client()
-        except Exception:
-            client = None  # 配置缺失 → 跳过 LLM，只用 name_pattern
-
     suggestions: list[Relationship] = []
     for model in content.models:
         # name_pattern 总是跑（纯本地，无副作用）
@@ -282,10 +266,10 @@ async def infer_knowledge_graph(
             suggestions.append(r)
 
     # ai_inferred: 一次性批量推断 (利用 200K 上下文, 1 次调用替代 N 次)
-    if use_llm and client is not None:
+    if use_llm:
         try:
             batch_rels = await _infer_relationships_batch_by_llm(
-                content.models, all_names, client,
+                content.models, all_names,
             )
             suggestions.extend(batch_rels)
         except Exception as e:

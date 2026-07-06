@@ -6,7 +6,7 @@ T022: 两阶段检索 — 单元测试
   - 宁缺毋滥: 无真正匹配返回空, 不选 score 最高; 无召回 → 友好提示不 fallback
 
 设计要点:
-  - retrieve(question, store, embedder, llm_client):
+  - retrieve(question, store, embedder):
     阶段1: embed 问题 → vector_store.search(top_k=20, score_threshold=0.5)
     阶段2: 召回结果 + 问题 → LLM 精筛 (prompt 含假阳性声明)
   - 无召回 → 返回空 + 原因 (不 fallback 不随机选表, v1 教训)

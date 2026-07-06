@@ -478,8 +478,16 @@ watch(editMode, () => {
   }
 })
 
+// 窗口 resize 处理 — 遍历所有 ECharts 实例调用 resize()
+function handleResize() {
+  for (const chart of Object.values(chartInstances)) {
+    if (!chart.isDisposed()) chart.resize()
+  }
+}
+
 onMounted(() => {
   loadDashList()
+  window.addEventListener('resize', handleResize)
 })
 
 onBeforeUnmount(() => {
@@ -490,6 +498,7 @@ onBeforeUnmount(() => {
     try { grid.destroy(false) } catch { /* ignore */ }
     grid = null
   }
+  window.removeEventListener('resize', handleResize)
 })
 </script>
 
