@@ -263,7 +263,7 @@ async def _generate_conversation_title(question: str, deps) -> str:
                 {"role": "system", "content": "把用户的提问总结为一个简短的对话标题(不超过16个字, 不要标点)。只输出标题文字。"},
                 {"role": "user", "content": question},
             ],
-            max_tokens=50,
+            max_tokens=settings.llm_max_tokens,
             temperature=0.0,
         )
         title = extract_content(resp).strip().strip('"\'""')
