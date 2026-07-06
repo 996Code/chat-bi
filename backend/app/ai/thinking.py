@@ -70,10 +70,8 @@ async def think(
 
     失败降级: LLM 失败/解析失败 → 空 ThinkingResult (不阻塞 SQL 生成)。
     """
-    from app.core.config import get_settings
-    from app.core.llm_client import extract_content
+    from app.core.llm_client import llm_chat
     from app.core.text_sanitize import sanitize_text
-    settings = get_settings()
 
     # SEC-007: 用户问题进 LLM prompt 前清洗
     question = sanitize_text(question)
@@ -94,18 +92,11 @@ async def think(
     )
 
     try:
-        resp = await llm_client.chat.completions.create(
-            model=settings.llm_model,
+        content, _ = await llm_chat(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=settings.llm_max_tokens,
+            node="thinking",
             temperature=0.0,
         )
-        content = extract_content(resp)
-        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
-        from app.core.token_tracker import track_usage
-        from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None), node="thinking")
-        record_prompt("thinking", "", prompt, getattr(resp, "usage", None))
     except Exception as e:
         return ThinkingResult(error=str(e))
 

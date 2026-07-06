@@ -59,24 +59,16 @@ async def generate_sample_questions(
     prompt = _QUESTION_PROMPT.format(schema=schema_text)
 
     try:
-        from app.core.config import get_settings
-        from app.core.llm_client import extract_content
-        settings = get_settings()
-        resp = await llm_client.chat.completions.create(
-            model=settings.llm_model,
+        from app.core.llm_client import llm_chat
+        system_msg = "你是 BI 分析专家, 生成用户最可能问的业务问题。"
+        content, _ = await llm_chat(
             messages=[
-                {"role": "system", "content": "你是 BI 分析专家, 生成用户最可能问的业务问题。"},
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=settings.llm_max_tokens,
+            node="question_generator",
             temperature=0.3,
         )
-        content = extract_content(resp)
-        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
-        from app.core.token_tracker import track_usage
-        from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None), node="question_generator")
-        record_prompt("question_generator", "你是 BI 分析专家, 生成用户最可能问的业务问题。", prompt, getattr(resp, "usage", None))
         questions = _parse_questions(content)
         if questions:
             logger.info("LLM 生成 %d 个示例问题", len(questions))

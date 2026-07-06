@@ -14,7 +14,7 @@ JSON 自愈 (对标海泰):
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -155,12 +155,10 @@ class TestAnalyzeDataShape:
 # ── T034: 图表生成 ────────────────────────────────────────────
 
 def _mock_llm(option_json: str):
-    fake = MagicMock()
+    """Mock llm_chat() 返回 (content, resp)。"""
     resp = MagicMock()
-    resp.choices = [MagicMock()]
-    resp.choices[0].message.content = option_json
-    fake.chat.completions.create = AsyncMock(return_value=resp)
-    return fake
+    resp.usage = None
+    return (option_json, resp)
 
 
 class TestGenerateChart:
@@ -173,13 +171,13 @@ class TestGenerateChart:
             "dim_col": "category",
             "measure_cols": ["amount"],
         })
-        llm = _mock_llm(config)
-        result = await generate_chart(
-            question="各品类销售额",
-            columns=["category", "amount"],
-            rows=[("a", 100), ("b", 200)],
-            llm_client=llm,
-        )
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm(config)):
+            result = await generate_chart(
+                question="各品类销售额",
+                columns=["category", "amount"],
+                rows=[("a", 100), ("b", 200)],
+                llm_client=None,
+            )
         assert result.ok
         assert result.option is not None
         assert "series" in result.option
@@ -188,26 +186,26 @@ class TestGenerateChart:
     async def test_generate_truncated_json_self_heals(self):
         """LLM 输出截断 JSON → 自愈补括号 (T035 集成)。"""
         truncated = '{"chart_type": "bar", "dim_col": "c", "measure_cols": ["v"'  # 缺 ]}
-        llm = _mock_llm(truncated)
-        result = await generate_chart(
-            question="销售",
-            columns=["c", "v"],
-            rows=[("a", 1), ("b", 2)],
-            llm_client=llm,
-        )
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm(truncated)):
+            result = await generate_chart(
+                question="销售",
+                columns=["c", "v"],
+                rows=[("a", 1), ("b", 2)],
+                llm_client=None,
+            )
         assert result.ok  # 自愈成功
         assert "series" in result.option
 
     @pytest.mark.asyncio
     async def test_generate_garbage_degrades_to_rule(self):
         """LLM 输出完全无效 → 降级到规则推断 (T035 降级)。"""
-        llm = _mock_llm("这不是JSON完全无法解析{{随机")
-        result = await generate_chart(
-            question="销售",
-            columns=["category", "count"],
-            rows=[("a", 10), ("b", 20)],
-            llm_client=llm,
-        )
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm("这不是JSON完全无法解析{{随机")):
+            result = await generate_chart(
+                question="销售",
+                columns=["category", "count"],
+                rows=[("a", 10), ("b", 20)],
+                llm_client=None,
+            )
         assert result.ok  # 降级到规则推断, 仍返回 option
         assert result.degraded is True
 
@@ -215,28 +213,27 @@ class TestGenerateChart:
     async def test_chart_type_hint_passed_to_llm(self):
         """chart_type_hint (来自 T026) 传给 LLM 引导。"""
         config = json.dumps({"chart_type": "pie", "dim_col": "c", "measure_cols": ["v"]})
-        llm = _mock_llm(config)
-        await generate_chart(
-            question="占比",
-            columns=["c", "v"],
-            rows=[("a", 1), ("b", 2)],
-            llm_client=llm,
-            chart_type_hint="pie",
-        )
-        prompt = llm.chat.completions.create.call_args.kwargs.get("messages", [])
-        full = json.dumps(prompt, ensure_ascii=False)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm(config)) as mock_chat:
+            await generate_chart(
+                question="占比",
+                columns=["c", "v"],
+                rows=[("a", 1), ("b", 2)],
+                llm_client=None,
+                chart_type_hint="pie",
+            )
+        messages = mock_chat.call_args.kwargs.get("messages", [])
+        full = json.dumps(messages, ensure_ascii=False)
         assert "pie" in full.lower() or "饼" in full
 
     @pytest.mark.asyncio
     async def test_llm_failure_degrades(self):
         """LLM 调用失败 → 降级规则推断。"""
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(side_effect=Exception("LLM down"))
-        result = await generate_chart(
-            question="x",
-            columns=["c", "v"],
-            rows=[("a", 1), ("b", 2)],
-            llm_client=llm,
-        )
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, side_effect=Exception("LLM down")):
+            result = await generate_chart(
+                question="x",
+                columns=["c", "v"],
+                rows=[("a", 1), ("b", 2)],
+                llm_client=None,
+            )
         assert result.ok  # 降级成功
         assert result.degraded is True

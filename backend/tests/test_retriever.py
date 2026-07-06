@@ -15,7 +15,7 @@ T022: 两阶段检索 — 单元测试
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -53,7 +53,7 @@ class TestVectorRecall:
         embedder = MagicMock()
         embedder.embed = AsyncMock(return_value=[[0.1] * 1024])
 
-        result = await retrieve("销售额", store, embedder, llm_client=None)
+        result = await retrieve("销售额", store, embedder, skip_llm_refine=True)
 
         # 阶段2 LLM=None 时直接返回阶段1结果 (score 阈值从 config 读, 适配 BGE)
         call = store.search.call_args
@@ -69,7 +69,7 @@ class TestVectorRecall:
         embedder = MagicMock()
         embedder.embed = AsyncMock(return_value=[[0.1] * 1024])
 
-        result = await retrieve("无关问题", store, embedder, llm_client=None)
+        result = await retrieve("无关问题", store, embedder, skip_llm_refine=True)
 
         assert result.models == []
         assert result.no_match_reason is not None
@@ -83,7 +83,7 @@ class TestVectorRecall:
         embedder = MagicMock()
         embedder.embed = AsyncMock(return_value=[[0.1] * 1024])
 
-        await retrieve("销售额", store, embedder, llm_client=None, data_source_id="ds1")
+        await retrieve("销售额", store, embedder, skip_llm_refine=True, data_source_id="ds1")
 
         call = store.search.call_args
         filter_arg = call.kwargs.get("filter")
@@ -108,16 +108,14 @@ class TestLLMRefine:
         embedder.embed = AsyncMock(return_value=[[0.1] * 1024])
 
         # mock LLM 只选 biz_orders
-        fake_resp = MagicMock()
-        fake_resp.choices = [MagicMock()]
-        fake_resp.choices[0].message.content = json.dumps({
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        llm_content = json.dumps({
             "models": ["biz_orders"],
             "reason": "销售额对应订单金额 total_amount",
         })
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(return_value=fake_resp)
-
-        result = await retrieve("销售额", store, embedder, llm_client=llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=(llm_content, mock_resp)):
+            result = await retrieve("销售额", store, embedder)
 
         names = [m["name"] for m in result.models]
         assert "biz_orders" in names
@@ -133,13 +131,11 @@ class TestLLMRefine:
         embedder = MagicMock()
         embedder.embed = AsyncMock(return_value=[[0.1] * 1024])
 
-        fake_resp = MagicMock()
-        fake_resp.choices = [MagicMock()]
-        fake_resp.choices[0].message.content = json.dumps({"models": [], "reason": "无匹配"})
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(return_value=fake_resp)
-
-        result = await retrieve("数据库密码", store, embedder, llm_client=llm)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        llm_content = json.dumps({"models": [], "reason": "无匹配"})
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=(llm_content, mock_resp)):
+            result = await retrieve("数据库密码", store, embedder)
 
         assert result.models == []
         assert result.no_match_reason is not None
@@ -152,15 +148,13 @@ class TestLLMRefine:
         embedder = MagicMock()
         embedder.embed = AsyncMock(return_value=[[0.1] * 1024])
 
-        fake_resp = MagicMock()
-        fake_resp.choices = [MagicMock()]
-        fake_resp.choices[0].message.content = json.dumps({"models": ["t1"]})
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(return_value=fake_resp)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        llm_content = json.dumps({"models": ["t1"]})
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=(llm_content, mock_resp)) as mock_chat:
+            await retrieve("销售额", store, embedder)
 
-        await retrieve("销售额", store, embedder, llm_client=llm)
-
-        call = llm.chat.completions.create.call_args
+        call = mock_chat.call_args
         prompt = call.kwargs.get("messages", call[0][0] if call[0] else [{}])[0]
         prompt_text = prompt.get("content", "") if isinstance(prompt, dict) else str(prompt)
         assert "假阳性" in prompt_text or "可能存在" in prompt_text or "向量检索" in prompt_text
@@ -175,10 +169,8 @@ class TestLLMRefine:
         embedder = MagicMock()
         embedder.embed = AsyncMock(return_value=[[0.1] * 1024])
 
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(side_effect=Exception("LLM down"))
-
-        result = await retrieve("销售额", store, embedder, llm_client=llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, side_effect=Exception("LLM down")):
+            result = await retrieve("销售额", store, embedder)
 
         # 降级: 返回原始召回 (不含精筛, 但有结果)
         assert len(result.models) == 1
@@ -197,13 +189,10 @@ class TestLLMInvalidResponse:
         embedder = MagicMock()
         embedder.embed = AsyncMock(return_value=[[0.1] * 1024])
 
-        fake_resp = MagicMock()
-        fake_resp.choices = [MagicMock()]
-        fake_resp.choices[0].message.content = "这不是JSON{{{"
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(return_value=fake_resp)
-
-        result = await retrieve("销售额", store, embedder, llm_client=llm)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=("这不是JSON{{{", mock_resp)):
+            result = await retrieve("销售额", store, embedder)
 
         assert result.degraded is True
         assert len(result.models) == 1

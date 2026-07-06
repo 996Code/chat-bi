@@ -178,21 +178,14 @@ async def _infer_relationships_batch_by_llm(
         )
 
         try:
-            from app.core.config import get_settings
-            from app.core.llm_client import extract_content
-
-            settings = get_settings()
-            model_name = settings.llm_model
+            from app.core.llm_client import llm_chat
 
             # 不设每批超时: asyncio.wait_for 会断开 LLM 连接中断生成
             # 靠外层 infer_knowledge_graph 整体超时兜底
-            resp = await llm_client.chat.completions.create(
-                model=model_name,
+            content, _ = await llm_chat(
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=settings.llm_max_tokens,
                 temperature=0.1,
             )
-            content = extract_content(resp)
             from app.core.llm_json import parse_json_response
             raw_list = parse_json_response(content)
             if raw_list is None or not isinstance(raw_list, list):

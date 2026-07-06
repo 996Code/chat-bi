@@ -171,10 +171,7 @@ async def preview_skill(
     if not body.content.strip():
         raise HTTPException(status_code=422, detail="规则内容不能为空")
 
-    from app.core.config import get_settings
-    from app.core.llm_client import extract_content, get_llm_client
-    settings = get_settings()
-    llm = get_llm_client()
+    from app.core.llm_client import llm_chat
 
     # 最小 prompt: 模拟 SQL 生成场景 (规则 + 示例 schema + 示例问题)
     system_prompt = (
@@ -187,16 +184,14 @@ async def preview_skill(
         "只返回 SQL, 不要解释。"
     )
     try:
-        resp = await llm.chat.completions.create(
-            model=settings.llm_model,
+        sql, resp = await llm_chat(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": body.test_question},
             ],
-            max_tokens=settings.llm_max_tokens,
             temperature=0.0,
         )
-        sql = extract_content(resp).strip()
+        sql = sql.strip()
         # 简单校验: 至少像 SQL
         if sql and not sql.upper().startswith("SELECT"):
             return SkillPreviewResponse(generated_sql=sql, error="生成内容非 SELECT 语句 (规则可能需要调整)")

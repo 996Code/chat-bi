@@ -253,20 +253,15 @@ async def _generate_conversation_title(question: str, deps) -> str:
     """
     fallback = question[:16].strip() or "新对话"
     try:
-        from app.core.config import get_settings
-        from app.core.llm_client import get_llm_client
-        settings = get_settings()
-        llm = get_llm_client()
-        resp = await llm.chat.completions.create(
-            model=settings.llm_model,
+        from app.core.llm_client import llm_chat
+        title, _ = await llm_chat(
             messages=[
                 {"role": "system", "content": "把用户的提问总结为一个简短的对话标题(不超过16个字, 不要标点)。只输出标题文字。"},
                 {"role": "user", "content": question},
             ],
-            max_tokens=settings.llm_max_tokens,
             temperature=0.0,
         )
-        title = extract_content(resp).strip().strip('"\'""')
+        title = title.strip().strip('"\'""')
         return title[:16] if title else fallback
     except Exception as e:
         logger.warning("标题生成失败, 降级为问题截断: %s", e)

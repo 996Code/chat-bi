@@ -55,30 +55,23 @@ async def generate_reply(
     Returns:
         始终返回非空字符串 (fail-closed, 前端永不空白)
     """
-    from app.core.config import get_settings
-    from app.core.llm_client import extract_content
+    from app.core.llm_client import llm_chat
     from app.core.text_sanitize import sanitize_text
-    settings = get_settings()
 
     clean_question = sanitize_text(question)
     prompt = _REPLY_PROMPT.format(question=clean_question)
 
+    system_msg = "你是 ChatBI 智能助手, 友好简短地回复用户。"
     try:
-        resp = await llm_client.chat.completions.create(
-            model=settings.llm_model,
+        content, _ = await llm_chat(
             messages=[
-                {"role": "system", "content": "你是 ChatBI 智能助手, 友好简短地回复用户。"},
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=settings.llm_max_tokens,
+            node="generate_reply",
             temperature=0.3,
         )
-        reply = extract_content(resp).strip()
-        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
-        from app.core.token_tracker import track_usage
-        from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None), node="generate_reply")
-        record_prompt("generate_reply", "你是 ChatBI 智能助手, 友好简短地回复用户。", prompt, getattr(resp, "usage", None))
+        reply = content.strip()
         if not reply:
             logger.warning("回复生成返回空, 降级默认文案")
             return _FALLBACK_REPLY

@@ -15,7 +15,7 @@ T026: 意图识别 — 单元测试
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -97,11 +97,8 @@ class TestStripVisualization:
 
 # ── classify_intent ───────────────────────────────────────────
 
-def _mock_llm(intent: str, confidence: float = 0.9, question: str = "x", chart_hint=None):
-    """构造 mock LLM client, 返回指定意图。"""
-    fake = MagicMock()
-    resp = MagicMock()
-    resp.choices = [MagicMock()]
+def _mock_llm_content(intent: str, confidence: float = 0.9, question: str = "x", chart_hint=None):
+    """返回 (content, mock_resp) 元组, 用于 patch llm_chat 的 return_value。"""
     payload = {
         "intent": intent,
         "normalized_question": question,
@@ -109,9 +106,9 @@ def _mock_llm(intent: str, confidence: float = 0.9, question: str = "x", chart_h
         "reason": "test",
         "chart_type_hint": chart_hint,
     }
-    resp.choices[0].message.content = json.dumps(payload)
-    fake.chat.completions.create = AsyncMock(return_value=resp)
-    return fake
+    mock_resp = MagicMock()
+    mock_resp.usage = None
+    return (json.dumps(payload), mock_resp)
 
 
 class TestClassifyIntent:
@@ -119,96 +116,87 @@ class TestClassifyIntent:
 
     @pytest.mark.asyncio
     async def test_text_to_sql(self):
-        llm = _mock_llm("TEXT_TO_SQL", 0.9, "本月销售额")
-        result = await classify_intent("本月销售额", llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm_content("TEXT_TO_SQL", 0.9, "本月销售额")):
+            result = await classify_intent("本月销售额", None)
         assert result.intent == "TEXT_TO_SQL"
 
     @pytest.mark.asyncio
     async def test_general(self):
-        llm = _mock_llm("GENERAL", 0.95, "你好")
-        result = await classify_intent("你好", llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm_content("GENERAL", 0.95, "你好")):
+            result = await classify_intent("你好", None)
         assert result.intent == "GENERAL"
 
     @pytest.mark.asyncio
     async def test_chart_modify(self):
-        llm = _mock_llm("CHART_MODIFY", 0.85, "换成饼图", chart_hint="pie")
-        result = await classify_intent("换成饼图", llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm_content("CHART_MODIFY", 0.85, "换成饼图", chart_hint="pie")):
+            result = await classify_intent("换成饼图", None)
         assert result.intent == "CHART_MODIFY"
         assert result.chart_type_hint == "pie"
 
     @pytest.mark.asyncio
     async def test_explanation(self):
-        llm = _mock_llm("EXPLANATION", 0.8, "这个SQL什么意思")
-        result = await classify_intent("解释一下", llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm_content("EXPLANATION", 0.8, "这个SQL什么意思")):
+            result = await classify_intent("解释一下", None)
         assert result.intent == "EXPLANATION"
 
     @pytest.mark.asyncio
     async def test_low_confidence_degrades_to_clarification(self):
         """confidence < 0.6 → 降级 CLARIFICATION (对标 INT-002)。"""
-        llm = _mock_llm("TEXT_TO_SQL", 0.4, "那个呢")
-        result = await classify_intent("那个呢", llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm_content("TEXT_TO_SQL", 0.4, "那个呢")):
+            result = await classify_intent("那个呢", None)
         assert result.intent == "CLARIFICATION"
         assert "降级" in result.reason or "CLARIFICATION" in result.reason
 
     @pytest.mark.asyncio
     async def test_visualization_stripped_from_question(self):
         """normalized_question 应剥离可视化措辞 (对标 INT-004)。"""
-        llm = _mock_llm("TEXT_TO_SQL", 0.9, "本月销售额", chart_hint="line")
-        result = await classify_intent("用折线图展示本月销售额", llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=_mock_llm_content("TEXT_TO_SQL", 0.9, "本月销售额", chart_hint="line")):
+            result = await classify_intent("用折线图展示本月销售额", None)
         # LLM 返回的 normalized_question 应已剥离 (LLM 负责), 这里验证 hint 传递
         assert result.chart_type_hint == "line"
 
     @pytest.mark.asyncio
     async def test_invalid_json_degrades(self):
         """LLM 返回非法 JSON → 降级 CLARIFICATION (宁缺毋滥)。"""
-        llm = MagicMock()
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message.content = "这不是JSON{"
-        llm.chat.completions.create = AsyncMock(return_value=resp)
-
-        result = await classify_intent("问题", llm)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=("这不是JSON{", mock_resp)):
+            result = await classify_intent("问题", None)
         assert result.intent == "CLARIFICATION"
 
     @pytest.mark.asyncio
     async def test_schema_mismatch_retries(self):
         """LLM 输出不符合 schema (非5种意图) → 重试 (对标 INT-002)。"""
         call_count = 0
-        async def create_side_effect(**kwargs):
+        async def chat_side_effect(**kwargs):
             nonlocal call_count
             call_count += 1
-            resp = MagicMock()
-            resp.choices = [MagicMock()]
             if call_count == 1:
-                resp.choices[0].message.content = json.dumps({"intent": "BAD", "normalized_question": "x", "confidence": 0.9})
+                content = json.dumps({"intent": "BAD", "normalized_question": "x", "confidence": 0.9})
             else:
-                resp.choices[0].message.content = json.dumps({"intent": "GENERAL", "normalized_question": "你好", "confidence": 0.9, "reason": ""})
-            return resp
+                content = json.dumps({"intent": "GENERAL", "normalized_question": "你好", "confidence": 0.9, "reason": ""})
+            mock_resp = MagicMock()
+            mock_resp.usage = None
+            return (content, mock_resp)
 
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(side_effect=create_side_effect)
-
-        result = await classify_intent("你好", llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, side_effect=chat_side_effect):
+            result = await classify_intent("你好", None)
         assert result.intent == "GENERAL"
         assert call_count >= 2  # 重试过
 
     @pytest.mark.asyncio
     async def test_retry_exhausted_degrades(self):
         """重试 max 次仍失败 → CLARIFICATION。"""
-        llm = MagicMock()
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message.content = json.dumps({"intent": "BAD", "normalized_question": "x", "confidence": 0.9})
-        llm.chat.completions.create = AsyncMock(return_value=resp)
-
-        result = await classify_intent("问题", llm)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        bad_content = json.dumps({"intent": "BAD", "normalized_question": "x", "confidence": 0.9})
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=(bad_content, mock_resp)):
+            result = await classify_intent("问题", None)
         assert result.intent == "CLARIFICATION"
 
     @pytest.mark.asyncio
     async def test_llm_failure_degrades(self):
         """LLM 调用失败 → CLARIFICATION (降级, 不抛)。"""
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(side_effect=Exception("LLM down"))
-
-        result = await classify_intent("问题", llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, side_effect=Exception("LLM down")):
+            result = await classify_intent("问题", None)
         assert result.intent == "CLARIFICATION"

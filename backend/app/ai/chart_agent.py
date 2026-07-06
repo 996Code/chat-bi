@@ -500,9 +500,7 @@ async def generate_chart(
     Returns:
         ChartResult — 始终返回 option (fail-closed, 降级到规则推断也不返回空)
     """
-    from app.core.config import get_settings
-    from app.core.llm_client import extract_content
-    settings = get_settings()
+    from app.core.llm_client import llm_chat
 
     # 数据摘要 (不全量灌入, 防大结果撑爆 prompt)
     sample = rows[:5]
@@ -516,23 +514,17 @@ async def generate_chart(
         hint=hint,
     )
 
+    system_msg = "你是 BI 图表类型决策器, 只返回图表配置 JSON (chart_type/dim_col/measure_cols)。"
     # 1. LLM 生成 (只返回图表类型 + 列映射配置, 不填数据)
     try:
-        resp = await llm_client.chat.completions.create(
-            model=settings.llm_model,
+        content, _ = await llm_chat(
             messages=[
-                {"role": "system", "content": "你是 BI 图表类型决策器, 只返回图表配置 JSON (chart_type/dim_col/measure_cols)。"},
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=settings.llm_max_tokens,
+            node="generate_chart",
             temperature=0.0,
         )
-        content = extract_content(resp)
-        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
-        from app.core.token_tracker import track_usage
-        from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None), node="generate_chart")
-        record_prompt("generate_chart", "你是 BI 图表类型决策器, 只返回图表配置 JSON。", prompt, getattr(resp, "usage", None))
     except Exception as e:
         logger.warning("图表生成 LLM 失败, 降级规则推断: %s", e)
         option = infer_chart_by_rule(columns, rows)

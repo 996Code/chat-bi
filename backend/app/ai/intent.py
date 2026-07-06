@@ -128,9 +128,8 @@ async def classify_intent(question: str, llm_client, history: str | None = None)
         IntentOutput — 始终返回 (不抛), 低置信/失败降级 CLARIFICATION
     """
     from app.core.config import get_settings
-    from app.core.llm_client import extract_content
+    from app.core.llm_client import llm_chat
     from app.core.text_sanitize import sanitize_text
-    settings = get_settings()
 
     # SEC-007: 用户输入进 LLM 前清洗 (NFKC + 去零宽/方向控制字符)
     clean_question = sanitize_text(question)
@@ -145,26 +144,19 @@ async def classify_intent(question: str, llm_client, history: str | None = None)
         f"只返回 JSON, 不要解释:"
     )
 
+    messages = [
+        {"role": "system", "content": _INTENT_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
     last_error = None
     for attempt in range(MAX_RETRIES + 1):
         try:
-            resp = await llm_client.chat.completions.create(
-                model=settings.llm_model,
-                messages=[
-                    {"role": "system", "content": _INTENT_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=settings.llm_max_tokens,
-                temperature=0.0,
+            content, resp = await llm_chat(
+                messages=messages, node="intent", temperature=0.0,
             )
-            content = extract_content(resp)
             # Debug: 记录 LLM 原始返回, 排查非 JSON 问题
             logger.debug("意图识别 LLM 原始返回 (attempt %d): %r", attempt + 1, content[:500])
-            # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
-            from app.core.token_tracker import track_usage
-            from app.core.prompt_capture import record_prompt
-            track_usage(getattr(resp, "usage", None), node="intent")
-            record_prompt("intent", _INTENT_PROMPT, user_content, getattr(resp, "usage", None))
             from app.core.llm_json import parse_json_response
             parsed = parse_json_response(content)
             if parsed is None:

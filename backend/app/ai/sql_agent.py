@@ -120,11 +120,9 @@ async def generate_sql(
     Returns:
         GenerateResult — error 非空表示生成/校验失败 (不抛, T025 决定下一步)
     """
-    from app.core.config import get_settings
-    from app.core.llm_client import extract_content
+    from app.core.llm_client import llm_chat
     from app.core.prompt_cache import get_prompt_cache, PromptCache
     from app.core.text_sanitize import sanitize_text
-    settings = get_settings()
 
     # SEC-007: 用户问题进 LLM prompt 前清洗 (NFKC + 去零宽/方向控制字符)
     question = sanitize_text(question)
@@ -154,21 +152,14 @@ async def generate_sql(
 
     # ── LLM 调用 ─────────────────────────────────────────────
     try:
-        resp = await llm_client.chat.completions.create(
-            model=settings.llm_model,
+        content, _ = await llm_chat(
             messages=[
                 {"role": "system", "content": system_content},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=settings.llm_max_tokens,
+            node="generate_sql",
             temperature=0.0,
         )
-        content = extract_content(resp)
-        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
-        from app.core.token_tracker import track_usage
-        from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None), node="generate_sql")
-        record_prompt("generate_sql", system_content, user_content, getattr(resp, "usage", None))
     except Exception as e:
         logger.warning("SQL 生成 LLM 调用失败: %s", e)
         return GenerateResult(error=f"LLM 调用失败: {e}")

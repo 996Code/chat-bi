@@ -4,7 +4,7 @@ T027/T028: 预思考 + ask_user — 单元测试
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -21,17 +21,15 @@ from app.ai.ask_user import (
 class TestThinking:
     @pytest.mark.asyncio
     async def test_think_returns_structured(self):
-        fake = MagicMock()
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message.content = json.dumps({
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        llm_content = json.dumps({
             "tables": ["biz_orders (含金额)"],
             "aggregation": "SUM(total_amount) GROUP BY category",
             "caveats": ["注意 Fan-Trap: 多订单可能重复计算"],
         })
-        fake.chat.completions.create = AsyncMock(return_value=resp)
-
-        result = await think("销售额", "orders(total_amount)", [{"name": "biz_orders", "score": 0.8}], fake)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=(llm_content, mock_resp)):
+            result = await think("销售额", "orders(total_amount)", [{"name": "biz_orders", "score": 0.8}], None)
         assert result.error is None
         assert len(result.tables) == 1
         assert "SUM" in result.aggregation
@@ -39,20 +37,17 @@ class TestThinking:
 
     @pytest.mark.asyncio
     async def test_think_llm_failure_degrades(self):
-        fake = MagicMock()
-        fake.chat.completions.create = AsyncMock(side_effect=Exception("LLM down"))
-        result = await think("x", "", [], fake)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, side_effect=Exception("LLM down")):
+            result = await think("x", "", [], None)
         assert result.error is not None
         assert result.tables == []  # 降级空, 不阻塞
 
     @pytest.mark.asyncio
     async def test_think_invalid_json_degrades(self):
-        fake = MagicMock()
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message.content = "不是JSON"
-        fake.chat.completions.create = AsyncMock(return_value=resp)
-        result = await think("x", "", [], fake)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=("不是JSON", mock_resp)):
+            result = await think("x", "", [], None)
         assert result.error is not None
 
 

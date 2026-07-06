@@ -505,9 +505,8 @@ async def _enrich_with_llm(content) -> None:
     不设每批超时: asyncio.wait_for 会断开 LLM 连接中断生成,
     靠外层整体超时兜底。LLM 失败静默降级 (退化列名已可用, 不阻塞扫描)。
     """
-    from app.core.llm_client import get_llm_client, extract_content
+    from app.core.llm_client import llm_chat
     from app.core.llm_json import parse_json_response
-    from app.core.config import get_settings
 
     # 筛出需要推断的业务表 (跳过系统表 + 全有注释的表)
     tasks = []  # (model, needs_infer)
@@ -544,17 +543,11 @@ async def _enrich_with_llm(content) -> None:
         )
 
         try:
-            client = get_llm_client()
-            settings = get_settings()
             # 不设每批超时: asyncio.wait_for 会断开 LLM 连接中断生成
             # 靠外层整体超时兜底
-            resp = await client.chat.completions.create(
-                model=settings.llm_model,
+            result_text, _ = await llm_chat(
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=settings.llm_max_tokens,
-                temperature=settings.llm_temperature,
             )
-            result_text = extract_content(resp)
             result = parse_json_response(result_text)
             if not isinstance(result, dict):
                 continue

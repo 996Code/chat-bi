@@ -14,7 +14,7 @@ T016: 知识图谱 AI 推断 — 单元测试
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -168,9 +168,9 @@ class TestInferKnowledgeGraph:
         content = _orders_content()
 
         # mock LLM 返回一条 ai_inferred 建议 (批量格式: 含 source_model)
-        fake_response = MagicMock()
-        fake_response.choices = [MagicMock()]
-        fake_response.choices[0].message.content = json.dumps([
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        llm_content = json.dumps([
             {
                 "source_model": "biz_orders",
                 "target_model": "biz_users",
@@ -179,10 +179,8 @@ class TestInferKnowledgeGraph:
             }
         ])
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create = AsyncMock(return_value=fake_response)
-
-        suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=fake_client)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=(llm_content, mock_resp)):
+            suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=None)
 
         ai_rels = [r for r in suggestions if r.source == "ai_inferred"]
         assert len(ai_rels) >= 1, "应有 ai_inferred 来源的建议"
@@ -194,10 +192,8 @@ class TestInferKnowledgeGraph:
         """LLM 调用失败 → 降级为只有 name_pattern（不抛异常）。"""
         content = _orders_content()
 
-        fake_client = MagicMock()
-        fake_client.chat.completions.create = AsyncMock(side_effect=Exception("LLM down"))
-
-        suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=fake_client)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, side_effect=Exception("LLM down")):
+            suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=None)
 
         # 不抛异常，且仍有 name_pattern 建议
         name_pattern_rels = [r for r in suggestions if r.source == "name_pattern"]
@@ -214,14 +210,10 @@ class TestInferKnowledgeGraph:
         """LLM 返回非法 JSON → 降级（对标 infer_column_chinese 行为）。"""
         content = _orders_content()
 
-        fake_response = MagicMock()
-        fake_response.choices = [MagicMock()]
-        fake_response.choices[0].message.content = "这不是JSON{{{"
-
-        fake_client = MagicMock()
-        fake_client.chat.completions.create = AsyncMock(return_value=fake_response)
-
-        suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=fake_client)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=("这不是JSON{{{", mock_resp)):
+            suggestions = await infer_knowledge_graph(content, use_llm=True, llm_client=None)
 
         # 降级：只剩 name_pattern，不抛
         sources = {r.source for r in suggestions}

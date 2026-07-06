@@ -68,6 +68,61 @@ def extract_content(resp, default: str = "") -> str:
     return default
 
 
+async def llm_chat(
+    messages: list[dict],
+    *,
+    node: str | None = None,
+    temperature: float | None = None,
+) -> tuple[str, object]:
+    """统一 LLM 调用入口。
+
+    model / max_tokens / api 配置全部走 settings，调用方不需要也不应该关心。
+    temperature 是业务语义 (0.0 精确 / 0.3 自然)，由调用方控制。
+    node 非空时自动记录 track_usage + record_prompt。
+
+    Args:
+        messages: OpenAI 格式消息列表。
+        node: AI 节点名 (intent/thinking/generate_sql 等)，None 时不记录遥测。
+        temperature: 生成温度，None 时用 settings.llm_temperature。
+
+    Returns:
+        (content, resp) — content 是 extract_content 结果，resp 是原始响应对象。
+    """
+    settings = get_settings()
+    client = get_llm_client()
+    temp = temperature if temperature is not None else settings.llm_temperature
+
+    resp = await client.chat.completions.create(
+        model=settings.llm_model,
+        messages=messages,
+        max_tokens=settings.llm_max_tokens,
+        temperature=temp,
+    )
+
+    content = extract_content(resp)
+
+    # 遥测: node 非空时自动记录 token 用量 + prompt 文本
+    if node:
+        from app.core.token_tracker import track_usage
+        from app.core.prompt_capture import record_prompt
+
+        usage = getattr(resp, "usage", None)
+        track_usage(usage, node=node)
+
+        # 从 messages 提取 system / user 文本 (record_prompt 需要)
+        system_text = ""
+        user_text = ""
+        for msg in messages:
+            role = msg.get("role", "")
+            if role == "system":
+                system_text = msg.get("content", "")
+            elif role == "user":
+                user_text = msg.get("content", "")
+        record_prompt(node, system_text, user_text, usage)
+
+    return content, resp
+
+
 def reset_clients() -> None:
     """重置单例（测试用）。"""
     global _llm_client, _embedding_client
@@ -100,14 +155,10 @@ async def infer_column_chinese(table_name: str, columns: list[dict]) -> dict[str
     )
 
     try:
-        client = get_llm_client()
-        resp = await client.chat.completions.create(
-            model=settings.llm_model,
+        content, _ = await llm_chat(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=settings.llm_max_tokens,
             temperature=settings.llm_temperature,
         )
-        content = extract_content(resp)
         from app.core.llm_json import parse_json_response
         result = parse_json_response(content)
         return result if isinstance(result, dict) else {}

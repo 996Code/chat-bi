@@ -42,6 +42,7 @@ async def retrieve(
     embedder: Embedder,
     llm_client: Any | None = None,
     data_source_id: str | None = None,
+    skip_llm_refine: bool = False,
 ) -> RetrievalResult:
     """两阶段检索: 向量召回 → LLM 精筛。
 
@@ -49,8 +50,9 @@ async def retrieve(
         question: 用户自然语言问题
         store: VectorStore (Mock/Milvus)
         embedder: Embedder (BGE)
-        llm_client: LLM client (None 则跳过阶段2, 直接返回召回)
+        llm_client: 已弃用 (llm_chat 内部获取 client), 保留兼容签名
         data_source_id: 限定数据源 (多租户/多源隔离, 对标 RAG-005)
+        skip_llm_refine: 跳过阶段2, 直接返回向量召回结果
 
     Returns:
         RetrievalResult — 无召回/无真匹配 → models=[] + no_match_reason
@@ -81,8 +83,8 @@ async def retrieve(
             no_match_reason="无法匹配到相关表，请换一种问法或检查数据源",
         )
 
-    # 无 LLM → 直接返回召回结果 (阶段1 即终态)
-    if llm_client is None:
+    # 跳过 LLM 精筛 → 直接返回召回结果 (阶段1 即终态)
+    if skip_llm_refine:
         return RetrievalResult(models=_candidates_to_models(candidates))
 
     # ── 阶段 2: LLM 精筛 ──────────────────────────────────────
@@ -137,16 +139,11 @@ async def _llm_refine(
     )
 
     try:
-        from app.core.config import get_settings
-        from app.core.llm_client import extract_content
-        settings = get_settings()
-        resp = await llm_client.chat.completions.create(
-            model=settings.llm_model,
+        from app.core.llm_client import llm_chat
+        content, _ = await llm_chat(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=settings.llm_max_tokens,
             temperature=0.0,
         )
-        content = extract_content(resp)
         from app.core.llm_json import parse_json_response
         parsed = parse_json_response(content)
         if parsed is None:

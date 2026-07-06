@@ -113,31 +113,21 @@ async def compact_history(
     old_messages = messages[:split_at]
     recent_messages = messages[split_at:]
 
-    # LLM 生成摘要
-    if llm_client is None:
-        return CompactResult(recent_messages=recent_messages, error="无 LLM client")
-
-    from app.core.config import get_settings
-    from app.core.llm_client import extract_content
-    settings = get_settings()
+    # LLM 生成摘要 (llm_chat 内部获取 client, 不再需要外部传入)
+    from app.core.llm_client import llm_chat
     history_text = "\n".join(
         f"{m['role']}: {m.get('content', '')[:200]}"  # 截断长内容
         for m in old_messages
     )
+    compact_prompt = _COMPACT_PROMPT.format(history=history_text)
 
     try:
-        resp = await llm_client.chat.completions.create(
-            model=settings.llm_model,
-            messages=[{"role": "user", "content": _COMPACT_PROMPT.format(history=history_text)}],
-            max_tokens=settings.llm_max_tokens,
+        summary, _ = await llm_chat(
+            messages=[{"role": "user", "content": compact_prompt}],
+            node="compress",
             temperature=0.0,
         )
-        summary = extract_content(resp).strip()
-        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
-        from app.core.token_tracker import track_usage
-        from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None), node="compress")
-        record_prompt("compress", "", _COMPACT_PROMPT.format(history=history_text), getattr(resp, "usage", None))
+        summary = summary.strip()
         logger.info("对话压缩成功: %d 轮 → 摘要 %d 字", len(old_messages), len(summary))
         return CompactResult(summary=summary, recent_messages=recent_messages)
     except Exception as e:

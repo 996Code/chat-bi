@@ -550,20 +550,16 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
         is_new = prev_state is None
         title = ""
         if is_new:
-            from app.core.llm_client import extract_content, get_llm_client
-            from app.core.config import get_settings
+            from app.core.llm_client import llm_chat
             try:
-                settings = get_settings()
-                llm = get_llm_client()
-                resp = await llm.chat.completions.create(
-                    model=settings.llm_model,
+                title, _ = await llm_chat(
                     messages=[
                         {"role": "system", "content": "把用户的提问总结为一个简短的对话标题(不超过16个字, 不要标点)。只输出标题文字。"},
                         {"role": "user", "content": state.question},
                     ],
-                    max_tokens=settings.llm_max_tokens, temperature=0.0,
+                    temperature=0.0,
                 )
-                title = extract_content(resp).strip().strip('"\'""')[:16] or state.question[:16]
+                title = title.strip().strip('"\'""')[:16] or state.question[:16]
             except Exception:
                 title = state.question[:16] or "新对话"
         exec_result = state.execute_result

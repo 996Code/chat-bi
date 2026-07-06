@@ -211,10 +211,8 @@ async def heal_sql(
     hint = _CATEGORY_HINTS.get(category, _CATEGORY_HINTS[ErrorCategory.UNKNOWN])
 
     # ── 自愈 prompt (保留全部安全规则, 对标 v1 #32) ───────────
-    from app.core.config import get_settings
-    from app.core.llm_client import extract_content
+    from app.core.llm_client import llm_chat
     from app.core.text_sanitize import sanitize_text
-    settings = get_settings()
 
     # SEC-007: DB 返回的错误信息可能含表名/列名, 进 LLM 前清洗
     error = sanitize_text(error)
@@ -231,18 +229,11 @@ async def heal_sql(
     )
 
     try:
-        resp = await llm_client.chat.completions.create(
-            model=settings.llm_model,
+        content, _ = await llm_chat(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=settings.llm_max_tokens,
+            node="heal_sql",
             temperature=0.0,
         )
-        content = extract_content(resp)
-        # OBS-002: 记录 token + prompt (请求级累加, T049 trace / T050 dump-prompts)
-        from app.core.token_tracker import track_usage
-        from app.core.prompt_capture import record_prompt
-        track_usage(getattr(resp, "usage", None), node="heal_sql")
-        record_prompt("heal_sql", "", prompt, getattr(resp, "usage", None))
     except Exception as e:
         logger.warning("自愈 LLM 调用失败: %s", e)
         cb.record_failure()

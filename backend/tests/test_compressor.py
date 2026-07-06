@@ -9,7 +9,7 @@ T038: 上下文压缩 — 单元测试
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -79,13 +79,10 @@ class TestCompactHistory:
         for i in range(5):
             turns.append({"role": "user", "content": f"第{i}轮问题"})
             turns.append({"role": "assistant", "content": f"第{i}轮回答"})
-        llm = MagicMock()
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message.content = "用户查询了销售数据"
-        llm.chat.completions.create = AsyncMock(return_value=resp)
-
-        result = await compact_history(turns, keep_recent=3, llm_client=llm)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=("用户查询了销售数据", mock_resp)):
+            result = await compact_history(turns, keep_recent=3, llm_client=None)
 
         # 保留最近 3 轮 (6 条 message)
         assert len(result.recent_messages) <= 6
@@ -96,24 +93,19 @@ class TestCompactHistory:
     async def test_compact_returns_summary(self):
         """旧轮次压缩成一句话摘要。"""
         turns = [{"role": "user", "content": "本月销售额"}, {"role": "assistant", "content": "125000"}]
-        llm = MagicMock()
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message.content = "用户查了本月销售额, 结果 125000"
-        llm.chat.completions.create = AsyncMock(return_value=resp)
-
-        result = await compact_history(turns, keep_recent=0, llm_client=llm)
+        mock_resp = MagicMock()
+        mock_resp.usage = None
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, return_value=("用户查了本月销售额, 结果 125000", mock_resp)):
+            result = await compact_history(turns, keep_recent=0, llm_client=None)
         assert "销售" in result.summary or "125000" in result.summary
 
     @pytest.mark.asyncio
     async def test_compact_llm_failure_degrades(self):
         """LLM 压缩失败 → 降级 (简单截断 + warning, 不崩)。"""
-        llm = MagicMock()
-        llm.chat.completions.create = AsyncMock(side_effect=Exception("LLM down"))
-
-        result = await compact_history(
-            [{"role": "user", "content": "x"}], keep_recent=0, llm_client=llm,
-        )
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock, side_effect=Exception("LLM down")):
+            result = await compact_history(
+                [{"role": "user", "content": "x"}], keep_recent=0, llm_client=None,
+            )
         # 降级: 摘要为空或截断文本, 不抛
         assert result.error is not None or result.summary == ""
 
@@ -121,10 +113,10 @@ class TestCompactHistory:
     async def test_compact_short_history_no_compress(self):
         """对话不够长 (≤ keep_recent) → 不压缩, 原样返回。"""
         turns = [{"role": "user", "content": "x"}]
-        llm = MagicMock()
-        result = await compact_history(turns, keep_recent=3, llm_client=llm)
+        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+            result = await compact_history(turns, keep_recent=3, llm_client=None)
         assert result.summary == ""  # 没压缩
-        llm.chat.completions.create.assert_not_called()
+        mock_chat.assert_not_called()
 
 
 # ── 熔断器 ────────────────────────────────────────────────────
