@@ -41,15 +41,23 @@
 
 <table>
   <tr>
-    <td><b>💬 智能问答</b></td>
-    <td><b>📊 图表可视化</b></td>
+    <td width="50%"><b>🔍 查询执行记录</b></td>
+    <td width="50%"><b>📊 图表可视化</b></td>
   </tr>
   <tr>
     <td>
-      输入自然语言问题，自动走完意图识别 → Schema 检索 → SQL 生成 → 执行 → 图表渲染全流程，支持 SSE 流式展示管线进度。
+      <img src="doc/screenshots/pipeline-detail.png" alt="查询执行记录" width="100%"/>
     </td>
     <td>
-      自动生成 ECharts 图表，支持柱状图、折线图、饼图等类型，可对话切换图表类型。看板页支持 GridStack 拖拽布局。
+      <img src="doc/screenshots/chat-chart.png" alt="图表可视化" width="100%"/>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      输入自然语言问题，自动走完意图识别 → Schema 检索 → SQL 生成 → 执行 → 图表渲染全流程，支持 SSE 流式展示管线进度。点击「完整流程」可展开每一步的耗时和 Token 用量。
+    </td>
+    <td>
+      自动生成 ECharts 图表，支持柱状图、折线图、饼图等类型，可对话切换图表类型。底部展示总 Token 用量和各节点明细。
     </td>
   </tr>
   <tr>
