@@ -110,6 +110,9 @@ _INTENT_PROMPT = """你是 BI 系统的意图识别器。判断用户问题的�
 1. normalized_question: 剥离可视化措辞后的纯净业务问题 ("用折线图展示本月销售" → "本月销售")
 2. chart_type_hint: 如果含可视化措辞, 提取图表类型 (line/bar/pie/scatter), 否则 null
 3. confidence: 你对这个意图判断的置信度 (0-1)
+4. normalized_question 必须是独立可理解的完整问题: 如果有对话历史, 追问/指代/省略必须展开为
+   不依赖上下文也能理解的完整表述 (如历史问"本月各品类销售额", 当前问"环比" → "本月各品类销售额的环比";
+   当前问"加上华东地区的" → "本月华东地区的销售额")。不要只返回追问原文。
 
 只返回 JSON, 格式: {"intent": "...", "normalized_question": "...", "confidence": 0.9, "reason": "...", "chart_type_hint": "line"}
 """

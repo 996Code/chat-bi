@@ -73,6 +73,13 @@ class ConversationState:
     decisions: list[DecisionPoint] = field(default_factory=list)
     # T050: 本轮 LLM prompt 记录 (dump-prompts 导出用, 仅 DEBUG 模式填充)
     prompts: list[dict] | None = None
+    # ── 增强字段 (对话历史回放, 不依赖 DEBUG 模式) ──
+    intent: str | None = None          # 意图分类 (TEXT_TO_SQL / CLARIFICATION / ...)
+    token_usage: dict | None = None    # 本轮 token 用量 {prompt_tokens, completion_tokens, total_tokens, nodes}
+    sql_duration_ms: int | None = None # SQL 执行耗时 (毫秒)
+    error: str | None = None           # 错误信息 (失败时保留)
+    self_heal_rounds: int = 0          # 自愈轮次
+    heal_before_sql: str | None = None # 自愈前的原始 SQL (自愈前后对比)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +99,12 @@ class ConversationState:
             "compressed_summary": self.compressed_summary,
             "decisions": [d.to_dict() for d in self.decisions],
             "prompts": self.prompts,
+            "intent": self.intent,
+            "token_usage": self.token_usage,
+            "sql_duration_ms": self.sql_duration_ms,
+            "error": self.error,
+            "self_heal_rounds": self.self_heal_rounds,
+            "heal_before_sql": self.heal_before_sql,
         }
 
     @classmethod
@@ -113,6 +126,12 @@ class ConversationState:
             compressed_summary=d.get("compressed_summary", ""),
             decisions=[DecisionPoint.from_dict(dp) for dp in d.get("decisions", [])],
             prompts=d.get("prompts"),
+            intent=d.get("intent"),
+            token_usage=d.get("token_usage"),
+            sql_duration_ms=d.get("sql_duration_ms"),
+            error=d.get("error"),
+            self_heal_rounds=d.get("self_heal_rounds", 0),
+            heal_before_sql=d.get("heal_before_sql"),
         )
 
     def inherit_filters(self, new_filters: dict[str, Any]) -> dict[str, Any]:

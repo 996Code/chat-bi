@@ -79,6 +79,9 @@ class AgentState:
     # 上一轮的 SQL (对标 ARC-04: CHART_MODIFY 时复用上轮 SQL 不重新生成)
     # 由调用方 (chat.py/chat_stream.py) 从 StateStore.prev_state 填充
     prev_sql: str = ""
+    # 上一轮涉及的表 (追问表继承: 检索后合并上轮表, 保证追问不丢 schema)
+    # 由调用方从 StateStore.prev_state.current_tables 填充
+    prev_tables: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -204,6 +207,11 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # schema context + 白名单列从语义层取 (权威来源, 不靠检索文本正则猜)
         from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns
         retrieved_names = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
+        # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
+        if state.prev_tables:
+            for t in state.prev_tables:
+                if t and t not in retrieved_names:
+                    retrieved_names.append(t)
         # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
         # 如选中 biz_products, 沿外键补入 biz_order_items, 否则 JOIN 查询缺表
         retrieved_names = expand_with_relationships(state.semantic_content, retrieved_names)

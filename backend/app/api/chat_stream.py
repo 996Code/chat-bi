@@ -131,9 +131,12 @@ async def chat_stream(
         state = AgentState(question=question, semantic_content=content)
         state.history = history_text  # 注入多轮上下文 (intent/think/generate_sql 都用)
         state.prev_sql = prev_sql  # CHART_MODIFY 复用上轮 SQL
+        state.prev_tables = prev_state.current_tables if prev_state else []  # 追问表继承
         conv_id = conversation_id or str(uuid.uuid4()).replace("-", "")[:32]
         # M2: SSE event ID 自增序号 (断线重连用)
         _seq = 0
+        # 追踪自愈前的原始 SQL (持久化用, 取第一次自愈前的 SQL)
+        _heal_before_sql: str | None = None
 
         def emit(event: str, data: dict, node: str | None = None) -> str:
             """格式化 SSE 事件并自增序号。
@@ -267,6 +270,11 @@ async def chat_stream(
 
             # ── Stage 3: 预思考 + schema context ────────────────
             from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns
+            # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
+            if state.prev_tables:
+                for t in state.prev_tables:
+                    if t and t not in tables:
+                        tables.append(t)
             # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
             tables = expand_with_relationships(state.semantic_content, tables)
             schema_context = build_schema_context(state.semantic_content, tables)
@@ -342,6 +350,8 @@ async def chat_stream(
                 state.llm_call_count += 1
                 # 记录自愈前的 SQL (OBS-003: 展示修复前后对比)
                 before_sql = state.sql
+                if _heal_before_sql is None:
+                    _heal_before_sql = before_sql
                 if not heal_result.success:
                     yield emit("heal", {
                         "retry": state.self_heal_rounds, "success": False,
@@ -464,13 +474,16 @@ async def chat_stream(
             # T050: 取出 prompt 记录 (DEBUG 模式才持久化, prompt 可能含敏感 schema)
             from app.core.config import get_settings
             prompt_capture = stop_prompt_capture(_pc_token)
+            # OBS-002: 结束 token 追踪 (在 _persist 前, token_stats 需要存入 ConversationState)
+            token_stats = stop_token_tracking(_tt_token)
             if should_persist:
                 if get_settings().debug and prompt_capture:
                     # 通过 state 属性传给 _persist (避免改 _persist 签名)
                     state._prompt_records = prompt_capture.get("records", [])
+                # 传递 token_stats 和 heal_before_sql (避免改 _persist 签名, 通过 state 属性)
+                state._token_stats = token_stats
+                state._heal_before_sql = _heal_before_sql
                 await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps)
-            # OBS-002: 结束 token 追踪, 带入 complete 事件
-            token_stats = stop_token_tracking(_tt_token)
             yield emit("complete", {
                 "success": state.success,
                 "conversation_id": conv_id if should_persist else None,
@@ -537,6 +550,13 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             thinking=serialize_thinking(state.thinking),
             # T050: prompt 记录 (DEBUG 模式, dump-prompts 导出用)
             prompts=getattr(state, "_prompt_records", None),
+            # 增强字段: 意图 / token / 耗时 / 错误 / 自愈
+            intent=state.intent_output.intent if state.intent_output else None,
+            token_usage=getattr(state, "_token_stats", None),
+            sql_duration_ms=getattr(exec_result, "duration_ms", None) if exec_result else None,
+            error=state.error or None,
+            self_heal_rounds=state.self_heal_rounds,
+            heal_before_sql=getattr(state, "_heal_before_sql", None),
         )
         # turn: 从已有轮次推算 (防御: 取 max(行数, 最大turn值) + 1, 自愈历史脏数据)
         existing_turns = store.list_turns(user.tenant_id, conv_id)

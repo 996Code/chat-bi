@@ -285,6 +285,7 @@ async def chat(
     state = AgentState(question=req.question, semantic_content=content)
     state.history = history_text  # 注入多轮上下文 (intent/think/generate_sql 都用)
     state.prev_sql = prev_state.current_sql if prev_state else ""  # CHART_MODIFY 复用上轮 SQL
+    state.prev_tables = prev_state.current_tables if prev_state else []  # 追问表继承
     # OBS-002: 启动 token 追踪 (请求级, 各节点 track_usage 累加)
     # T050: 启动 prompt 捕获 (请求级, 各节点 record_prompt 累积, dump-prompts 导出用)
     from app.core.token_tracker import start_token_tracking, stop_token_tracking
@@ -335,6 +336,13 @@ async def chat(
                 thinking=serialize_thinking(state.thinking),
                 # T050: prompt 记录 (DEBUG 模式才持久化, dump-prompts 导出用)
                 prompts=prompt_capture.get("records", []) if get_settings().debug and prompt_capture else None,
+                # 增强字段: 意图 / token / 耗时 / 错误 / 自愈
+                intent=state.intent_output.intent if state.intent_output else None,
+                token_usage=token_stats or None,
+                sql_duration_ms=getattr(exec_result, "duration_ms", None) if exec_result else None,
+                error=state.error or None,
+                self_heal_rounds=state.self_heal_rounds,
+                heal_before_sql=None,  # 自愈前的 SQL 在 AgentState 中不追踪, 由 SSE heal 事件记录
             )
             # turn_number: 从已有轮次推算 (防御: 取 max(行数, 最大turn值) + 1, 自愈历史脏数据)
             existing_turns = StateStore().list_turns(user.tenant_id, conversation_id)
