@@ -313,6 +313,11 @@ async def add_widget(
         if ds and ds.is_active:
             from app.services.datasource_engine import datasource_to_url, get_engine_pool
             from app.services.sql_executor import execute_sql
+            from app.core.sql_validator import validate_sql
+            # SEC: Dashboard SQL 必须经过校验 (SELECT-only + 白名单)
+            validation = validate_sql(query_sql, allowed_columns=set())
+            if not validation.ok:
+                raise HTTPException(status_code=400, detail=f"SQL 校验失败: {validation.reason}")
             url = datasource_to_url(ds)
             result = await execute_sql(
                 sql=query_sql, datasource_id=datasource_id, url=url,
@@ -477,9 +482,13 @@ async def refresh_widget(
     if not ds.is_active:
         raise HTTPException(status_code=403, detail="数据源已禁用")
 
-    # 重跑 SQL
+    # 重跑 SQL (SEC: 校验后才执行)
     from app.services.datasource_engine import datasource_to_url, get_engine_pool
     from app.services.sql_executor import execute_sql
+    from app.core.sql_validator import validate_sql
+    validation = validate_sql(w.query_sql, allowed_columns=set())
+    if not validation.ok:
+        raise HTTPException(status_code=400, detail=f"SQL 校验失败: {validation.reason}")
     url = datasource_to_url(ds)
     result = await execute_sql(
         sql=w.query_sql, datasource_id=w.datasource_id, url=url,

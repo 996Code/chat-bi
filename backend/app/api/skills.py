@@ -6,6 +6,10 @@ Skills API — 业务规则在线管理 (T041)
 
 安全: 仅 admin 可操作 (Skills 影响全局 SQL 生成)。
 热更新: 保存后 invalidate 缓存, 下次查询自动生效。
+
+SEC NOTE: 当前 Skills Store 是全局共享的, 无租户隔离。
+单租户部署环境下安全; 多租户部署需改为 skills/{tenant_id}/ 目录结构
++ API 层按 tenant_id 过滤。
 """
 from __future__ import annotations
 

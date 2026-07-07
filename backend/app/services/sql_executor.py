@@ -87,6 +87,8 @@ def _execute_sync(
     t0 = time.monotonic()
     try:
         with engine.connect() as conn:
+            # SEC: READ ONLY 事务 — 防御性约束, 即使校验被绕过也不能写
+            conn.execute(text("SET TRANSACTION READ ONLY"))
             # DB 侧超时: 按 dialect 设置对应参数 (PG: statement_timeout, MySQL: max_execution_time)
             # DB 主动中断查询比 asyncio.wait_for 更可靠 — Python 无法取消线程, 但 DB 能取消查询
             dialect = str(engine.url)

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 # 危险函数黑名单 (对标 spec SEC-002 + v1 教训 #46)
-# 这些函数可读文件/写文件/制造 DoS, SELECT 里出现即拒绝
+# 这些函数可读文件/写文件/制造 DoS/远程执行, SELECT 里出现即拒绝
 # 覆盖 MySQL + PostgreSQL 方言 (v2 目标是 PG, 但 LLM 可能输出任一方言语法)
 _DANGEROUS_FUNCTIONS = frozenset({
     # 文件读写
@@ -34,15 +34,27 @@ _DANGEROUS_FUNCTIONS = frozenset({
     "PG_READ_FILE",    # PostgreSQL 读文件
     "PG_READ_BINARY_FILE",
     "LO_IMPORT",       # PostgreSQL 大对象导入
+    "LO_EXPORT",       # PostgreSQL 大对象导出 (写文件)
+    # 文件系统枚举
+    "PG_LS_DIR",       # 列目录
+    "PG_STAT_FILE",    # 文件元信息
+    "PG_READ_DIR",     # 列目录 (旧名)
     # DoS
     "SLEEP",           # MySQL sleep
     "PG_SLEEP",        # PostgreSQL sleep (v2 目标方言, 之前漏了)
     "BENCHMARK",       # MySQL 压测
     "GET_LOCK",        # 死锁
     "RELEASE_LOCK",
+    "PG_ADVISORY_LOCK",  # PG 咨询锁 DoS
     # 命令执行
     "SYSTEM",
     "EXEC",
+    "DBLINK",                # 跨库查询 (可绕过隔离)
+    "DBLINK_EXEC",           # 跨库执行
+    "PG_EXECUTE_SERVER_PROGRAM",  # PG14+ OS 命令执行
+    # 连接管理 DoS
+    "PG_TERMINATE_BACKEND",  # 杀其他连接
+    "PG_CANCEL_BACKEND",     # 取消其他查询
 })
 
 def _collect_derivable_names(stmt: exp.Expression) -> set[str]:
@@ -149,6 +161,17 @@ def validate_sql(sql: str | None, allowed_columns: set[str] | None = None) -> Va
             violated_layer="AST",
         )
 
+    # SEC: CTE 内部写操作绕过 — 遍历整个 AST, 拒绝任何 INSERT/UPDATE/DELETE/CREATE/DROP/ALTER
+    # 攻击向量: WITH upd AS (UPDATE ... RETURNING *) SELECT * FROM upd
+    _WRITE_STATEMENT_TYPES = (exp.Insert, exp.Update, exp.Delete, exp.Create, exp.Drop, exp.Alter)
+    for node in stmt.find_all(_WRITE_STATEMENT_TYPES):
+        node_type = type(node).__name__
+        return ValidationResult(
+            ok=False,
+            reason=f"CTE/子查询中包含写操作 ({node_type}), 已拒绝",
+            violated_layer="AST",
+        )
+
     # ── Layer 2: 危险函数 ─────────────────────────────────────
     # 遍历 AST 找所有函数调用
     # 注意: sqlglot 对未注册函数 (SLEEP/LOAD_FILE/BENCHMARK) 用 Anonymous 表示,
@@ -167,18 +190,16 @@ def validate_sql(sql: str | None, allowed_columns: set[str] | None = None) -> Va
                 violated_layer="dangerous_function",
             )
 
-    # 检查 INTO OUTFILE / INTO DUMPFILE (写文件)
-    # 注意: PG 方言不认 INTO OUTFILE (MySQL 语法), 会在 Layer1 parse 失败已拒绝。
-    # 但防御性检查 Select.args["into"] (PG 的 SELECT INTO 变量, 如 SELECT INTO var)
+    # SEC: 检查 INTO 子句 — 拒绝所有形式
+    # SELECT INTO new_table → 建表 (DDL); INTO OUTFILE/DUMPFILE → 写文件
+    # 任何 INTO 都不合法, BI 查询不需要 INTO
     into = stmt.args.get("into") if hasattr(stmt, "args") else None
     if into is not None:
-        into_str = str(into).upper()
-        if "OUTFILE" in into_str or "DUMPFILE" in into_str:
-            return ValidationResult(
-                ok=False,
-                reason="禁止使用 INTO OUTFILE/DUMPFILE (可写文件)",
-                violated_layer="dangerous_function",
-            )
+        return ValidationResult(
+            ok=False,
+            reason="禁止使用 INTO 子句 (可建表或写文件)",
+            violated_layer="dangerous_function",
+        )
 
     # ── Layer 3: 白名单列 ─────────────────────────────────────
     # 目的: 防 LLM 臆造列名 / SQL 注入。

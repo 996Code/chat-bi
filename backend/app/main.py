@@ -32,12 +32,14 @@ async def lifespan(app: FastAPI):
     await run_startup_probes()
 
     # 自动建表: 根据模型定义创建缺失表 + 增量补列 (models.py 为单一真相源)
+    # SEC: 主数据库表是系统运行的必要前提, 创建失败应终止启动 (fail-closed)
     from app.db.session import auto_create_tables
     try:
         await auto_create_tables()
     except Exception as e:
         import logging
-        logging.getLogger("app.main").error("auto_create_tables 失败: %s", e)
+        logging.getLogger("app.main").critical("auto_create_tables 失败: %s — 主数据库不可用, 终止启动", e)
+        raise RuntimeError(f"auto_create_tables 失败: {e}") from e
 
     # 预热连接（best-effort，失败降级，不阻塞启动）
     # Redis: 语义缓存(T023)/限流用；连不上 → 降级跳过缓存

@@ -229,6 +229,7 @@ export interface ChatResponse {
     total_tokens: number
     llm_calls: number
   } | null
+  fewshot_count: number  // 命中的 few-shot 示例数 (RAG-004)
 }
 
 export const chat = {

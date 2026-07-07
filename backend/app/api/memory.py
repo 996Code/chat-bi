@@ -5,6 +5,10 @@ Agent Memory API — 记忆管理 (T045)
 记忆是 agent 跨会话保留的事实/偏好 (文件存储 + MEMORY.md 索引)。
 
 安全: 仅 admin 可操作。
+
+SEC NOTE: 当前 AgentMemoryStore 是全局共享的, 无租户隔离。
+单租户部署环境下安全; 多租户部署需改为 memory/{tenant_id}/ 目录结构
++ API 层按 tenant_id 过滤。
 """
 from __future__ import annotations
 
