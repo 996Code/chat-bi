@@ -403,7 +403,6 @@ cp deploy/.env.example deploy/.env
 本项目的设计灵感来自：
 
 - **Claude Code** — Agent 执行引擎、Prompt 分层、Fail-Closed 设计理念
-- **海泰 ChatBI** — BI 领域 Agent 管线、语义层、Schema 两阶段检索
 - **48 条 V1 经验教训** — 从 V1 踩坑中总结的安全、架构、可用性法则
 
 感谢所有开源社区的贡献者。
