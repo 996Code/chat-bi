@@ -297,6 +297,7 @@ async def infer_knowledge_graph(
 
 
 # ── T017: 演化（算法先行，e2e 留 Phase 6）─────────────────────
+# NOTE: 以下两个函数目前无生产调用方, 仅有单元测试。待 Phase 6 接入管线后移除此标记。
 
 def mine_implicit_relationships(
     query_history: list[str],

@@ -31,6 +31,7 @@ class GenerateResult:
     sql: str = ""
     validation: ValidationResult = field(default_factory=lambda: ValidationResult(ok=False, reason="未生成"))
     error: str | None = None
+    fewshot_count: int = 0   # 命中的 few-shot 示例数 (0=无命中)
 
 
 # ── Prompt 模板 (对标 Claude Code §4 分层) ────────────────────
@@ -180,4 +181,4 @@ async def generate_sql(
         )
 
     logger.info("SQL 生成成功: %s", sql[:80])
-    return GenerateResult(sql=sql, validation=validation)
+    return GenerateResult(sql=sql, validation=validation, fewshot_count=fewshot_count)

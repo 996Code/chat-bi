@@ -147,9 +147,11 @@ async def build_agent_deps(
         """生成 SQL (含 few-shot 检索 + 记忆召回 + skills 注入)。"""
         # 1. 检索相似审核 SQL (few-shot)
         fewshot_text = ""
+        fewshot_count = 0
         try:
             examples = await find_fewshot_examples(question, fewshot_store, _get_embedder())
             fewshot_text = format_fewshot_prompt(examples)
+            fewshot_count = len(examples)
         except Exception as e:
             logger.debug("fewshot 检索失败, 降级无 fewshot: %s", e)
         # 2. 按需召回相关记忆 (Relevant Recall, 关键词相关性, 不调 LLM)
@@ -161,11 +163,13 @@ async def build_agent_deps(
             logger.debug("记忆召回失败, 降级无记忆: %s", e)
         # 合并 skills + memory 进同一个 skills 参数 (generate_sql 的 skills 槽位)
         combined_skills = "\n\n".join(s for s in [skills_text, memory_text] if s) or None
-        return await generate_sql(
+        result = await generate_sql(
             question=question, schema_context=schema_context,
             allowed_columns=allowed_columns,
             skills=combined_skills, history=history, fewshot_examples=fewshot_text or None,
         )
+        result.fewshot_count = fewshot_count
+        return result
 
     deps = AgentDeps(
         classify_intent=lambda q, history=None, **kw: classify_intent(q, history=history),
@@ -352,23 +356,32 @@ async def chat(
 
             # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供 fewshot 回流 / 历史挖掘用
             # 对标 ARC-05: SavedQuery 是历史查询挖掘的输入数据源
+            # 去重: 同 tenant + question + sql 不重复插入 (防追问/重复提问导致膨胀)
             if state.success and state.sql:
                 try:
                     from app.db.models import SavedQuery
                     import json
-                    saved = SavedQuery(
-                        tenant_id=user.tenant_id,
-                        user_id=user.user_id,
-                        data_source_id=data_source_id,
-                        conversation_id=conversation_id,
-                        question=req.question,
-                        sql_text=state.sql,
-                        result_summary=json.dumps({
-                            "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
-                        }, ensure_ascii=False),
-                        chart_config=state.chart_option,
+                    dup_check = await db.execute(
+                        select(SavedQuery.id).where(
+                            SavedQuery.tenant_id == user.tenant_id,
+                            SavedQuery.question == req.question,
+                            SavedQuery.sql_text == state.sql,
+                        ).limit(1)
                     )
-                    db.add(saved)
+                    if dup_check.scalar_one_or_none() is None:
+                        saved = SavedQuery(
+                            tenant_id=user.tenant_id,
+                            user_id=user.user_id,
+                            data_source_id=data_source_id,
+                            conversation_id=conversation_id,
+                            question=req.question,
+                            sql_text=state.sql,
+                            result_summary=json.dumps({
+                                "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
+                            }, ensure_ascii=False),
+                            chart_config=state.chart_option,
+                        )
+                        db.add(saved)
                 except Exception as e:
                     logger.warning("SavedQuery 写入失败 (不阻塞): %s", e)
 
@@ -386,13 +399,6 @@ async def chat(
                 except Exception:
                     logger.debug("fewshot 回流失败 (不阻塞)")
 
-            # MEM-01 自主记忆写入: 记录用户查询 (question+表), 让后续 recall 能召回
-            try:
-                from app.ai.recall import save_query_memory
-                tables_used = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
-                save_query_memory(req.question, tables_used)
-            except Exception as e:
-                logger.debug("记忆写入失败 (不阻塞): %s", e)
         except Exception as e:
             logger.warning("StateStore 持久化失败 (不阻塞): %s", e)
 

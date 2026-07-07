@@ -868,9 +868,12 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
         msg.error = data.error
         break
       }
-	      msg.sql = data.sql
-		      msg.originalSql = data.sql  // 保存初始 SQL, heal 后不覆盖
-		      updateStep('SQL 生成', 'done', { duration: data.duration_ms, type: 'sql', expandable: true, expanded: false, ...llmInfo(data) })
+      msg.sql = data.sql
+      msg.originalSql = data.sql  // 保存初始 SQL, heal 后不覆盖
+      {
+        const fewshotHint = data.fewshot_count > 0 ? `📚 命中 ${data.fewshot_count} 条相似示例` : ''
+        updateStep('SQL 生成', 'done', { detail: fewshotHint, duration: data.duration_ms, type: 'sql', expandable: true, expanded: false, ...llmInfo(data) })
+      }
       steps.push({ label: '执行查询', status: 'running' })
       break
     case 'data':

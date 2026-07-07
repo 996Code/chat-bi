@@ -66,6 +66,9 @@ _VISUALIZATION_PATTERNS = [
 def strip_visualization(question: str, return_hint: bool = False) -> str | tuple[str, str | None]:
     """从问题里剥离可视化措辞, 保留业务过滤条件 (对标 INT-004)。
 
+    NOTE: 目前未接入 classify_intent 流程 (LLM 直接在 JSON 里返回 chart_type_hint),
+    作为规则回退保留, 待 LLM 对图表类型判断不准时接入。
+
     "用折线图展示本月销售额" → ("本月销售额", "line")
     "画成饼图 各品类占比" → ("各品类占比", "pie")
 

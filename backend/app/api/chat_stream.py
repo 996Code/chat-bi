@@ -324,6 +324,7 @@ async def chat_stream(
                 "sql": state.sql,
                 "validation_ok": validation_ok,
                 "validation_reason": violated,
+                "fewshot_count": getattr(gen_result, "fewshot_count", 0),
                 "duration_ms": round((time.monotonic() - t0) * 1000),
             }, node="generate_sql")
 
@@ -566,23 +567,33 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
 
         # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供看板展示 / fewshot 回流
         # 对标 ARC-05 + Dashboard: 看板页从 saved_queries 拉图表
+        # 去重: 同 tenant + question + sql 不重复插入 (防追问/重复提问导致膨胀)
         if state.success and state.sql:
             try:
                 from app.db.models import SavedQuery
+                from sqlalchemy import select as _select
                 import json
-                saved = SavedQuery(
-                    tenant_id=user.tenant_id,
-                    user_id=user.user_id,
-                    data_source_id=data_source_id,
-                    conversation_id=conv_id,
-                    question=state.question,
-                    sql_text=state.sql,
-                    result_summary=json.dumps({
-                        "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
-                    }, ensure_ascii=False),
-                    chart_config=state.chart_option,
+                dup_check = await db.execute(
+                    _select(SavedQuery.id).where(
+                        SavedQuery.tenant_id == user.tenant_id,
+                        SavedQuery.question == state.question,
+                        SavedQuery.sql_text == state.sql,
+                    ).limit(1)
                 )
-                db.add(saved)
+                if dup_check.scalar_one_or_none() is None:
+                    saved = SavedQuery(
+                        tenant_id=user.tenant_id,
+                        user_id=user.user_id,
+                        data_source_id=data_source_id,
+                        conversation_id=conv_id,
+                        question=state.question,
+                        sql_text=state.sql,
+                        result_summary=json.dumps({
+                            "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
+                        }, ensure_ascii=False),
+                        chart_config=state.chart_option,
+                    )
+                    db.add(saved)
             except Exception as e:
                 logger.warning("SavedQuery 写入失败 (不阻塞): %s", e)
 
@@ -600,13 +611,6 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             except Exception:
                 logger.debug("fewshot 回流失败 (不阻塞)")
 
-        # MEM-01 自主记忆写入: 记录用户查询 (question+表), 让后续 recall 能召回
-        try:
-            from app.ai.recall import save_query_memory
-            tables_used = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
-            save_query_memory(state.question, tables_used)
-        except Exception:
-            pass  # 记忆写入失败不阻塞
     except Exception as e:
         logger.warning("流式 StateStore 持久化失败 (不阻塞): %s", e)
 
