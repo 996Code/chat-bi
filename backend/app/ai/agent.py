@@ -146,8 +146,9 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
                 state.error = "图表修改需要对话上下文, 请先查询数据后再修改图表类型"
                 state.reply = '请先查询你想看的数据 (例如「各品类销量」), 然后再让我换图表类型。'
                 return state
-            # 复用上轮 SQL 执行
+            # 复用上轮 SQL 执行; 表未变, 继承 prev_tables 到 current_tables
             state.sql = state.prev_sql
+            state.current_tables = list(state.prev_tables)
             chart_hint = state.intent_output.chart_type_hint if hasattr(state.intent_output, "chart_type_hint") else None
             exec_result = await deps.execute_sql(state.sql)
             state.execute_result = exec_result
@@ -172,6 +173,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # CLARIFICATION → 需要 ask_user (低置信/追问)
         if intent == "CLARIFICATION":
             from app.ai.ask_user import AskUserRequest, AskUserReason
+            state.current_tables = list(state.prev_tables)  # 继承上轮表, 防追问丢表
             state.stage = AgentStage.FINAL
             state.success = False
             state.error = f"需要澄清: {state.intent_output.reason}"
@@ -187,11 +189,12 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
 
         retrieval = await deps.retrieve(question)
         # NOTE: retrieve 是向量检索 (embedding 相似度), 不是 LLM 调用, 不计 llm_call_count
-        state.retrieved_models = retrieval.models if hasattr(retrieval, "models") else []
+        state.retrieved_models = retrieval.models
 
         # schema 不确定 → ask_user (对标 proposal.md:120)
         ask = deps.should_ask_for_schema(retrieval)
         if ask is not None:
+            state.current_tables = list(state.prev_tables)  # 继承上轮表, 防追问丢表
             state.stage = AgentStage.FINAL
             state.success = False
             state.error = "Schema 不确定, 需要用户确认"
@@ -199,7 +202,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             return state
 
         # 无召回且无 ask (宁缺毋滥, 不 fallback)
-        if hasattr(retrieval, "no_match_reason") and retrieval.no_match_reason and not state.retrieved_models:
+        if retrieval.no_match_reason and not state.retrieved_models:
             state.stage = AgentStage.FINAL
             state.success = False
             state.error = retrieval.no_match_reason
@@ -242,12 +245,15 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             state.error = "无语义层定义, 无法做白名单约束, 拒绝生成 SQL (请先扫描数据源)"
             return state
 
-        # 生成首版 SQL
+        # 生成首版 SQL (注入预思考提示, 对标 REF-001 "think before generate")
+        from app.ai.thinking import format_thinking_hint
+        thinking_hint = format_thinking_hint(state.thinking)
         gen_result = await deps.generate_sql(
             question=question,
             schema_context=schema_context,
             allowed_columns=allowed_columns,
             history=state.history,
+            thinking_hint=thinking_hint,
         )
         state.llm_call_count += 1
 
@@ -264,7 +270,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         last_error = None  # 校验或执行的错误 (喂给自愈)
 
         # 校验首版 SQL
-        if hasattr(gen_result, "validation") and not gen_result.validation.ok:
+        if not gen_result.validation.ok:
             last_error = f"校验失败 ({gen_result.validation.violated_layer}): {gen_result.validation.reason}"
 
         # 执行首版 SQL (校验通过才执行)

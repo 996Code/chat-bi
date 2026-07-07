@@ -36,6 +36,26 @@ class ThinkingResult:
     error: str | None = None
 
 
+def format_thinking_hint(thinking: ThinkingResult | None) -> str | None:
+    """将预思考结果格式化为 SQL 生成的提示文本。
+
+    只提取对 SQL 生成有指导意义的信息 (表选择/聚合/注意事项),
+    不含 raw/error 等调试信息。返回 None 表示无有效提示。
+    """
+    if not thinking or thinking.error:
+        return None
+    parts = []
+    if thinking.tables:
+        parts.append("选表: " + "; ".join(str(t) for t in thinking.tables))
+    if thinking.aggregation:
+        parts.append("聚合: " + str(thinking.aggregation))
+    if thinking.caveats:
+        parts.append("注意: " + "; ".join(str(c) for c in thinking.caveats))
+    if thinking.prev_sql_review:
+        parts.append("上轮优化: " + str(thinking.prev_sql_review))
+    return "\n".join(parts) if parts else None
+
+
 _THINKING_PROMPT = """你是 BI 分析师。在生成 SQL 前, 先分析查询思路。
 
 用户问题: {question}

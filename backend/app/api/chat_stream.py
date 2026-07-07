@@ -193,6 +193,7 @@ async def chat_stream(
                     yield emit("intent", {"intent": intent, "reply": state.reply}, node="intent")
                     return
                 state.sql = state.prev_sql
+                state.current_tables = list(state.prev_tables)  # 表未变, 继承上轮
                 chart_hint = state.intent_output.chart_type_hint if hasattr(state.intent_output, "chart_type_hint") else None
                 # 执行上轮 SQL 取数据
                 exec_result = await deps.execute_sql(state.sql)
@@ -230,6 +231,7 @@ async def chat_stream(
             # CLARIFICATION → ask_user
             if intent == "CLARIFICATION":
                 from app.ai.ask_user import AskUserRequest, AskUserReason
+                state.current_tables = list(state.prev_tables)  # 继承上轮表, 防追问丢表
                 state.ask_user_request = AskUserRequest(
                     reason=AskUserReason.SCHEMA_AMBIGUOUS,
                     question=state.intent_output.reason or "请提供更具体的问题",
@@ -247,7 +249,7 @@ async def chat_stream(
             norm_q = state.intent_output.normalized_question or question
             retrieval = await deps.retrieve(norm_q)
             # NOTE: retrieve 是向量检索, 不是 LLM 调用, 不计 llm_call_count
-            state.retrieved_models = retrieval.models if hasattr(retrieval, "models") else []
+            state.retrieved_models = retrieval.models
             tables = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
             yield emit("schema", {
                 "tables": tables,
@@ -257,6 +259,7 @@ async def chat_stream(
             # schema 不确定 / 无召回 → ask_user 或结束
             ask = deps.should_ask_for_schema(retrieval)
             if ask is not None:
+                state.current_tables = list(state.prev_tables)  # 继承上轮表, 防追问丢表
                 state.ask_user_request = ask
                 state.error = "Schema 不确定, 需要用户确认"
                 yield emit("clarify", {
@@ -265,7 +268,8 @@ async def chat_stream(
                     "options": getattr(ask, "options", None),
                 })
                 return
-            if hasattr(retrieval, "no_match_reason") and retrieval.no_match_reason and not tables:
+            if retrieval.no_match_reason and not tables:
+                state.current_tables = list(state.prev_tables)  # 继承上轮表, 防追问丢表
                 state.error = retrieval.no_match_reason
                 return
 
@@ -303,9 +307,12 @@ async def chat_stream(
 
             # ── Stage 4+5: SQL 生成/校验/执行 + 自愈循环 ──────────
             t0 = time.monotonic()
+            from app.ai.thinking import format_thinking_hint
+            thinking_hint = format_thinking_hint(state.thinking)
             gen_result = await deps.generate_sql(
                 question=norm_q, schema_context=schema_context,
                 allowed_columns=allowed_columns, history=state.history,
+                thinking_hint=thinking_hint,
             )
             state.llm_call_count += 1
 
@@ -315,17 +322,16 @@ async def chat_stream(
                 return
 
             state.sql = gen_result.sql
+            state.fewshot_count = gen_result.fewshot_count  # 传播到 AgentState (与 agent.py 一致)
             validation_ok = True
             violated = ""
-            if hasattr(gen_result, "validation") and not gen_result.validation.ok:
+            if not gen_result.validation.ok:
                 validation_ok = False
                 violated = gen_result.validation.reason
 
             yield emit("sql", {
                 "sql": state.sql,
-                "validation_ok": validation_ok,
-                "validation_reason": violated,
-                "fewshot_count": getattr(gen_result, "fewshot_count", 0),
+                "fewshot_count": gen_result.fewshot_count,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
             }, node="generate_sql")
 

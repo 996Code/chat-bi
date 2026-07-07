@@ -38,6 +38,7 @@ async def find_fewshot_examples(
     question: str,
     store: VectorStore,
     embedder: Embedder,
+    data_source_id: str | None = None,
     top_k: int = 3,
     score_threshold: float = FEWSHOT_SCORE_THRESHOLD,
 ) -> list[FewShotExample]:
@@ -47,6 +48,7 @@ async def find_fewshot_examples(
         question: 当前用户问题
         store: VectorStore (fewshot collection)
         embedder: Embedder
+        data_source_id: 数据源 ID (标量过滤, 防跨数据源召回; None 不过滤)
         top_k: 最多返回条数 (默认 3, 对标 RAG-004 防 prompt token 爆炸)
         score_threshold: score 低于此值不返回 (宁缺毋滥)
 
@@ -61,11 +63,15 @@ async def find_fewshot_examples(
         logger.debug("find_fewshot embed 失败, 返回空: %s", e)
         return []
 
+    # 标量过滤: 按 data_source_id 精确匹配, 防跨数据源召回错误 SQL
+    search_filter = {"data_source_id": data_source_id} if data_source_id else None
+
     try:
         results = await store.search(
             query_vec,
             top_k=top_k,
             score_threshold=score_threshold,
+            filter=search_filter,
         )
     except Exception as e:
         logger.debug("find_fewshot search 失败, 返回空: %s", e)
@@ -133,7 +139,8 @@ async def index_fewshot_example(
         return
 
     if not example_id:
-        example_id = hashlib.md5(question.encode("utf-8")).hexdigest()
+        # ID 包含 data_source_id, 防止同问题跨数据源覆盖
+        example_id = hashlib.md5(f"{data_source_id}:{question}".encode("utf-8")).hexdigest()
 
     store = get_vector_store("fewshot")
     try:

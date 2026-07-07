@@ -71,16 +71,20 @@ def _build_dynamic_context(
     history: str | None,
     question: str,
     skills: str | None = None,
+    thinking_hint: str | None = None,
 ) -> str:
     """构建动态 prompt 段 (每次查询都变)。
 
     skills: 业务规则文本 (Phase 6 Skills 系统产出, 如 GMV 定义/特殊计算口径)。
+    thinking_hint: 预思考产出 (表选择理由/聚合建议/注意事项), 指导 SQL 生成。
     """
     parts = []
     if skills:
         parts.append(f"【业务规则 (Skills)】\n{skills}")
     if fewshot:
         parts.append(f"【参考示例】\n{fewshot}")
+    if thinking_hint:
+        parts.append(f"【预思考提示】\n{thinking_hint}")
     if history:
         parts.append(f"【对话历史】\n{history}")
     parts.append(f"【用户问题】{question}\n\n请生成 SQL:")
@@ -106,6 +110,7 @@ async def generate_sql(
     fewshot_examples: str | None = None,
     history: str | None = None,
     skills: str | None = None,
+    thinking_hint: str | None = None,
 ) -> GenerateResult:
     """生成 SQL (prompt 分层 + 校验集成)。
 
@@ -115,6 +120,7 @@ async def generate_sql(
         allowed_columns: 语义层白名单列 (T030 Layer3 用)
         fewshot_examples: few-shot 示例文本 (Phase 3 format_fewshot_prompt)
         history: 多轮历史上下文 (Phase 5 State Store)
+        thinking_hint: 预思考提示 (表选择/聚合建议/注意事项)
 
     Returns:
         GenerateResult — error 非空表示生成/校验失败 (不抛, T025 决定下一步)
@@ -134,7 +140,7 @@ async def generate_sql(
     cache.set_static("system_rules", lambda: _SYSTEM_PROMPT)
     cache.set_dynamic("schema_type", lambda: _build_datatype_constraint_section(schema_context))
     cache.set_dynamic("allowed_cols", lambda: _build_allowed_columns_section(allowed_columns))
-    cache.set_dynamic("context", lambda: _build_dynamic_context(fewshot_examples, history, question, skills))
+    cache.set_dynamic("context", lambda: _build_dynamic_context(fewshot_examples, history, question, skills, thinking_hint))
 
     sections = cache.assemble()
     # assemble 返回 [static..., BOUNDARY, dynamic...]

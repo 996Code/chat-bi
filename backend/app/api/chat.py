@@ -150,7 +150,7 @@ async def build_agent_deps(
         fewshot_text = ""
         fewshot_count = 0
         try:
-            examples = await find_fewshot_examples(question, fewshot_store, _get_embedder())
+            examples = await find_fewshot_examples(question, fewshot_store, _get_embedder(), data_source_id=data_source_id)
             fewshot_text = format_fewshot_prompt(examples)
             fewshot_count = len(examples)
         except Exception as e:
@@ -164,10 +164,12 @@ async def build_agent_deps(
             logger.debug("记忆召回失败, 降级无记忆: %s", e)
         # 合并 skills + memory 进同一个 skills 参数 (generate_sql 的 skills 槽位)
         combined_skills = "\n\n".join(s for s in [skills_text, memory_text] if s) or None
+        thinking_hint = kw.get("thinking_hint")  # 由 run_agent 传入 (预思考提示)
         result = await generate_sql(
             question=question, schema_context=schema_context,
             allowed_columns=allowed_columns,
             skills=combined_skills, history=history, fewshot_examples=fewshot_text or None,
+            thinking_hint=thinking_hint,
         )
         result.fewshot_count = fewshot_count
         return result
