@@ -372,6 +372,20 @@ async def chat(
                 except Exception as e:
                     logger.warning("SavedQuery 写入失败 (不阻塞): %s", e)
 
+            # Few-shot SQL 回流: 成功查询 → 向量库 (RAG-004, 失败不阻塞)
+            if state.success and state.sql:
+                try:
+                    from app.services.fewshot import index_fewshot_example
+                    from app.services.embedder import get_embedder
+                    await index_fewshot_example(
+                        question=req.question,
+                        sql=state.sql,
+                        embedder=get_embedder(),
+                        data_source_id=data_source_id,
+                    )
+                except Exception:
+                    logger.debug("fewshot 回流失败 (不阻塞)")
+
             # MEM-01 自主记忆写入: 记录用户查询 (question+表), 让后续 recall 能召回
             try:
                 from app.ai.recall import save_query_memory
