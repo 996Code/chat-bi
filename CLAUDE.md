@@ -72,6 +72,7 @@ cat openspec/changes/chatbi-v2/tasks.md
 - **单次执行硬约束**：execute_sql 最多 1 次 + 自愈最多 2 轮
 - **SQL 三层校验**：AST 拒绝非 SELECT + 危险函数拒绝 + 白名单列名（v1 #46 只做了一半）
 - **追问维度继承**：normalized_question = 锚点未重写维度 + 本轮新增维度
+- **追问语义断裂修复**：检索阶段无对话历史 → intent 层问题改写（展开为完整问题）+ agent 层表继承（检索结果 ∪ 上轮表）
 
 ---
 
