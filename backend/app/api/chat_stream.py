@@ -246,7 +246,7 @@ async def chat_stream(
             t0 = time.monotonic()
             norm_q = state.intent_output.normalized_question or question
             retrieval = await deps.retrieve(norm_q)
-            state.llm_call_count += 1
+            # NOTE: retrieve 是向量检索, 不是 LLM 调用, 不计 llm_call_count
             state.retrieved_models = retrieval.models if hasattr(retrieval, "models") else []
             tables = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
             yield emit("schema", {
@@ -276,6 +276,8 @@ async def chat_stream(
             tables = inherit_prev_tables(state.prev_tables, tables, state.semantic_content)
             # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
             tables = expand_with_relationships(state.semantic_content, tables)
+            # 记录本轮最终使用的表 (含继承 + 关系扩展), 供持久化到 StateStore
+            state.current_tables = list(tables)
             schema_context = build_schema_context(state.semantic_content, tables)
             if not schema_context:
                 schema_context = build_schema_context_fallback(state.retrieved_models)
@@ -531,7 +533,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             ]
             cols = list(exec_result.columns) if hasattr(exec_result, "columns") else []
         conv_state = ConversationState(
-            current_tables=[m.get("name", "") for m in state.retrieved_models if m.get("name")],
+            current_tables=state.current_tables,
             current_sql=state.sql or "",
             result_summary={
                 "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,

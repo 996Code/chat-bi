@@ -211,9 +211,12 @@ async def _add_missing_columns(conn):
 async def _add_missing_constraints(conn):
     """检查模型定义的 UniqueConstraint, 补上表中没有的约束 (ALTER ADD CONSTRAINT).
 
-    先去重已有数据 (保留 id 最小的行), 再加约束, 避免重复数据导致 ADD CONSTRAINT 失败。
+    先去重已有数据 (保留 id 最大的行, 即最新记录更完整), 再加约束,
+    避免重复数据导致 ADD CONSTRAINT 失败。
     """
     for table in Base.metadata.tables.values():
+        # 检查表是否有 id 列 (去重 SQL 依赖它)
+        has_id = any(col.name == "id" for col in table.columns)
         for constraint in table.constraints:
             if not isinstance(constraint, UniqueConstraint):
                 continue
@@ -230,18 +233,19 @@ async def _add_missing_constraints(conn):
                 continue  # 约束已存在
             # 构建列列表
             cols = ", ".join(f'"{col.name}"' for col in constraint.columns)
-            # 先去重: 删除重复行 (保留 id 最小的)
-            col_names = [col.name for col in constraint.columns]
-            dedup_condition = " AND ".join(
-                f'a."{c}" IS NOT DISTINCT FROM b."{c}"' for c in col_names
-            )
-            try:
-                await conn.execute(text(
-                    f'DELETE FROM "{table.name}" a USING "{table.name}" b '
-                    f'WHERE a.id > b.id AND {dedup_condition}'
-                ))
-            except Exception:
-                logger.debug("去重跳过 %s (可能无重复数据)", table.name)
+            # 先去重: 删除重复行 (保留 id 最大的, 即最新记录更完整)
+            if has_id:
+                col_names = [col.name for col in constraint.columns]
+                dedup_condition = " AND ".join(
+                    f'a."{c}" IS NOT DISTINCT FROM b."{c}"' for c in col_names
+                )
+                try:
+                    await conn.execute(text(
+                        f'DELETE FROM "{table.name}" a USING "{table.name}" b '
+                        f'WHERE a.id < b.id AND {dedup_condition}'
+                    ))
+                except Exception as e:
+                    logger.warning("auto_create_tables: 去重失败 %s: %s", table.name, e)
             # 添加约束
             try:
                 await conn.execute(text(

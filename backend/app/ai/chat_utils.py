@@ -70,6 +70,13 @@ def build_schema_context_fallback(models: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _extract_model_name(m: object) -> str:
+    """从语义层 Model 对象或 dict 中提取表名 (兼容 Pydantic BaseModel 和 dict)。"""
+    if isinstance(m, dict):
+        return m.get("name", "")
+    return getattr(m, "name", "")
+
+
 def inherit_prev_tables(
     prev_tables: list[str],
     current_names: list[str],
@@ -85,7 +92,8 @@ def inherit_prev_tables(
     Args:
         prev_tables: 上轮对话涉及的表名列表
         current_names: 当前检索已命中的表名列表
-        semantic_content: SemanticModelContent 对象 (需有 .models 属性)
+        semantic_content: SemanticModelContent 对象 (需有 .models 属性,
+            元素可以是 Pydantic Model 或 dict)
 
     Returns:
         合并后的表名列表 (新 list)
@@ -94,9 +102,9 @@ def inherit_prev_tables(
         return current_names
 
     result = list(current_names)
-    semantic_names = set()
+    semantic_names: set[str] = set()
     if semantic_content and hasattr(semantic_content, "models"):
-        semantic_names = {m.get("name", "") for m in semantic_content.models}
+        semantic_names = {_extract_model_name(m) for m in semantic_content.models}
 
     for t in prev_tables:
         if not t or t in result:

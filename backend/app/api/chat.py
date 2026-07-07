@@ -322,7 +322,7 @@ async def chat(
                 ]
                 cols = list(exec_result.columns) if hasattr(exec_result, "columns") else []
             conv_state = ConversationState(
-                current_tables=[m.get("name", "") for m in state.retrieved_models if m.get("name")],
+                current_tables=state.current_tables,
                 current_sql=state.sql or "",
                 current_filters={},
                 result_summary={

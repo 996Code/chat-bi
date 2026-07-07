@@ -73,10 +73,7 @@ class AgentState:
     # 多轮对话历史文本 (对标 ARC-04: 追问时注入 intent/think/generate_sql)
     # 由调用方 (chat.py/chat_stream.py) 从 StateStore 读取 + format_history_text 生成
     history: str | None = None
-    # Few-shot 参考示例文本 (对标 RAG-004: 相似审核 SQL 注入 prompt)
-    # 由 run_agent 在 SQL 生成前检索填充
-    fewshot_text: str | None = None
-    # 命中的 few-shot 示例数 (由调用方在 SQL 生成后填充, RAG-004 可观测)
+    # 命中的 few-shot 示例数 (由 run_agent 从 GenerateResult 传播, RAG-004 可观测)
     fewshot_count: int = 0
     # 上一轮的 SQL (对标 ARC-04: CHART_MODIFY 时复用上轮 SQL 不重新生成)
     # 由调用方 (chat.py/chat_stream.py) 从 StateStore.prev_state 填充
@@ -84,6 +81,9 @@ class AgentState:
     # 上一轮涉及的表 (追问表继承: 检索后合并上轮表, 保证追问不丢 schema)
     # 由调用方从 StateStore.prev_state.current_tables 填充
     prev_tables: list[str] = field(default_factory=list)
+    # 本轮最终使用的表名列表 (含检索命中 + 继承 + 关系扩展, 持久化到 StateStore)
+    # 由 run_agent 在 schema 扩展后填充, 持久化时从此字段取值
+    current_tables: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -186,7 +186,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         question = state.intent_output.normalized_question or state.question
 
         retrieval = await deps.retrieve(question)
-        state.llm_call_count += 1
+        # NOTE: retrieve 是向量检索 (embedding 相似度), 不是 LLM 调用, 不计 llm_call_count
         state.retrieved_models = retrieval.models if hasattr(retrieval, "models") else []
 
         # schema 不确定 → ask_user (对标 proposal.md:120)
@@ -215,6 +215,8 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
         # 如选中 biz_products, 沿外键补入 biz_order_items, 否则 JOIN 查询缺表
         retrieved_names = expand_with_relationships(state.semantic_content, retrieved_names)
+        # 记录本轮最终使用的表 (含继承 + 关系扩展), 供持久化到 StateStore
+        state.current_tables = list(retrieved_names)
         schema_context = build_schema_context(state.semantic_content, retrieved_names)
         if not schema_context:
             # 语义层为空时退化用检索文本 (兜底)
@@ -258,8 +260,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
 
         state.sql = gen_result.sql
         # 将 fewshot 命中数从 GenerateResult 传播到 AgentState (RAG-004 可观测)
-        if hasattr(gen_result, "fewshot_count"):
-            state.fewshot_count = gen_result.fewshot_count
+        state.fewshot_count = gen_result.fewshot_count
         last_error = None  # 校验或执行的错误 (喂给自愈)
 
         # 校验首版 SQL
@@ -330,7 +331,8 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # 对标 max_self_heal_rounds 守卫: 自检修正也消耗自愈配额, 避免无限循环
         if not check.ok and check.suggestion and state.self_heal_rounds < deps.max_self_heal_rounds:
             # 用自检建议作纠正方向, 重新生成+执行 SQL (对标 AEE-003 自动修正回路)
-            logger.info("结果自检异常 (%s), 尝试自动修正: %s", check.issue, check.suggestion)
+            state.self_heal_rounds += 1  # 先占配额, 与 SQL 自愈循环一致
+            logger.info("结果自检异常 (%s), 尝试自动修正 (第 %d 轮): %s", check.issue, state.self_heal_rounds, check.suggestion)
             heal_result = await deps.heal_sql(
                 sql=state.sql, error=check.reason,
                 allowed_columns=allowed_columns, schema_context=schema_context,
@@ -338,7 +340,6 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             state.llm_call_count += 1
             if heal_result.success:
                 state.sql = heal_result.sql
-                state.self_heal_rounds += 1
                 # 重新执行修正后的 SQL
                 exec_result = await deps.execute_sql(state.sql)
                 state.execute_result = exec_result

@@ -178,9 +178,10 @@ class Conversation(TenantMixin, Base):
 
 class SavedQuery(TenantMixin, Base):
     __tablename__ = "saved_queries"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "data_source_id", "question", "sql_text", name="uq_saved_query_content"),
-    )
+    # NOTE: 不设 UniqueConstraint — question/sql_text 是 Text 列, btree 索引行超 2712 字节会失败。
+    # 去重完全由应用层 SELECT-then-INSERT 保证 (chat.py / chat_stream.py),
+    # 并发场景下 INSERT 失败被 catch 不影响正确性。
+    __table_args__ = ()
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
     tenant_id: Mapped[str] = mapped_column(
