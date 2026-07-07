@@ -1012,8 +1012,9 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
     msg.selfHealRounds = data.self_heal_rounds || 0
     // 非流式降级: 同样构建 pipeline 步骤 (SQL/结果均收进折叠区, 默认展开结果)
     if (msg.sql) {
+      const fewshotHint = data.fewshot_count > 0 ? `📚 命中 ${data.fewshot_count} 条相似示例` : ''
       msg.steps = [
-        { label: 'SQL 生成', status: 'done' as const, type: 'sql', expandable: true, expanded: false },
+        { label: 'SQL 生成', status: 'done' as const, detail: fewshotHint, type: 'sql', expandable: true, expanded: false },
       ]
       if (data.columns?.length || data.chart) {
         msg.steps.push({

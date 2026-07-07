@@ -271,15 +271,9 @@ async def chat_stream(
 
             # ── Stage 3: 预思考 + schema context ────────────────
             from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns
+            from app.ai.chat_utils import inherit_prev_tables
             # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
-            if state.prev_tables:
-                _semantic_names = {m.get("name", "") for m in (state.semantic_content.models if state.semantic_content else [])}
-                for t in state.prev_tables:
-                    if t and t not in tables:
-                        if t not in _semantic_names:
-                            logger.debug("追问表继承: '%s' 不在语义层中, 忽略", t)
-                        else:
-                            tables.append(t)
+            tables = inherit_prev_tables(state.prev_tables, tables, state.semantic_content)
             # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
             tables = expand_with_relationships(state.semantic_content, tables)
             schema_context = build_schema_context(state.semantic_content, tables)
@@ -576,10 +570,8 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
         if state.success and state.sql:
             try:
                 from app.db.models import SavedQuery
-                from sqlalchemy import select as _select
-                import json
                 dup_check = await db.execute(
-                    _select(SavedQuery.id).where(
+                    select(SavedQuery.id).where(
                         SavedQuery.tenant_id == user.tenant_id,
                         SavedQuery.data_source_id == data_source_id,
                         SavedQuery.question == state.question,

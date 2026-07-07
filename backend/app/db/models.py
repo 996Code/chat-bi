@@ -189,8 +189,8 @@ class SavedQuery(TenantMixin, Base):
     user_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("users.id"), nullable=False
     )
-    data_source_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("data_sources.id"), nullable=True, index=True
+    data_source_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("data_sources.id"), nullable=False, index=True
     )
     conversation_id: Mapped[str | None] = mapped_column(
         String(32), nullable=True, index=True

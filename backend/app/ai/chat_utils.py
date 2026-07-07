@@ -5,10 +5,13 @@ Functions moved here to avoid duplication across the synchronous and streaming c
 """
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 import datetime
 from enum import Enum
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_value(v):
@@ -65,3 +68,42 @@ def build_schema_context_fallback(models: list[dict]) -> str:
         return ""
     lines = [f"{m.get('name', '')}: {m.get('text', '')}" for m in models]
     return "\n".join(lines)
+
+
+def inherit_prev_tables(
+    prev_tables: list[str],
+    current_names: list[str],
+    semantic_content: object | None,
+) -> list[str]:
+    """追问表继承: 将上轮涉及的表合并进当前检索结果。
+
+    规则:
+      - 只继承语义层中有定义的表 (不在语义层中的表可能已删除/重命名, 忽略)
+      - 跳过 current_names 中已存在的表 (去重)
+      - 返回新的 list, 不修改原 current_names
+
+    Args:
+        prev_tables: 上轮对话涉及的表名列表
+        current_names: 当前检索已命中的表名列表
+        semantic_content: SemanticModelContent 对象 (需有 .models 属性)
+
+    Returns:
+        合并后的表名列表 (新 list)
+    """
+    if not prev_tables:
+        return current_names
+
+    result = list(current_names)
+    semantic_names = set()
+    if semantic_content and hasattr(semantic_content, "models"):
+        semantic_names = {m.get("name", "") for m in semantic_content.models}
+
+    for t in prev_tables:
+        if not t or t in result:
+            continue
+        if t not in semantic_names:
+            logger.debug("追问表继承: '%s' 不在语义层中, 忽略", t)
+            continue
+        result.append(t)
+
+    return result

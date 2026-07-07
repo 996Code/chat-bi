@@ -18,6 +18,7 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.schema import UniqueConstraint
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ async def auto_create_tables():
     if not is_sqlite:
         async with engine.begin() as conn:
             await _add_missing_columns(conn)
+            await _add_missing_constraints(conn)
 
     logger.info("auto_create_tables: 表结构同步完成")
 
@@ -204,3 +206,47 @@ async def _add_missing_columns(conn):
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type}{nullable}{default}'
                 ))
                 logger.info("auto_create_tables: 补列 %s.%s", table.name, col.name)
+
+
+async def _add_missing_constraints(conn):
+    """检查模型定义的 UniqueConstraint, 补上表中没有的约束 (ALTER ADD CONSTRAINT).
+
+    先去重已有数据 (保留 id 最小的行), 再加约束, 避免重复数据导致 ADD CONSTRAINT 失败。
+    """
+    for table in Base.metadata.tables.values():
+        for constraint in table.constraints:
+            if not isinstance(constraint, UniqueConstraint):
+                continue
+            constraint_name = constraint.name
+            if not constraint_name:
+                continue
+            # 检查约束是否已存在
+            result = await conn.execute(text(
+                "SELECT constraint_name FROM information_schema.table_constraints "
+                "WHERE table_name = :table_name AND constraint_type = 'UNIQUE' "
+                "AND table_schema = current_schema() AND constraint_name = :constraint_name"
+            ), {"table_name": table.name, "constraint_name": constraint_name})
+            if result.fetchone():
+                continue  # 约束已存在
+            # 构建列列表
+            cols = ", ".join(f'"{col.name}"' for col in constraint.columns)
+            # 先去重: 删除重复行 (保留 id 最小的)
+            col_names = [col.name for col in constraint.columns]
+            dedup_condition = " AND ".join(
+                f'a."{c}" IS NOT DISTINCT FROM b."{c}"' for c in col_names
+            )
+            try:
+                await conn.execute(text(
+                    f'DELETE FROM "{table.name}" a USING "{table.name}" b '
+                    f'WHERE a.id > b.id AND {dedup_condition}'
+                ))
+            except Exception:
+                logger.debug("去重跳过 %s (可能无重复数据)", table.name)
+            # 添加约束
+            try:
+                await conn.execute(text(
+                    f'ALTER TABLE "{table.name}" ADD CONSTRAINT "{constraint_name}" UNIQUE ({cols})'
+                ))
+                logger.info("auto_create_tables: 补约束 %s.%s", table.name, constraint_name)
+            except Exception as e:
+                logger.warning("auto_create_tables: 补约束失败 %s.%s: %s", table.name, constraint_name, e)

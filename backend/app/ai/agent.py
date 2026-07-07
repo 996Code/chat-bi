@@ -76,6 +76,8 @@ class AgentState:
     # Few-shot 参考示例文本 (对标 RAG-004: 相似审核 SQL 注入 prompt)
     # 由 run_agent 在 SQL 生成前检索填充
     fewshot_text: str | None = None
+    # 命中的 few-shot 示例数 (由调用方在 SQL 生成后填充, RAG-004 可观测)
+    fewshot_count: int = 0
     # 上一轮的 SQL (对标 ARC-04: CHART_MODIFY 时复用上轮 SQL 不重新生成)
     # 由调用方 (chat.py/chat_stream.py) 从 StateStore.prev_state 填充
     prev_sql: str = ""
@@ -206,16 +208,10 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # ── Stage 3: 预思考 ───────────────────────────────────
         # schema context + 白名单列从语义层取 (权威来源, 不靠检索文本正则猜)
         from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns
+        from app.ai.chat_utils import inherit_prev_tables
         retrieved_names = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
         # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
-        if state.prev_tables:
-            _semantic_names = {m.get("name", "") for m in (state.semantic_content.models if state.semantic_content else [])}
-            for t in state.prev_tables:
-                if t and t not in retrieved_names:
-                    if t not in _semantic_names:
-                        logger.debug("追问表继承: '%s' 不在语义层中, 忽略", t)
-                    else:
-                        retrieved_names.append(t)
+        retrieved_names = inherit_prev_tables(state.prev_tables, retrieved_names, state.semantic_content)
         # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
         # 如选中 biz_products, 沿外键补入 biz_order_items, 否则 JOIN 查询缺表
         retrieved_names = expand_with_relationships(state.semantic_content, retrieved_names)
@@ -261,6 +257,9 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             return state
 
         state.sql = gen_result.sql
+        # 将 fewshot 命中数从 GenerateResult 传播到 AgentState (RAG-004 可观测)
+        if hasattr(gen_result, "fewshot_count"):
+            state.fewshot_count = gen_result.fewshot_count
         last_error = None  # 校验或执行的错误 (喂给自愈)
 
         # 校验首版 SQL

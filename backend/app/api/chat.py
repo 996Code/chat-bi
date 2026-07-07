@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,6 +63,7 @@ class ChatResponse(BaseModel):
     llm_calls: int = 0
     self_heal_rounds: int = 0
     token_usage: dict | None = None  # OBS-002: prompt/completion/total token 统计
+    fewshot_count: int = 0  # 命中的 few-shot 示例数 (RAG-004)
 
 
 async def build_agent_deps(
@@ -454,4 +455,5 @@ async def chat(
         llm_calls=state.llm_call_count,
         self_heal_rounds=state.self_heal_rounds,
         token_usage=token_stats or None,
+        fewshot_count=state.fewshot_count,
     )
