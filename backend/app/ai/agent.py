@@ -209,9 +209,13 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         retrieved_names = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
         # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
         if state.prev_tables:
+            _semantic_names = {m.get("name", "") for m in (state.semantic_content.models if state.semantic_content else [])}
             for t in state.prev_tables:
                 if t and t not in retrieved_names:
-                    retrieved_names.append(t)
+                    if t not in _semantic_names:
+                        logger.debug("追问表继承: '%s' 不在语义层中, 忽略", t)
+                    else:
+                        retrieved_names.append(t)
         # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
         # 如选中 biz_products, 沿外键补入 biz_order_items, 否则 JOIN 查询缺表
         retrieved_names = expand_with_relationships(state.semantic_content, retrieved_names)

@@ -178,6 +178,9 @@ class Conversation(TenantMixin, Base):
 
 class SavedQuery(TenantMixin, Base):
     __tablename__ = "saved_queries"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "data_source_id", "question", "sql_text", name="uq_saved_query_content"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
     tenant_id: Mapped[str] = mapped_column(
