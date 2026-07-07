@@ -364,6 +364,7 @@ async def chat(
                     dup_check = await db.execute(
                         select(SavedQuery.id).where(
                             SavedQuery.tenant_id == user.tenant_id,
+                            SavedQuery.data_source_id == data_source_id,
                             SavedQuery.question == req.question,
                             SavedQuery.sql_text == state.sql,
                         ).limit(1)

@@ -107,9 +107,9 @@ def format_memories_for_prompt(memories: list[dict]) -> str:
 def save_query_memory(question: str, tables: list[str], memory_dir: str = "memory") -> None:
     """记录用户查询到 memory (MEM-01 自主记忆写入闭环)。
 
-    把成功的 question+涉及表追加到 recent_queries.md, 让后续 recall 能召回
-    "这个用户常查什么"。轻量追加 (不覆盖), 防文件膨胀用截断。
-    失败静默 (记忆是增强, 不是必需)。
+    NOTE: 此函数目前无生产调用方 (chat.py/chat_stream.py 已移除调用)。
+    与 fewshot 回流功能重叠 (fewshot 更有价值: 含 SQL, 语义检索)。
+    保留作为备用, 若后续需要关键词记忆召回可重新接入。
 
     Args:
         question: 用户问题

@@ -181,4 +181,4 @@ async def generate_sql(
         )
 
     logger.info("SQL 生成成功: %s", sql[:80])
-    return GenerateResult(sql=sql, validation=validation, fewshot_count=fewshot_count)
+    return GenerateResult(sql=sql, validation=validation)

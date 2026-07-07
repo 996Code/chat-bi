@@ -107,6 +107,7 @@ async def chat_stream(
     # 追问时恢复上下文 (对标 ARC-04): 取历史轮次 → 格式化 (含压缩+状态补偿)
     history_text = None
     prev_sql = ""
+    prev_state = None
     if conversation_id:
         try:
             from app.ai.state_store import StateStore, format_history_text
@@ -576,6 +577,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
                 dup_check = await db.execute(
                     _select(SavedQuery.id).where(
                         SavedQuery.tenant_id == user.tenant_id,
+                        SavedQuery.data_source_id == data_source_id,
                         SavedQuery.question == state.question,
                         SavedQuery.sql_text == state.sql,
                     ).limit(1)
