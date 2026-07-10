@@ -19,11 +19,12 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthUser, require_admin, require_user, write_audit_log
+from app.core.config import get_settings
 from app.core.security import encrypt_password
 from app.db.models import DataSource, SemanticModel
 from app.db.session import get_db
@@ -45,6 +46,13 @@ class DataSourceCreate(BaseModel):
     database: str
     username: str
     password: str  # 明文, 存储前加密
+
+    @field_validator("db_type")
+    @classmethod
+    def _validate_db_type(cls, v: str) -> str:
+        if v not in ("postgresql", "mysql"):
+            raise ValueError(f"不支持的数据库类型: {v} (仅 postgresql/mysql)")
+        return v
 
 
 class DataSourceOut(BaseModel):
@@ -296,7 +304,10 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
         try:
             ds = (
                 await session.execute(
-                    select(DataSource).where(DataSource.id == ds_id)
+                    select(DataSource).where(
+                        DataSource.id == ds_id,
+                        DataSource.tenant_id == tenant_id,
+                    )
                 )
             ).scalar_one_or_none()
             if ds is None:
@@ -315,7 +326,7 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
             await _update_scan(session, ds, progress=45, stage="LLM 推断中文名...")
             try:
                 import asyncio
-                await asyncio.wait_for(_enrich_with_llm(content), timeout=600.0)
+                await asyncio.wait_for(_enrich_with_llm(content), timeout=float(get_settings().scan_llm_enrichment_timeout))
             except asyncio.TimeoutError:
                 logger.warning("LLM 中文推断整体超时 10min, 退化列名")
             except Exception as e:
@@ -329,7 +340,7 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
                 # 整体超时 10min (本地小模型生成速度慢, 多批次需足够时间)
                 inferred_rels = await asyncio.wait_for(
                     infer_knowledge_graph(content, use_llm=True),
-                    timeout=600.0,
+                    timeout=float(get_settings().scan_llm_enrichment_timeout),
                 )
                 if inferred_rels:
                     _apply_inferred_relationships(content, inferred_rels)
@@ -458,11 +469,9 @@ async def _fail_scan(session: AsyncSession, ds: DataSource, error: str) -> None:
 
 
 # ChatBI 自己的系统表 (元数据表), 扫描时不调 LLM 推断
-# 这些表用户不会查, 跳过能省 60%+ LLM 调用
-_SYSTEM_TABLES = frozenset({
-    "tenants", "users", "data_sources", "semantic_models",
-    "conversations", "saved_queries", "audit_logs",
-})
+# 集中定义在 config.system_tables, 此处延迟获取 (新增系统表只改 config)
+def _get_system_tables() -> frozenset:
+    return frozenset(get_settings().system_tables)
 
 
 def _apply_inferred_relationships(content, inferred_rels) -> None:
@@ -506,8 +515,9 @@ async def _enrich_with_llm(content) -> None:
 
     # 筛出需要推断的业务表 (跳过系统表 + 全有注释的表)
     tasks = []  # (model, needs_infer)
+    _system_tables = _get_system_tables()
     for model in content.models:
-        if model.name in _SYSTEM_TABLES:
+        if model.name in _system_tables:
             continue
         needs_infer = [
             c for c in model.columns

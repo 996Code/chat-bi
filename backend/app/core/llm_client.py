@@ -6,20 +6,29 @@ T016-preC: LLM client 封装 (AsyncOpenAI) + 中文推断
 
 设计:
   - get_llm_client / get_embedding_client: 模块级单例, 配置来自 settings
+  - llm_chat: 统一 LLM 调用入口, 含 retry/backoff (429/连接错误自动重试)
   - infer_column_chinese: 调 LLM 批量补中文 display_name, 失败降级为空 dict
     (宁缺毋滥: LLM 挂了不阻塞扫描, 退化用列名即可)
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Optional
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, RateLimitError, APITimeoutError
 
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# LLM 调用重试配置 (从 config 读取, 兼容单元测试直接引用)
+def _get_retries():
+    return get_settings().llm_max_retries
+
+def _get_retry_delay():
+    return get_settings().llm_retry_base_delay
 
 _llm_client: Optional[AsyncOpenAI] = None
 _embedding_client: Optional[AsyncOpenAI] = None
@@ -31,10 +40,18 @@ def get_llm_client() -> AsyncOpenAI:
     if _llm_client is not None:
         return _llm_client
     settings = get_settings()
+    # 对标 O4: 区分连接超时和读取超时 (单 600s 覆盖 connect+read 不合理)
+    # connect: 建立 TCP 连接, 应短 (10s); read: 等响应, 可长 (推理模型需时间)
+    import httpx
     _llm_client = AsyncOpenAI(
         base_url=settings.llm_url,
         api_key=settings.llm_api_key,
-        timeout=settings.llm_timeout,
+        timeout=httpx.Timeout(
+            connect=settings.llm_connect_timeout,
+            read=float(settings.llm_timeout),
+            write=settings.llm_write_timeout,
+            pool=settings.llm_pool_timeout,
+        ),
     )
     return _llm_client
 
@@ -45,10 +62,12 @@ def get_embedding_client() -> AsyncOpenAI:
     if _embedding_client is not None:
         return _embedding_client
     settings = get_settings()
+    # 对标审计: 与 LLM client 同样区分 connect/read 超时
+    import httpx
     _embedding_client = AsyncOpenAI(
         base_url=settings.embedding_url,
         api_key=settings.embedding_api_key,
-        timeout=settings.llm_timeout,
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
     )
     return _embedding_client
 
@@ -74,11 +93,17 @@ async def llm_chat(
     node: str | None = None,
     temperature: float | None = None,
 ) -> tuple[str, object]:
-    """统一 LLM 调用入口。
+    """统一 LLM 调用入口 (含 retry/backoff)。
 
     model / max_tokens / api 配置全部走 settings，调用方不需要也不应该关心。
     temperature 是业务语义 (0.0 精确 / 0.3 自然)，由调用方控制。
     node 非空时自动记录 track_usage + record_prompt。
+
+    重试策略:
+      - 429 RateLimitError: 指数退避重试 (最多 llm_max_retries 次)
+      - APIConnectionError: 同上 (瞬态网络问题, 可重试恢复)
+      - APITimeoutError: 不重试 (超时说明请求太大或服务太慢)
+      - 其他错误: 不重试 ( BadRequest/Auth 等, 重试无意义)
 
     Args:
         messages: OpenAI 格式消息列表。
@@ -92,35 +117,84 @@ async def llm_chat(
     client = get_llm_client()
     temp = temperature if temperature is not None else settings.llm_temperature
 
-    resp = await client.chat.completions.create(
-        model=settings.llm_model,
-        messages=messages,
-        max_tokens=settings.llm_max_tokens,
-        temperature=temp,
-    )
+    last_exc: Exception | None = None
+    max_retries = _get_retries()
+    retry_delay = _get_retry_delay()
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await client.chat.completions.create(
+                model=settings.llm_model,
+                messages=messages,
+                max_tokens=settings.llm_max_tokens,
+                temperature=temp,
+            )
+            # 成功 — 处理遥测
+            content = extract_content(resp)
 
-    content = extract_content(resp)
+            # 对标 O5: 检测 finish_reason="length" (输出被截断)
+            # 截断时 content 可能不完整 (SQL 缺尾巴 / JSON 缺闭合括号), 后续处理会出错
+            try:
+                finish_reason = resp.choices[0].finish_reason
+                if finish_reason == "length":
+                    logger.warning(
+                        "LLM 输出被截断 (finish_reason=length, max_tokens=%d), "
+                        "结果可能不完整 — 考虑增大 LLM_MAX_TOKENS",
+                        settings.llm_max_tokens,
+                    )
+            except (AttributeError, IndexError):
+                pass  # mock/非标准响应无 finish_reason, 不阻塞
 
-    # 遥测: node 非空时自动记录 token 用量 + prompt 文本
-    if node:
-        from app.core.token_tracker import track_usage
-        from app.core.prompt_capture import record_prompt
+            if node:
+                from app.core.token_tracker import track_usage
+                from app.core.prompt_capture import record_prompt
 
-        usage = getattr(resp, "usage", None)
-        track_usage(usage, node=node)
+                usage = getattr(resp, "usage", None)
+                track_usage(usage, node=node)
 
-        # 从 messages 提取 system / user 文本 (record_prompt 需要)
-        system_text = ""
-        user_text = ""
-        for msg in messages:
-            role = msg.get("role", "")
-            if role == "system":
-                system_text = msg.get("content", "")
-            elif role == "user":
-                user_text = msg.get("content", "")
-        record_prompt(node, system_text, user_text, usage)
+                system_text = ""
+                user_text = ""
+                for msg in messages:
+                    role = msg.get("role", "")
+                    if role == "system":
+                        system_text = msg.get("content", "")
+                    elif role == "user":
+                        user_text = msg.get("content", "")
+                record_prompt(node, system_text, user_text, usage)
 
-    return content, resp
+            return content, resp
+
+        except RateLimitError as e:
+            last_exc = e
+            if attempt < max_retries:
+                delay = retry_delay * (2 ** attempt)
+                logger.warning("LLM 429 限流, 第 %d 次重试 (等待 %.1fs): %s", attempt + 1, delay, str(e)[:80])
+                await asyncio.sleep(delay)
+            else:
+                logger.error("LLM 429 限流, 重试 %d 次后放弃", max_retries)
+
+        except APIConnectionError as e:
+            last_exc = e
+            if attempt < max_retries:
+                delay = retry_delay * (2 ** attempt)
+                logger.warning("LLM 连接失败, 第 %d 次重试 (等待 %.1fs): %s", attempt + 1, delay, str(e)[:80])
+                await asyncio.sleep(delay)
+            else:
+                logger.error("LLM 连接失败, 重试 %d 次后放弃", max_retries)
+
+        except APITimeoutError as e:
+            # 超时不重试 — 说明请求太大或服务太慢
+            logger.warning("LLM 超时 (不重试): %s", str(e)[:80])
+            raise
+
+        except Exception as e:
+            # 其他错误不重试 (BadRequest/Auth/等)
+            raise
+
+    # 所有重试耗尽
+    if last_exc is not None:
+        raise last_exc
+    # 理论不可达: 循环要么 return, 要么 raise, 要么设置 last_exc
+    raise RuntimeError("llm_chat: 重试循环异常退出 (last_exc 为 None)")
 
 
 def reset_clients() -> None:

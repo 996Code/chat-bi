@@ -102,11 +102,12 @@ async def compact_history(
         from app.core.config import get_settings
         keep_recent = get_settings().compression_keep_recent_turns
 
-    # 不够长 → 不压缩
-    if len(messages) <= keep_recent * 2:  # 每轮 ~2 条 message (user+assistant)
+    # 不够长 → 不压缩 (keep_recent 条消息, 不假设每轮恰好 2 条)
+    if len(messages) <= keep_recent * 2:
         return CompactResult(recent_messages=messages)
 
-    # 分割: 旧轮次 + 最近 N 轮
+    # 分割: 保留最近 keep_recent*2 条 (约 keep_recent 轮, 每轮 ~2 条)
+    # 不假设每轮固定 2 条: 按"条数"切分, 保持最近的消息完整
     split_at = len(messages) - keep_recent * 2
     old_messages = messages[:split_at]
     recent_messages = messages[split_at:]

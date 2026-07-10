@@ -112,6 +112,14 @@ def _execute_sync(
                 duration_ms=round((time.monotonic() - t0) * 1000),
             )
     except Exception as e:
+        # 对标 O13: 连接池耗尽 (SQLAlchemy TimeoutError) 优雅处理
+        from sqlalchemy.exc import TimeoutError as SATimeoutError
+        if isinstance(e, SATimeoutError):
+            return ExecuteResult(
+                error="数据库连接池已满, 请稍后重试 (连接数超限)",
+                executed_sql=safe_sql,
+                duration_ms=round((time.monotonic() - t0) * 1000),
+            )
         # 保留原始错误信息 (含错误码, 供 T032 自愈映射)
         return ExecuteResult(
             error=str(e), executed_sql=safe_sql,

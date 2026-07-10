@@ -77,6 +77,7 @@ class ConversationState:
     intent: str | None = None          # 意图分类 (TEXT_TO_SQL / CLARIFICATION / ...)
     token_usage: dict | None = None    # 本轮 token 用量 {prompt_tokens, completion_tokens, total_tokens, nodes}
     sql_duration_ms: int | None = None # SQL 执行耗时 (毫秒)
+    step_durations: dict | None = None # 各步骤耗时 {intent: 123, thinking: 456, ...} (毫秒)
     error: str | None = None           # 错误信息 (失败时保留)
     self_heal_rounds: int = 0          # 自愈轮次
     heal_before_sql: str | None = None # 自愈前的原始 SQL (自愈前后对比)
@@ -102,6 +103,7 @@ class ConversationState:
             "intent": self.intent,
             "token_usage": self.token_usage,
             "sql_duration_ms": self.sql_duration_ms,
+            "step_durations": self.step_durations,
             "error": self.error,
             "self_heal_rounds": self.self_heal_rounds,
             "heal_before_sql": self.heal_before_sql,
@@ -129,6 +131,7 @@ class ConversationState:
             intent=d.get("intent"),
             token_usage=d.get("token_usage"),
             sql_duration_ms=d.get("sql_duration_ms"),
+            step_durations=d.get("step_durations"),
             error=d.get("error"),
             self_heal_rounds=d.get("self_heal_rounds", 0),
             heal_before_sql=d.get("heal_before_sql"),
@@ -152,11 +155,22 @@ class StateStore:
     StateStore 存结构化 ConversationState (供追问继承 + 压缩补偿)。
     """
 
-    def __init__(self, base_dir: str = "data/states"):
+    def __init__(self, base_dir: str | None = None):
+        if base_dir is None:
+            from app.core.config import get_settings
+            base_dir = get_settings().state_store_dir
         self._base_dir = Path(base_dir)
 
     def _path(self, tenant_id: str, conversation_id: str) -> Path:
-        return self._base_dir / tenant_id / f"{conversation_id}.jsonl"
+        """构造 JSONL 文件路径 (含路径穿越防御)。"""
+        # 防御纵深: 用 resolve+is_relative_to 防路径穿越 (比黑名单字符更健壮)
+        for name, value in [("tenant_id", tenant_id), ("conversation_id", conversation_id)]:
+            if not value or not value.strip():
+                raise ValueError(f"Invalid {name}: empty")
+        candidate = self._base_dir / tenant_id / f"{conversation_id}.jsonl"
+        if not candidate.resolve().is_relative_to(self._base_dir.resolve()):
+            raise ValueError("Path traversal detected")
+        return candidate
 
     def save(
         self,
@@ -165,7 +179,7 @@ class StateStore:
         turn_number: int,
         state: ConversationState,
     ) -> None:
-        """追加一轮状态到 JSONL。"""
+        """追加一轮状态到 JSONL (POSIX append 原子写入)。"""
         from datetime import datetime, timezone
         self._base_dir.mkdir(parents=True, exist_ok=True)
         path = self._path(tenant_id, conversation_id)
@@ -176,8 +190,12 @@ class StateStore:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "state": state.to_dict(),
         }
+        # POSIX append 对 < PIPE_BUF 的写入是原子的, 无需文件锁
+        # (JSONL 单行通常 1-4KB, 在 Linux PIPE_BUF=4096 内)
+        json_line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
         with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            f.write(json_line)
+            f.flush()
         logger.debug("State saved: tenant=%s conv=%s turn=%d", tenant_id, conversation_id, turn_number)
 
     def load(self, tenant_id: str, conversation_id: str) -> ConversationState | None:
@@ -186,7 +204,7 @@ class StateStore:
         if not path.exists():
             return None
         lines = path.read_text(encoding="utf-8").strip().split("\n")
-        if not lines or not lines[0]:
+        if not lines or not lines[-1]:
             return None
         last_line = lines[-1]
         try:

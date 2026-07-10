@@ -82,9 +82,9 @@ def _build_schema_summary(models: list[Model]) -> str:
     """构建喂给 LLM 的表结构摘要 (表名+中文名+关键列)。"""
     if not models:
         return ""
-    # 过滤掉系统表 (ChatBI 元数据表)
-    system_tables = {"tenants", "users", "data_sources", "semantic_models",
-                     "conversations", "saved_queries", "audit_logs"}
+    # 过滤掉系统表 (ChatBI 元数据表, 集中定义在 config)
+    from app.core.config import get_settings
+    system_tables = frozenset(get_settings().system_tables)
     lines = []
     for m in models:
         if m.name in system_tables:
@@ -125,8 +125,8 @@ def _fallback_questions(models: list[Model]) -> list[str]:
       - 找到有 dimension 列的表 → "各{dimension}的数量统计"
       - 保证至少返回几个可用问题
     """
-    system_tables = {"tenants", "users", "data_sources", "semantic_models",
-                     "conversations", "saved_queries", "audit_logs"}
+    from app.core.config import get_settings
+    system_tables = frozenset(get_settings().system_tables)
     questions = []
 
     for m in models:

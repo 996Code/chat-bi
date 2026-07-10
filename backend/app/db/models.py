@@ -260,9 +260,9 @@ class AuditLog(TenantMixin, Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_uuid)
-    # tenant_id 不设 FK: 审计是安全/取证记录, 未认证事件 (登录失败/暴力破解) 无合法租户,
-    # 仍必须记录。FK 反成单一故障点 (一个 bad tenant_id 就能让整条审计链失败, 违背 fail-closed)。
-    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # tenant_id FK → tenants: 审计必须有合法租户 (数据完整性保障)。
+    # 未认证事件 (登录失败且用户不存在) 无合法 tenant_id → 审计用 try/except 包裹, 不阻塞主流程。
+    tenant_id: Mapped[str] = mapped_column(String(32), ForeignKey("tenants.id"), nullable=False, index=True)
     user_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("users.id"), nullable=True
     )

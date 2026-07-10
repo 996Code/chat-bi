@@ -57,6 +57,8 @@ async def generate_reply(
     from app.core.text_sanitize import sanitize_text
 
     clean_question = sanitize_text(question)
+    if not clean_question.strip():
+        return _FALLBACK_REPLY
     prompt = _REPLY_PROMPT.format(question=clean_question)
 
     system_msg = "你是 ChatBI 智能助手, 友好简短地回复用户。"

@@ -99,7 +99,7 @@ async def think(
     question = sanitize_text(question)
 
     candidates = "\n".join(
-        f"- {m.get('name', '')} (score={m.get('score', 0):.2f})"
+        f"- {m.get('name', '')} (score={float(m.get('score', 0)):.2f})"
         for m in retrieved_models[:5]
     ) or "(无候选)"
 

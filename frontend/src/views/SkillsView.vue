@@ -132,6 +132,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Edit, Delete } from '@element-plus/icons-vue'
 import { skills as skillsApi, type Skill } from '@/api'
+import { extractErrorDetail } from '@/utils/error'
 
 const skillsList = ref<Skill[]>([])
 const loading = ref(false)
@@ -208,7 +209,7 @@ async function fetchData() {
     const { data } = await skillsApi.list()
     skillsList.value = data
   } catch (e: any) {
-    ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('加载失败: ' + (extractErrorDetail(e)))
   } finally {
     loading.value = false
   }
@@ -235,7 +236,7 @@ async function doPreview() {
   } catch (e: any) {
     previewResult.value = {
       generated_sql: null,
-      error: e.response?.data?.detail || e.message || '预览失败',
+      error: extractErrorDetail(e) || '预览失败',
       usage: null,
     }
   } finally {
@@ -260,7 +261,7 @@ async function doSave() {
     editorVisible.value = false
     await fetchData()
   } catch (e: any) {
-    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('保存失败: ' + (extractErrorDetail(e)))
   } finally {
     saving.value = false
   }
@@ -275,7 +276,7 @@ async function doDelete(skill: Skill) {
     ElMessage.success('已删除')
     await fetchData()
   } catch (e: any) {
-    ElMessage.error('删除失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('删除失败: ' + (extractErrorDetail(e)))
   }
 }
 

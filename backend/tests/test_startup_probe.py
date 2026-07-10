@@ -42,7 +42,8 @@ class TestProbePostgres:
             settings, "database_url",
             "postgresql+asyncpg://nobody:nopass@127.0.0.1:1/nonexistent",
         )
-        result = await probe_postgres(timeout=2)
+        monkeypatch.setattr(settings, "startup_probe_timeout", 1)  # 加速
+        result = await probe_postgres(timeout=1)
         assert result.ok is False
         assert "postgres" in result.service
         assert len(result.detail) > 0  # 有错误原因
@@ -63,7 +64,7 @@ class TestProbeRedis:
         monkeypatch.setattr(
             settings, "redis_url", "redis://nobody:nopass@127.0.0.1:1/0",
         )
-        result = await probe_redis(timeout=2)
+        result = await probe_redis(timeout=1)
         assert result.ok is False
 
 
@@ -128,6 +129,7 @@ class TestCheckRequired:
             settings, "database_url",
             "postgresql+asyncpg://nobody:nopass@127.0.0.1:1/nonexistent",
         )
+        monkeypatch.setattr(settings, "startup_probe_timeout", 1)  # 加速
         with pytest.raises(RuntimeError, match="STARTUP ABORTED"):
             await check_required_services()
 
@@ -158,6 +160,7 @@ class TestCheckOptional:
         # PG 在必需集 (默认), Redis/Milvus 进可选集; 把它们都搞挂
         monkeypatch.setattr(settings, "redis_url", "redis://127.0.0.1:1/0")
         monkeypatch.setattr(settings, "milvus_url", "http://127.0.0.1:1")
+        monkeypatch.setattr(settings, "startup_probe_timeout", 1)  # 加速: 1s 超时 (默认 5s 太慢)
         # 不应抛异常
         results = await check_optional_services()
         assert len(results) >= 1
@@ -194,6 +197,7 @@ class TestRunStartupProbes:
             settings, "database_url",
             "postgresql+asyncpg://nobody:nopass@127.0.0.1:1/nonexistent",
         )
+        monkeypatch.setattr(settings, "startup_probe_timeout", 1)  # 加速
         with pytest.raises(RuntimeError, match="STARTUP ABORTED"):
             await run_startup_probes()
 

@@ -31,11 +31,12 @@ from app.db.models import AuditLog, TenantMixin, User
 logger = logging.getLogger(__name__)
 
 try:
-    from jose import ExpiredSignatureError, JWTClaimsError, JWTError
+    from jose import ExpiredSignatureError, JWTError
+    from jose.exceptions import JWTClaimsError
 except ImportError:
-    ExpiredSignatureError = Exception
-    JWTClaimsError = Exception
-    JWTError = Exception
+    class ExpiredSignatureError(Exception): pass
+    class JWTError(Exception): pass
+    class JWTClaimsError(Exception): pass
 
 # ── JWT Auth ───────────────────────────────────────────────────
 
@@ -82,7 +83,10 @@ async def get_current_user(
             detail="Invalid token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except Exception:
+    except (KeyError, AttributeError, TypeError, ValueError) as e:
+        # 对标 M1: JWT payload 结构异常 → 401, 但不吞掉其他编程错误
+        # ValueError: jwt.decode 可能对畸形 token (如段数不对) 抛 ValueError
+        logger.warning("JWT 解码结构异常: %s", e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",

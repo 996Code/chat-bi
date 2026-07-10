@@ -32,7 +32,7 @@ class SemanticModelOut(BaseModel):
     data_source_id: str
     version: int
     is_current: bool
-    content: dict
+    content: dict  # 对标 F3: 结构化为 SemanticModelContent 会导致 schema 变更; 保持 dict 兼容前端
 
 
 class VersionSummary(BaseModel):

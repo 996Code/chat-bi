@@ -343,6 +343,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading, ChatDotRound, CircleCheck, CircleClose, Plus, ArrowDown, Download, QuestionFilled, Monitor } from '@element-plus/icons-vue'
 import { chat, datasource, observability, semantic, dashboard, STREAM_URL, type ChatResponse, type ConversationItem, type DashboardItem } from '@/api'
+import { extractErrorDetail } from '@/utils/error'
 import { clearToken } from '@/composables/useAuth'
 import { exportQueryToExcel } from '@/utils/exportExcel'
 import * as echarts from 'echarts'
@@ -558,7 +559,7 @@ async function doSaveToDashboard() {
     ElMessage.success('已保存到看板')
     showSaveDashboard.value = false
   } catch (e: any) {
-    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message || '未知错误'))
+    ElMessage.error('保存失败: ' + (extractErrorDetail(e)))
   } finally {
     savingDashboard.value = false
   }
@@ -606,8 +607,8 @@ async function fetchConversations() {
   try {
     const { data } = await observability.conversations()
     conversations.value = data
-  } catch {
-    // 加载失败不阻塞
+  } catch (e) {
+    console.error('对话列表加载失败:', e)
   } finally {
     convLoading.value = false
   }
@@ -623,6 +624,11 @@ function startNewConversation() {
 }
 
 async function loadConversation(convId: string) {
+  // 释放旧图表实例, 防止切换对话时残留实例绑定已移除 DOM 导致新图表无法渲染
+  Object.values(chartInstances).forEach(c => { try { c.dispose() } catch { /* ignore */ } })
+  Object.keys(chartInstances).forEach(k => delete chartInstances[k])
+  Object.keys(chartRefs).forEach(k => delete chartRefs[k])
+
   conversationId.value = convId
   messages.value = []
   try {
@@ -640,6 +646,15 @@ async function loadConversation(convId: string) {
           ;(st.columns || []).forEach((col: string, ci: number) => { obj[col] = row[ci] })
           return obj
         })
+        // 从 token_usage.nodes 提取各步骤的 LLM 调用信息
+        const nodeUsage = st.token_usage?.nodes || {}
+        const llmOf = (node: string) => {
+          const n = nodeUsage[node]
+          if (!n) return {}
+          return { llmCalls: n.call_count ?? undefined, llmTokens: n.total_tokens ?? undefined }
+        }
+        // 从 step_durations 提取各步骤耗时
+        const dur = st.step_durations || {}
         messages.value.push({
           role: 'assistant',
           reply: st.reply || undefined,
@@ -649,11 +664,22 @@ async function loadConversation(convId: string) {
           rowCount: st.result_summary?.row_count,
           chart: st.chart_option || undefined,
           steps: [
-            { label: '意图识别', status: 'done' as const },
-            { label: 'Schema 检索', status: 'done' as const },
+            {
+              label: '意图识别', status: 'done' as const,
+              detail: st.intent || undefined,
+              duration: dur.intent ?? undefined,
+              ...llmOf('intent'),
+            },
+            {
+              label: 'Schema 检索', status: 'done' as const,
+              detail: (st.current_tables || []).join(', ') || undefined,
+              duration: dur.schema ?? undefined,
+            },
             {
               label: '预思考', status: 'done' as const, type: 'thinking',
               expandable: true, expanded: false,
+              duration: dur.thinking ?? undefined,
+              ...llmOf('thinking'),
               thinkingData: {
                 tables: st.thinking?.tables || [],
                 aggregation: st.thinking?.aggregation || '',
@@ -661,11 +687,26 @@ async function loadConversation(convId: string) {
                 prevSqlReview: st.thinking?.prev_sql_review || '',
               },
             },
-            { label: 'SQL 生成', status: 'done' as const, type: 'sql', expandable: true, expanded: false },
-            { label: '执行查询', status: 'done' as const, detail: `${st.result_summary?.row_count ?? 0} 行`, type: 'result', expandable: true, expanded: false },
+            {
+              label: 'SQL 生成', status: 'done' as const, type: 'sql',
+              expandable: true, expanded: false,
+              duration: dur.generate_sql ?? undefined,
+              ...llmOf('generate_sql'),
+            },
+            {
+              label: '执行查询', status: 'done' as const,
+              detail: `${st.result_summary?.row_count ?? 0} 行`,
+              duration: dur.execute_sql ?? st.sql_duration_ms ?? undefined,
+              type: 'result', expandable: true, expanded: false,
+            },
+            ...(nodeUsage.generate_chart ? [{
+              label: '图表生成', status: 'done' as const,
+              duration: dur.generate_chart ?? undefined,
+              ...llmOf('generate_chart'),
+            }] : []),
           ],
-	          done: true,
-	        })
+		          done: true,
+		        })
       }
     }
     await scrollToBottom()
@@ -1022,11 +1063,13 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
           type: 'result', expandable: true, expanded: false,
         })
       }
-    }
-	    msg.done = true
-	    await nextTick()
-    if (msg.chart) nextTick(() => nextTick(() => renderChart(msgIdx)))
-  } catch (e2: any) {
+	    }
+		    msg.done = true
+		    await nextTick()
+	    if (msg.chart) nextTick(() => nextTick(() => renderChart(msgIdx)))
+	    // 降级路径也需要刷新对话列表
+	    fetchConversations()
+	  } catch (e2: any) {
     msg.error = streamErr.message + ' | ' + (e2.response?.data?.detail || e2.message || '网络错误')
     msg.done = true
   }

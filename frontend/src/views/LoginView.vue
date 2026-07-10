@@ -75,6 +75,7 @@ import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { auth, devAuth } from '@/api'
+import { extractErrorDetail } from '@/utils/error'
 import { setToken } from '@/composables/useAuth'
 
 const router = useRouter()
@@ -106,7 +107,7 @@ async function login() {
     ElMessage.success('登录成功')
     router.push('/chat')
   } catch (e: any) {
-    ElMessage.error('登录失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('登录失败: ' + (extractErrorDetail(e)))
   } finally {
     loading.value = false
   }
@@ -130,7 +131,7 @@ async function register() {
     ElMessage.success('注册成功')
     router.push('/chat')
   } catch (e: any) {
-    ElMessage.error('注册失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('注册失败: ' + (extractErrorDetail(e)))
   } finally {
     loading.value = false
   }
@@ -147,7 +148,7 @@ async function devLogin() {
     ElMessage.success('登录成功')
     router.push('/chat')
   } catch (e: any) {
-    ElMessage.error('登录失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('登录失败: ' + (extractErrorDetail(e)))
   } finally {
     devLoading.value = false
   }

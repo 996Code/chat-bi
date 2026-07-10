@@ -73,6 +73,7 @@ import { nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Refresh, Plus, MoreFilled, EditPen, Check } from '@element-plus/icons-vue'
 import { dashboard, type DashboardItem, type DashboardWidget } from '@/api'
+import { extractErrorDetail } from '@/utils/error'
 import { GridStack } from 'gridstack'
 import 'gridstack/dist/gridstack.min.css'
 import * as echarts from 'echarts'
@@ -272,7 +273,7 @@ async function saveLayout(layout: { id: string; x: number; y: number; w: number;
     await dashboard.updateLayout(activeDashId.value, layout)
     ElMessage.success('布局已保存')
   } catch (e: any) {
-    ElMessage.error('布局保存失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('布局保存失败: ' + (extractErrorDetail(e)))
   }
 }
 
@@ -308,7 +309,7 @@ async function refreshWidget(w: DashboardWidget, version?: number) {
     renderWidgetContent(w)
   } catch (e: any) {
     if (version != null && version !== loadVersion) return
-    widgetError[w.id] = e.response?.data?.detail || e.message || '查询失败'
+    widgetError[w.id] = extractErrorDetail(e)
     renderWidgetContent(w)
   } finally {
     widgetLoading[w.id] = false
@@ -414,7 +415,7 @@ function handleDashCommand(cmd: string, d: DashboardItem) {
         }
         ElMessage.success('已删除')
       } catch (e: any) {
-        ElMessage.error('删除失败: ' + (e.response?.data?.detail || e.message))
+        ElMessage.error('删除失败: ' + (extractErrorDetail(e)))
       }
     }).catch(() => {})
   }
@@ -442,7 +443,7 @@ async function submitDashDialog() {
     }
     showDashDialog.value = false
   } catch (e: any) {
-    ElMessage.error('操作失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('操作失败: ' + (extractErrorDetail(e)))
   } finally {
     dashDialogLoading.value = false
   }
@@ -467,7 +468,7 @@ async function deleteWidget(w: DashboardWidget) {
     initGrid()
     ElMessage.success('已删除')
   } catch (e: any) {
-    ElMessage.error('删除失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('删除失败: ' + (extractErrorDetail(e)))
   }
 }
 

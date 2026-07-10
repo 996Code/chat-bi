@@ -6,10 +6,7 @@ Skills API — 业务规则在线管理 (T041)
 
 安全: 仅 admin 可操作 (Skills 影响全局 SQL 生成)。
 热更新: 保存后 invalidate 缓存, 下次查询自动生效。
-
-SEC NOTE: 当前 Skills Store 是全局共享的, 无租户隔离。
-单租户部署环境下安全; 多租户部署需改为 skills/{tenant_id}/ 目录结构
-+ API 层按 tenant_id 过滤。
+多租户隔离: 按 tenant_id 隔离到 skills/{tenant_id}/ 子目录 (对标 S1)。
 """
 from __future__ import annotations
 
@@ -25,6 +22,62 @@ from app.db.session import get_db
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/skills", tags=["skills"])
+
+# 路径穿越防护: skill name 只允许字母/数字/下划线/连字符
+import re
+_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
+
+
+def _validate_skill_name(name: str) -> str:
+    """校验 skill name 不含路径穿越字符 (../ 等)。"""
+    if not name or not _SAFE_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=422,
+            detail="Skill 名称只允许字母、数字、下划线和连字符",
+        )
+    return name
+
+
+def _get_tenant_skills_dir(tenant_id: str):
+    """获取租户隔离的 skills 目录 (skills/{tenant_id}/)。
+
+    首次访问时自动从全局模板目录 (skills/_template/) 复制种子规则,
+    确保新租户不会看到空白页面。
+    """
+    from pathlib import Path
+    import shutil
+    from app.core.config import get_settings
+    # tenant_id 来自 JWT, 理论上安全; 但防御纵深: 防路径穿越
+    if not tenant_id or ".." in tenant_id or "/" in tenant_id or "\\" in tenant_id:
+        raise HTTPException(status_code=400, detail="无效的租户标识")
+    settings = get_settings()
+    base = Path(getattr(settings, "skills_dir", "skills")) / tenant_id
+    base.mkdir(parents=True, exist_ok=True)
+    # 种子数据: 租户目录为空时, 从 _template/ 复制默认规则
+    _ensure_seed_skills(base)
+    return base
+
+
+def _ensure_seed_skills(tenant_dir: Path):
+    """租户 skills 目录为空时, 从 _template/ 复制种子规则。
+
+    种子规则包含电商场景常见业务约定 (GMV/状态枚举/字段别名),
+    用户可自由编辑或删除, 不影响其他租户。
+    """
+    # 已有规则 → 不覆盖
+    if any(tenant_dir.glob("*/SKILL.md")):
+        return
+    template_dir = tenant_dir.parent / "_template"
+    if template_dir.is_dir():
+        try:
+            for item in template_dir.iterdir():
+                if item.is_dir() and (item / "SKILL.md").exists():
+                    dest = tenant_dir / item.name
+                    if not dest.exists():
+                        shutil.copytree(item, dest)
+            logger.info("种子 Skills 已初始化到 %s", tenant_dir)
+        except Exception as e:
+            logger.warning("种子 Skills 初始化失败 (不阻塞): %s", e)
 
 
 class SkillOut(BaseModel):
@@ -46,9 +99,10 @@ class SkillSave(BaseModel):
 async def list_skills(
     user=Depends(require_admin),
 ):
-    """列出所有 Skills (T041)。"""
-    from app.services.skills_loader import get_skills_loader
-    loader = get_skills_loader()
+    """列出所有 Skills (T041) — 按 tenant_id 隔离。"""
+    from app.services.skills_loader import SkillsLoader
+    base = _get_tenant_skills_dir(user.tenant_id)
+    loader = SkillsLoader(base_dir=str(base))
     return [
         SkillOut(name=s.name, description=s.description, version=s.version,
                  content=s.content, references=s.references)
@@ -61,9 +115,11 @@ async def get_skill(
     name: str,
     user=Depends(require_admin),
 ):
-    """查看单个 Skill 详情。"""
-    from app.services.skills_loader import get_skills_loader
-    loader = get_skills_loader()
+    """查看单个 Skill 详情 — 按 tenant_id 隔离。"""
+    _validate_skill_name(name)  # 防路径穿越
+    from app.services.skills_loader import SkillsLoader
+    base = _get_tenant_skills_dir(user.tenant_id)
+    loader = SkillsLoader(base_dir=str(base))
     for s in loader.load_all():
         if s.name == name:
             return SkillOut(name=s.name, description=s.description, version=s.version,
@@ -77,14 +133,12 @@ async def save_skill(
     user: AuthUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """创建或更新 Skill (T041 在线编辑)。
+    """创建或更新 Skill (T041 在线编辑) — 按 tenant_id 隔离。
 
     保存后 invalidate 缓存, 下次查询自动热更新。
     """
-    from pathlib import Path
-    from app.services.skills_loader import get_skills_loader, reset_skills_loader
-    loader = get_skills_loader()
-    base = Path(loader._base_dir)
+    _validate_skill_name(body.name)  # 对标防御纵深: 防路径穿越
+    base = _get_tenant_skills_dir(user.tenant_id)
     skill_dir = base / body.name
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_file = skill_dir / "SKILL.md"
@@ -99,9 +153,10 @@ async def save_skill(
         f"{body.content}\n"
     )
     skill_file.write_text(fm, encoding="utf-8")
-    # 热更新: 失效缓存
+    # 热更新: 失效租户级缓存
+    from app.services.skills_loader import reset_skills_loader
     reset_skills_loader()
-    logger.info("Skill 已保存: %s (by %s)", body.name, user.user_id)
+    logger.info("Skill 已保存: %s (by %s, tenant=%s)", body.name, user.user_id, user.tenant_id)
     # SEC-006: Skills 修改影响全局 SQL 生成, 必须审计
     try:
         await write_audit_log(
@@ -122,18 +177,17 @@ async def delete_skill(
     user: AuthUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除 Skill (含目录)。"""
+    """删除 Skill (含目录) — 按 tenant_id 隔离。"""
     import shutil
-    from pathlib import Path
-    from app.services.skills_loader import get_skills_loader, reset_skills_loader
-    loader = get_skills_loader()
-    base = Path(loader._base_dir)
+    _validate_skill_name(name)  # 防路径穿越
+    base = _get_tenant_skills_dir(user.tenant_id)
     skill_dir = base / name
     if not skill_dir.exists():
         raise HTTPException(status_code=404, detail=f"Skill '{name}' 不存在")
     shutil.rmtree(skill_dir)
+    from app.services.skills_loader import reset_skills_loader
     reset_skills_loader()
-    logger.info("Skill 已删除: %s (by %s)", name, user.user_id)
+    logger.info("Skill 已删除: %s (by %s, tenant=%s)", name, user.user_id, user.tenant_id)
     # SEC-006: Skills 删除必须审计
     try:
         await write_audit_log(

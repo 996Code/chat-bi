@@ -213,7 +213,7 @@ export interface ChatResponse {
   question: string | null
   sql: string | null
   columns: string[]
-  rows: (string | number | null)[][]
+  rows: (string | number | boolean | null)[][]
   row_count: number
   truncated: boolean
   chart: Record<string, any> | null
@@ -228,8 +228,10 @@ export interface ChatResponse {
     completion_tokens: number
     total_tokens: number
     llm_calls: number
+    nodes?: Record<string, any>  // 各节点 token 明细 (OBS-002)
   } | null
   fewshot_count: number  // 命中的 few-shot 示例数 (RAG-004)
+  degraded: boolean  // 检索/图表降级标记 (结果可能不精确)
 }
 
 export const chat = {
@@ -315,16 +317,19 @@ export const skills = {
 // ── Agent 记忆管理 (T045) ──────────────────────────────────
 
 export interface Memory {
+  id: string
   name: string
   description: string
   type: string
   content: string
+  consolidated?: boolean
 }
 
 export const memory = {
-  list() { return apiClient.get<Memory[]>('/memory') },
-  save(data: Memory) { return apiClient.put<Memory>('/memory', data) },
-  delete(name: string) { return apiClient.delete(`/memory/${name}`) },
+  list(dataSourceId: string, includeConsolidated = false) { return apiClient.get<Memory[]>('/memory', { params: { data_source_id: dataSourceId, include_consolidated: includeConsolidated } }) },
+  save(data: Partial<Memory> & { name: string; description: string; content: string }, dataSourceId: string) { return apiClient.put<Memory>('/memory', data, { params: { data_source_id: dataSourceId } }) },
+  delete(id: string, dataSourceId: string) { return apiClient.delete(`/memory/${id}`, { params: { data_source_id: dataSourceId } }) },
+  consolidate(dataSourceId: string, ids?: string[]) { return apiClient.post('/memory/consolidate', ids ? { ids } : null, { params: { data_source_id: dataSourceId } }) },
 }
 
 // ── 看板 (V1 Dashboard + Widget) ─────────────────────────────

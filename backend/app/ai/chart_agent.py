@@ -477,7 +477,7 @@ def inject_data(
         "xAxis": {"type": "category", "data": names, "axisLabel": {"interval": 0, "rotate": names and len(str(names[0])) > 4 and 30 or 0}},
         "yAxis": {"type": "value"},
         "series": series,
-        "dataZoom": [{"type": "slider", "start": 0, "end": 100}] if len(names) > 20 else [],
+        "dataZoom": [{"type": "slider", "start": 0, "end": 100}] if len(names) > _DATAZOOM_THRESHOLD else [],
     }
 
 

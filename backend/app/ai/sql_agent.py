@@ -27,10 +27,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class GenerateResult:
-    """SQL 生成结果。"""
+    """SQL 生成结果。
+
+    error_type 区分失败原因 (对标 D6: 调用方需区分 LLM 失败 vs 校验失败):
+      - "llm_failure": LLM 调用失败 (网络/限流/超时) → 可重试
+      - "validation_failure": SQL 生成但校验不通过 → 不可重试 (需自愈)
+      - None: 成功 (error 为空)
+    """
     sql: str = ""
     validation: ValidationResult = field(default_factory=lambda: ValidationResult(ok=False, reason="未生成"))
     error: str | None = None
+    error_type: str | None = None  # "llm_failure" | "validation_failure" | None
     fewshot_count: int = 0   # 命中的 few-shot 示例数 (0=无命中)
 
 
@@ -167,13 +174,13 @@ async def generate_sql(
         )
     except Exception as e:
         logger.warning("SQL 生成 LLM 调用失败: %s", e)
-        return GenerateResult(error=f"LLM 调用失败: {e}")
+        return GenerateResult(error=f"LLM 调用失败: {e}", error_type="llm_failure")
 
     # ── 提取 SQL ─────────────────────────────────────────────
     sql = _extract_sql(content)
     if not sql:
         logger.warning("SQL 生成: LLM 返回空内容")
-        return GenerateResult(error="LLM 未返回有效 SQL")
+        return GenerateResult(error="LLM 未返回有效 SQL", error_type="llm_failure")
 
     # ── T030 三层校验 (生成后立即校验, 不执行未校验的 SQL) ───
     validation = validate_sql(sql, allowed_columns)
@@ -184,6 +191,7 @@ async def generate_sql(
             sql=sql,
             validation=validation,
             error=f"SQL 校验失败 ({validation.violated_layer}): {validation.reason}",
+            error_type="validation_failure",
         )
 
     logger.info("SQL 生成成功: %s", sql[:80])

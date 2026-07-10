@@ -3,23 +3,44 @@
     <div class="page-header">
       <span class="title">Agent 记忆</span>
       <div>
-        <el-button type="primary" :icon="Plus" @click="openEditor()">新建记忆</el-button>
+        <el-select v-model="selectedDsId" placeholder="选择数据源" size="small" style="width: 200px; margin-right: 8px" @change="fetchData">
+          <el-option v-for="ds in dataSources" :key="ds.id" :label="ds.name" :value="ds.id" />
+        </el-select>
+        <el-button type="primary" :icon="Plus" :disabled="!selectedDsId" @click="openEditor()">新建记忆</el-button>
+        <el-button :icon="Sort" :loading="consolidating" :disabled="!selectedDsId || selectableMems.length === 0" @click="doConsolidate">
+          整理记忆<span v-if="selectedIds.size > 0" class="sel-count">({{ selectedIds.size }})</span>
+        </el-button>
         <el-button :icon="Refresh" @click="fetchData">刷新</el-button>
       </div>
     </div>
 
-    <el-alert type="info" :closable="false" show-icon style="margin-bottom: 16px">
+    <el-alert v-if="!selectedDsId" type="warning" :closable="false" show-icon style="margin-bottom: 16px">
+      <template #title>请先选择数据源，记忆按数据源隔离管理</template>
+    </el-alert>
+
+    <el-alert v-else type="info" :closable="false" show-icon style="margin-bottom: 16px">
       <template #title>
         <span>
           记忆是 Agent <b>跨会话保留</b> 的事实和偏好。查询时 Agent 会自动检索与问题<b>关键词相关</b>的记忆注入上下文，
-          无需手动触发。描述写得越准确，召回越精准。
+          无需手动触发。描述写得越准确，召回越精准。对话成功后 Agent 会自动提炼值得保留的新知识。
         </span>
       </template>
     </el-alert>
 
     <div v-loading="loading">
+      <!-- 工具栏: 全选 + 显示已整理开关 -->
+      <div v-if="selectedDsId && memoryList.length" class="list-toolbar">
+        <el-checkbox
+          :model-value="allSelected"
+          :indeterminate="someSelected && !allSelected"
+          @change="toggleSelectAll"
+        >全选</el-checkbox>
+        <span class="sel-info" v-if="selectedIds.size > 0">已选 {{ selectedIds.size }} 条</span>
+        <el-switch v-model="showConsolidated" active-text="显示已整理" @change="fetchData" style="margin-left: auto" />
+      </div>
+
       <!-- 空白引导面板 -->
-      <div v-if="!memoryList.length && !loading" class="onboarding">
+      <div v-if="!memoryList.length && !loading && selectedDsId" class="onboarding">
         <div class="onboarding-title">🧠 还没有记忆，从常见场景快速创建：</div>
         <div class="onboarding-desc">
           记忆帮助 Agent 记住业务约定。比如"GMV 不含退款"这类规则，写一条记忆后每次相关查询都会自动召回。
@@ -44,15 +65,23 @@
       </div>
 
       <!-- 记忆列表 -->
-      <el-card v-for="mem in memoryList" :key="mem.name" class="mem-card">
+      <el-card v-for="mem in memoryList" :key="mem.id" class="mem-card" :class="{ 'consolidated-card': mem.consolidated }">
         <template #header>
           <div class="card-header">
-            <div>
+            <div class="card-header-left">
+              <!-- 已整理的不可勾选 -->
+              <el-checkbox
+                v-if="!mem.consolidated"
+                :model-value="selectedIds.has(mem.id)"
+                @change="(v: boolean) => toggleSelect(mem.id, v)"
+              />
+              <el-icon v-else class="lock-icon"><Lock /></el-icon>
               <b>{{ mem.description || mem.name }}</b>
               <el-tag size="small" :type="typeTag(mem.type)" style="margin-left: 8px">{{ typeLabel(mem.type) }}</el-tag>
               <el-tag size="small" type="success" style="margin-left: 4px">自动召回</el-tag>
+              <el-tag v-if="mem.consolidated" size="small" type="info" style="margin-left: 4px">已整理</el-tag>
             </div>
-            <div>
+            <div v-if="!mem.consolidated">
               <el-button size="small" :icon="Edit" @click="openEditor(mem)">编辑</el-button>
               <el-button size="small" type="danger" plain :icon="Delete" @click="doDelete(mem)">删除</el-button>
             </div>
@@ -67,10 +96,10 @@
     </div>
 
     <!-- 编辑器抽屉 -->
-    <el-drawer v-model="editorVisible" :title="editing.name ? `编辑: ${editing.name}` : '新建记忆'" size="600px">
+    <el-drawer v-model="editorVisible" :title="editing.id ? `编辑: ${editing.name}` : '新建记忆'" size="600px">
       <el-form label-position="top">
-        <el-form-item label="名称 (英文, 如 biz-convention)">
-          <el-input v-model="editing.name" :disabled="!!editing.originalName" placeholder="order-convention" />
+        <el-form-item label="名称 (简短标题，可修改)">
+          <el-input v-model="editing.name" placeholder="订单业务约定" />
         </el-form-item>
         <el-form-item>
           <template #label>
@@ -100,23 +129,50 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Edit, Delete, InfoFilled } from '@element-plus/icons-vue'
-import { memory as memoryApi, type Memory } from '@/api'
+import { Plus, Refresh, Edit, Delete, InfoFilled, Sort, Lock } from '@element-plus/icons-vue'
+import { memory as memoryApi, datasource, type Memory } from '@/api'
+import { extractErrorDetail } from '@/utils/error'
 
 const memoryList = ref<Memory[]>([])
 const loading = ref(false)
 const editorVisible = ref(false)
 const saving = ref(false)
-const editing = ref<Memory & { originalName?: string }>({
+const consolidating = ref(false)
+const editing = ref<Partial<Memory>>({
   name: '', description: '', type: 'project', content: '',
 })
+const dataSources = ref<{ id: string; name: string }[]>([])
+const selectedDsId = ref<string>('')
+const showConsolidated = ref(false)
+// 勾选的记忆 id 集合 (只允许勾选未整理的)
+const selectedIds = ref<Set<string>>(new Set())
+
+// 可勾选的记忆 = 未整理的
+const selectableMems = computed(() => memoryList.value.filter(m => !m.consolidated))
+const someSelected = computed(() => selectedIds.value.size > 0 && selectedIds.value.size < selectableMems.value.length)
+const allSelected = computed(() => selectableMems.value.length > 0 && selectedIds.value.size === selectableMems.value.length)
+
+function toggleSelect(id: string, checked: boolean) {
+  if (checked) selectedIds.value.add(id)
+  else selectedIds.value.delete(id)
+  // 触发响应式
+  selectedIds.value = new Set(selectedIds.value)
+}
+
+function toggleSelectAll(checked: boolean) {
+  if (checked) {
+    selectedIds.value = new Set(selectableMems.value.map(m => m.id))
+  } else {
+    selectedIds.value = new Set()
+  }
+}
 
 // 示例模板
 const examples = [
   {
-    name: 'biz-convention',
+    name: '订单业务约定',
     description: '订单业务约定：GMV计算与状态定义',
     type: 'project',
     content: `## GMV 计算规则
@@ -130,7 +186,7 @@ GMV = SUM(total_amount) WHERE status IN ('paid', 'shipped')
 时间字段统一使用 created_at，不用 update_time`,
   },
   {
-    name: 'field-preference',
+    name: '字段偏好',
     description: '字段使用偏好：销量用quantity',
     type: 'user',
     content: `## 字段偏好
@@ -140,7 +196,7 @@ GMV = SUM(total_amount) WHERE status IN ('paid', 'shipped')
 - 查"占比"时结果用百分比格式 (乘 100 + %)`,
   },
   {
-    name: 'common-dimensions',
+    name: '常用维度',
     description: '常用维度与时间范围',
     type: 'reference',
     content: `## 常用分组维度
@@ -161,18 +217,32 @@ function createFromExample(ex: typeof examples[0]) {
     description: ex.description,
     type: ex.type,
     content: ex.content,
-    originalName: undefined,
   }
   editorVisible.value = true
 }
 
-async function fetchData() {
-  loading.value = true
+async function fetchDataSources() {
   try {
-    const { data } = await memoryApi.list()
+    const { data } = await datasource.list()
+    dataSources.value = data
+    if (data.length && !selectedDsId.value) {
+      selectedDsId.value = data[0].id
+      await fetchData()
+    }
+  } catch (e: any) {
+    console.error('数据源列表加载失败:', e)
+  }
+}
+
+async function fetchData() {
+  if (!selectedDsId.value) return
+  loading.value = true
+  selectedIds.value = new Set()  // 刷新时清空勾选
+  try {
+    const { data } = await memoryApi.list(selectedDsId.value, showConsolidated.value)
     memoryList.value = data
   } catch (e: any) {
-    ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('加载失败: ' + (extractErrorDetail(e)))
   } finally {
     loading.value = false
   }
@@ -180,7 +250,7 @@ async function fetchData() {
 
 function openEditor(mem?: Memory) {
   if (mem) {
-    editing.value = { ...mem, originalName: mem.name }
+    editing.value = { ...mem }
   } else {
     editing.value = { name: '', description: '', type: 'project', content: '' }
   }
@@ -188,37 +258,60 @@ function openEditor(mem?: Memory) {
 }
 
 async function doSave() {
+  if (!selectedDsId.value) return
   const ed = editing.value
-  if (!ed.name.trim() || !ed.content.trim()) {
+  if (!ed.name?.trim() || !ed.content?.trim()) {
     ElMessage.warning('名称和内容不能为空')
     return
   }
   saving.value = true
   try {
     await memoryApi.save({
-      name: ed.name, description: ed.description,
-      type: ed.type, content: ed.content,
-    })
+      id: ed.id,  // 有 id = 更新, 无 id = 新建
+      name: ed.name, description: ed.description || '',
+      type: ed.type || 'project', content: ed.content,
+    }, selectedDsId.value)
     ElMessage.success('保存成功')
     editorVisible.value = false
     await fetchData()
   } catch (e: any) {
-    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('保存失败: ' + (extractErrorDetail(e)))
   } finally {
     saving.value = false
   }
 }
 
 async function doDelete(mem: Memory) {
+  if (!selectedDsId.value) return
   try {
     await ElMessageBox.confirm(`确认删除记忆「${mem.description || mem.name}」?`, '删除确认', { type: 'warning' })
   } catch { return }
   try {
-    await memoryApi.delete(mem.name)
+    await memoryApi.delete(mem.id, selectedDsId.value)
     ElMessage.success('已删除')
     await fetchData()
   } catch (e: any) {
-    ElMessage.error('删除失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('删除失败: ' + (extractErrorDetail(e)))
+  }
+}
+
+async function doConsolidate() {
+  if (!selectedDsId.value) return
+  const selCount = selectedIds.value.size
+  const ids = selCount > 0 ? Array.from(selectedIds.value) : undefined
+  const hint = ids ? `将整理选中的 ${selCount} 条记忆` : '将整理全部记忆'
+  try {
+    await ElMessageBox.confirm(`${hint}，合并后原始记忆标记为已整理（默认隐藏）`, '整理记忆', { type: 'info' })
+  } catch { return }
+  consolidating.value = true
+  try {
+    const { data } = await memoryApi.consolidate(selectedDsId.value, ids)
+    ElMessage.success(data.detail || `整理完成`)
+    await fetchData()
+  } catch (e: any) {
+    ElMessage.error('整理失败: ' + (extractErrorDetail(e)))
+  } finally {
+    consolidating.value = false
   }
 }
 
@@ -231,7 +324,7 @@ function typeTag(t: string): any {
   return map[t] || ''
 }
 
-onMounted(fetchData)
+onMounted(fetchDataSources)
 </script>
 
 <style scoped>
@@ -241,10 +334,24 @@ onMounted(fetchData)
   margin-bottom: 20px;
 }
 .title { font-size: 1.3rem; font-weight: bold; }
+.sel-count {
+  margin-left: 2px;
+  font-size: 0.8em;
+}
+.list-toolbar {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 12px; padding: 8px 12px;
+  background: #f5f7fa; border-radius: 6px;
+}
+.sel-info { font-size: 0.8rem; color: #909399; }
 .mem-card { margin-bottom: 16px; }
 .card-header {
   display: flex; justify-content: space-between; align-items: center;
 }
+.card-header-left {
+  display: flex; align-items: center; gap: 8px;
+}
+.lock-icon { color: #c0c4cc; }
 .mem-content {
   margin: 0; white-space: pre-wrap; font-size: 0.85rem;
   line-height: 1.6; color: #606266; max-height: 300px; overflow-y: auto;
@@ -253,6 +360,10 @@ onMounted(fetchData)
   display: flex; align-items: center; gap: 4px;
   margin-top: 8px; font-size: 0.72rem; color: #909399;
   border-top: 1px dashed #ebeef5; padding-top: 6px;
+}
+.consolidated-card {
+  opacity: 0.65;
+  border-style: dashed;
 }
 
 /* 空白引导面板 */

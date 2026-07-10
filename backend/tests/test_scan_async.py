@@ -122,7 +122,7 @@ class TestScanDedup:
         ds_id = await _create_ds(http_client, admin_token)
         # mock 后台任务: 卡住不完成 (模拟扫描中)
         async def _stuck(*a, **kw):
-            await asyncio.sleep(10)
+            await asyncio.sleep(1)  # 1s 足够验证去重 (原 10s 太慢)
         monkeypatch.setattr("app.api.data_sources._run_scan_background", _stuck)
 
         # 第一次触发 → 202

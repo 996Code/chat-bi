@@ -17,7 +17,11 @@ Schema 工具: 从 SemanticModelContent 提取白名单列 + schema context
 """
 from __future__ import annotations
 
+import logging
+
 from app.schemas.semantic_layer import SemanticModelContent, Model
+
+logger = logging.getLogger(__name__)
 
 
 def extract_allowed_columns(
@@ -53,6 +57,7 @@ def expand_with_relationships(
     content: SemanticModelContent | None,
     selected_names: list[str],
     max_depth: int = 2,
+    max_total: int | None = None,
 ) -> list[str]:
     """沿着语义层关系定义扩展关联表 (对标 V1 _expand_via_relationships)。
 
@@ -65,16 +70,26 @@ def expand_with_relationships(
     语义层的关系由 _scan_relationships (外键) + knowledge_graph (LLM 推断) 产出,
     这里只消费不推断。
 
+    防扩散: BFS 按深度优先 (先 1 跳后 2 跳), 累计表数达到 max_total 后停止。
+    超级枢纽 (如 uc_users 有 45 邻居) 不会把全库拉进来, 因为到达上限后
+    后续邻居不再加入。种子表 (selected_names) 永远保留, 不受上限影响。
+
     Args:
         content: 语义层内容 (含 relationships 定义)
         selected_names: 检索命中的表名
         max_depth: 关系扩展深度 (默认 2 跳, 防 A→B→C→... 全库扩散)
+        max_total: 扩展后总表数上限 (None → 从 config 读 rag_max_schema_tables)
 
     Returns:
         扩展后的表名列表 (含原始命中 + 关联表)
     """
     if content is None or not content.models:
         return list(selected_names)
+
+    # 从 config 读上限
+    if max_total is None:
+        from app.core.config import get_settings
+        max_total = get_settings().rag_max_schema_tables
 
     # 构建双向邻接表 (正向: 表→关系目标; 反向: 被关系指向的表→源表)
     # 只看正向会漏反向 JOIN: biz_order_items→biz_products (product_id),
@@ -93,19 +108,29 @@ def expand_with_relationships(
     if not adjacency:
         return list(selected_names)
 
-    # BFS 双向遍历 (限深度, 防全库扩散)
-    result_set = set(selected_names)
+    # BFS 双向遍历 (限深度 + 限总数, 防全库扩散)
+    result_set = set(selected_names)  # 种子表永远保留
     frontier = set(selected_names)
-    for _ in range(max_depth):
+    for depth in range(max_depth):
+        if len(result_set) >= max_total:
+            break
         next_frontier = set()
         for table_name in frontier:
+            if len(result_set) >= max_total:
+                break
             for neighbor in adjacency.get(table_name, set()):
-                if neighbor not in result_set:
+                if neighbor not in result_set and len(result_set) < max_total:
                     result_set.add(neighbor)
                     next_frontier.add(neighbor)
         if not next_frontier:
             break
         frontier = next_frontier
+
+    if len(result_set) >= max_total:
+        logger.warning(
+            "expand_with_relationships: 达到表数上限 %d (种子 %d 张), 截断扩展 (深度=%d)",
+            max_total, len(selected_names), max_depth,
+        )
 
     return list(result_set)
 

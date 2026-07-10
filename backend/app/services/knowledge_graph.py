@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 NAME_PATTERN_CONFIDENCE = 0.6
 AI_INFERRED_CONFIDENCE = 0.7
 
+# ON 子句校验: 拒绝 LLM 幻觉输出 (非安全层 — ON 是元数据, 不直接执行;
+# 下游 validate_sql() 已有三层防护。此处只过滤明显非法内容)
+# 字符级黑名单 (分号/引号, 不存在合法 ON 子句需要这些)
+_ON_BLOCKED_CHARS = frozenset([";", "'", '"'])
+# 关键词黑名单 (词边界匹配, 防误杀 selected_items/updated_at/deleted_at 等合法列名)
+_ON_BLOCKED_WORDS = frozenset(["SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "EXEC", "EXECUTE"])
+_ON_WORD_RE = re.compile(r"\b(?:" + "|".join(_ON_BLOCKED_WORDS) + r")\b")
+
 # T017: 频繁 JOIN 阈值（出现 >= 此次数才视为"频繁"，提升 confidence）
 FREQUENT_JOIN_THRESHOLD = 3
 FREQUENT_JOIN_BOOST = 0.1  # 每次 +0.1，封顶 0.95
@@ -209,6 +217,11 @@ async def _infer_relationships_batch_by_llm(
                 continue  # 自引用跳过
             on_clause = item.get("on", "").strip()
             if not on_clause:
+                continue
+            # 字符级检查 (分号/引号) + 关键词词边界检查 (防误杀合法列名)
+            _on_upper = on_clause.upper()
+            if any(c in _on_upper for c in _ON_BLOCKED_CHARS) or _ON_WORD_RE.search(_on_upper):
+                logger.warning("on 子句含非法内容, 跳过: %s", on_clause)
                 continue
             try:
                 card = item.get("type", "N:1")

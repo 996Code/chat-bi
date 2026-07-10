@@ -216,6 +216,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Refresh, Clock, Edit } from '@element-plus/icons-vue'
 import { semantic, datasource, type SemanticModel, type SemanticTableModel, type SemanticColumn } from '@/api'
+import { extractErrorDetail } from '@/utils/error'
 
 const route = useRoute()
 const model = ref<SemanticModel | null>(null)
@@ -269,7 +270,7 @@ async function fetchData() {
       selected.value = data.content.models[0]
     }
   } catch (e: any) {
-    ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('加载失败: ' + (extractErrorDetail(e)))
   } finally {
     loading.value = false
   }
@@ -283,7 +284,7 @@ async function openVersions() {
     const { data } = await semantic.versions(model.value.id)
     versions.value = data
   } catch (e: any) {
-    ElMessage.error('加载版本历史失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('加载版本历史失败: ' + (extractErrorDetail(e)))
   } finally {
     versionLoading.value = false
   }
@@ -307,7 +308,7 @@ async function doRollback(toVersion: number) {
     versionDrawer.value = false
     await fetchData() // 刷新当前语义层
   } catch (e: any) {
-    ElMessage.error('回滚失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('回滚失败: ' + (extractErrorDetail(e)))
   } finally {
     rollingBack.value = null
   }
@@ -324,7 +325,7 @@ async function showDiff(fromVersion: number) {
     const { data } = await semantic.diff(model.value.id, fromVersion, currentVersion)
     diffResult.value = data
   } catch (e: any) {
-    ElMessage.error('对比失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('对比失败: ' + (extractErrorDetail(e)))
     diffDrawer.value = false
   } finally {
     diffLoading.value = null
@@ -361,7 +362,7 @@ async function saveTableEdit() {
     editingTable.value = false
     await fetchData()  // 刷新到新版本
   } catch (e: any) {
-    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('保存失败: ' + (extractErrorDetail(e)))
   } finally {
     saving.value = false
   }
@@ -395,7 +396,7 @@ async function saveColEdit(row: SemanticColumn) {
     ElMessage.success('已更新 (创建为新版本)')
     await fetchData()
   } catch (e: any) {
-    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('保存失败: ' + (extractErrorDetail(e)))
   } finally {
     saving.value = false
   }

@@ -84,6 +84,13 @@ class AgentState:
     # 本轮最终使用的表名列表 (含检索命中 + 继承 + 关系扩展, 持久化到 StateStore)
     # 由 run_agent 在 schema 扩展后填充, 持久化时从此字段取值
     current_tables: list[str] = field(default_factory=list)
+    # 降级标记 (对标 O8: 检索/图表降级时前端可提示用户结果可能不精确)
+    degraded: bool = False
+    # 错误分类: True = 内部异常 (不发给客户端), False = 业务错误 (可发)
+    # 由赋值 state.error 的地方决定; 客户端只看非 internal 的错误
+    error_is_internal: bool = False
+    # 自愈前的原始 SQL (首次自愈时记录, 供持久化/调试对比用)
+    heal_before_sql: str | None = None
 
 
 @dataclass
@@ -146,6 +153,18 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
                 state.error = "图表修改需要对话上下文, 请先查询数据后再修改图表类型"
                 state.reply = '请先查询你想看的数据 (例如「各品类销量」), 然后再让我换图表类型。'
                 return state
+            # SEC (对标 S7): prev_sql 来自持久化状态, 必须重新校验
+            # 即使上轮已校验, 语义层/白名单可能已变更, 且持久化数据可能被篡改
+            from app.core.sql_validator import validate_sql
+            revalidation = validate_sql(state.prev_sql, allowed_columns=set())
+            if not revalidation.ok:
+                logger.warning("CHART_MODIFY: prev_sql 校验失败: %s", revalidation.reason)
+                state.stage = AgentStage.FINAL
+                state.success = False
+                state.error = "上轮 SQL 已不再合规, 请重新提问"
+                state.reply = "上轮 SQL 校验未通过, 请重新提问, 我会生成新的查询。"
+                state.error_is_internal = False  # 业务错误: 用户可操作
+                return state
             # 复用上轮 SQL 执行; 表未变, 继承 prev_tables 到 current_tables
             state.sql = state.prev_sql
             state.current_tables = list(state.prev_tables)
@@ -154,7 +173,9 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             state.execute_result = exec_result
             if exec_result.error:
                 state.error = f"上轮 SQL 执行失败: {exec_result.error}"
+                state.error_is_internal = True  # DB 异常可能含连接串等内部信息
                 state.stage = AgentStage.FINAL
+                state.success = False
                 return state
             # 用新 chart_type_hint 生成图表
             chart = await deps.generate_chart(
@@ -165,6 +186,9 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             )
             state.llm_call_count += 1
             state.chart_option = chart.option if hasattr(chart, "option") else None
+            # 对标 O8: CHART_MODIFY 也传播图表降级
+            if getattr(chart, "degraded", False):
+                state.degraded = True
             state.reply = f"已将图表切换为 {chart_hint or '新'} 类型。"
             state.stage = AgentStage.FINAL
             state.success = True
@@ -190,6 +214,9 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         retrieval = await deps.retrieve(question)
         # NOTE: retrieve 是向量检索 (embedding 相似度), 不是 LLM 调用, 不计 llm_call_count
         state.retrieved_models = retrieval.models
+        # 对标 O8: 传播降级标记 (LLM 精筛失败时 degraded=True)
+        if retrieval.degraded:
+            state.degraded = True
 
         # schema 不确定 → ask_user (对标 proposal.md:120)
         ask = deps.should_ask_for_schema(retrieval)
@@ -212,6 +239,8 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # schema context + 白名单列从语义层取 (权威来源, 不靠检索文本正则猜)
         from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns
         from app.ai.chat_utils import inherit_prev_tables
+        from app.ai.intent import safe_normalized_question
+        question = safe_normalized_question(state.intent_output, state.question)
         retrieved_names = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
         # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
         retrieved_names = inherit_prev_tables(state.prev_tables, retrieved_names, state.semantic_content)
@@ -262,6 +291,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             state.stage = AgentStage.FINAL
             state.success = False
             state.error = gen_result.error
+            state.error_is_internal = True  # LLM API 错误可能含模型名/端点
             return state
 
         state.sql = gen_result.sql
@@ -285,6 +315,9 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # ── 自愈循环: 校验失败/执行失败 → heal → 重新校验+执行 ──
         while last_error is not None and state.self_heal_rounds < deps.max_self_heal_rounds:
             state.self_heal_rounds += 1
+            # 记录自愈前的原始 SQL (仅首次, 供持久化/调试对比)
+            if state.heal_before_sql is None:
+                state.heal_before_sql = state.sql
             logger.info("SQL 自愈第 %d 轮 (错误: %s)", state.self_heal_rounds, str(last_error)[:80])
 
             heal_result = await deps.heal_sql(
@@ -299,6 +332,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
                 state.stage = AgentStage.FINAL
                 state.success = False
                 state.error = f"SQL 自愈失败 ({state.self_heal_rounds} 轮): {heal_result.error}"
+                state.error_is_internal = True  # 自愈错误可能含 schema 上下文等内部信息
                 return state
 
             # 自愈成功 → 更新 SQL, 重新校验 + 执行
@@ -321,6 +355,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             state.stage = AgentStage.FINAL
             state.success = False
             state.error = f"SQL 失败 (自愈 {state.self_heal_rounds} 轮未解决): {last_error}"
+            state.error_is_internal = True  # DB 错误可能含连接串
             return state
 
         # ── Stage 6: 结果自检 ────────────────────────────────
@@ -382,14 +417,15 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         )
         state.llm_call_count += 1
         state.chart_option = chart.option if hasattr(chart, "option") else None
+        # 对标 O8: 图表降级也传播 (LLM 失败 → 规则推断时 degraded=True)
+        if getattr(chart, "degraded", False):
+            state.degraded = True
 
         # ── Stage 8: final(success) ──────────────────────────
         state.stage = AgentStage.FINAL
         state.success = True
-        # ARC-02 追问主动优化: 有上轮 SQL 反思建议时, 附在回复里给用户
-        review = getattr(state.thinking, "prev_sql_review", "") if state.thinking else ""
-        if review and state.history:
-            state.reply = (state.reply + "\n\n" if state.reply else "") + f"💡 优化建议: {review}"
+        # ARC-02: prev_sql_review 是 LLM 内部反思 (注入下一轮 Prompt 辅助追问优化)
+        # 不再拼入 reply 暴露给用户 — 技术性建议干扰阅读, 且历史回放时无意义
         return state
 
     except Exception as e:
@@ -398,4 +434,5 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         state.stage = AgentStage.FINAL
         state.success = False
         state.error = f"Agent 执行异常: {e}"
+        state.error_is_internal = True
         return state

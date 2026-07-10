@@ -105,7 +105,7 @@ class TestCheckpointer:
 
 
 class TestAgentMemory:
-    """T010: Agent memory — file-based + MEMORY.md index."""
+    """T010: Agent memory — file-based + MEMORY.md index. UUID-based id."""
 
     def test_save_and_read_memory(self, tmp_path):
         from app.core.agent_memory import AgentMemoryStore
@@ -122,8 +122,11 @@ class TestAgentMemory:
         assert len(memories) == 1
         assert memories[0]["name"] == "test-memory"
         assert memories[0]["type"] == "project"
+        # id 是 UUID (文件名 stem)
+        mem_id = memories[0]["id"]
+        assert mem_id  # 非空
 
-        content = store.read_memory("test-memory")
+        content = store.read_memory(mem_id)
         assert "This is the memory body" in content
         assert "name: test-memory" in content
 
@@ -134,7 +137,8 @@ class TestAgentMemory:
         store.save_memory("del-me", "test", "body")
         assert len(store.list_memories()) == 1
 
-        store.delete_memory("del-me")
+        mem_id = store.list_memories()[0]["id"]
+        store.delete_memory(mem_id)
         assert len(store.list_memories()) == 0
 
     def test_index_truncation_protection(self, tmp_path):

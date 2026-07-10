@@ -1942,7 +1942,7 @@ def dml():
     ]
     shop_vals = []
     for i, sn in enumerate(shop_names[:N_SHOPS], 1):
-        rating = round(random.uniform(4.0, 5.0), 2)
+        rating = round(random.uniform(2.0, 5.0), 2)
         monthly = random.randint(100, 10000)
         total = monthly * random.randint(6, 24)
         comm = round(random.uniform(0.02, 0.10), 4)
@@ -1964,10 +1964,16 @@ def dml():
         name = f"{random.choice(prod_names)}{random.choice(prod_suffixes)}{random.randint(1, 99)}"
         price = gen_price(10, 5000)
         orig = round(price * random.uniform(1.1, 2.0), 2)
-        sales = random.randint(0, 10000)
+        # 长尾分布: 15% 极低(滞销), 15% 低, 30% 中, 30% 高, 10% 爆款
+        r = random.random()
+        if r < 0.15:   sales = random.randint(0, 50)
+        elif r < 0.30: sales = random.randint(50, 250)
+        elif r < 0.60: sales = random.randint(250, 2000)
+        elif r < 0.90: sales = random.randint(2000, 8000)
+        else:          sales = random.randint(8000, 10000)
         views = sales * random.randint(3, 20)
-        rating = round(random.uniform(3.5, 5.0), 2)
-        prod_vals.append(f"  ({shop_id}, {cat_id}, {brand_id}, '{esc(name)}', {price}, {orig}, 1, {'true' if random.random() > 0.3 else 'false'}, {sales}, {views}, {rating})")
+        # avg_rating 先用占位符, 评价生成后用 UPDATE 从 pd_product_reviews 计算 (保证数据一致)
+        prod_vals.append(f"  ({shop_id}, {cat_id}, {brand_id}, '{esc(name)}', {price}, {orig}, 1, {'true' if random.random() > 0.3 else 'false'}, {sales}, {views}, 0.00)")
     lines.append(",\n".join(prod_vals) + ";\n")
 
     # ── SKU ──
@@ -2097,6 +2103,25 @@ def dml():
         rev_vals.append(f"  ({random.randint(1, N_PRODUCTS)}, {random.randint(1, N_USERS)}, {random.randint(1, 5)}, '{esc(random.choice(review_contents))}', {'true' if random.random() > 0.5 else 'false'}, {random.randint(0, 200)}, 1)")
     lines.append(",\n".join(rev_vals) + ";\n")
 
+    # ── 从评价计算 avg_rating (保证 pd_products.avg_rating 与 pd_product_reviews 一致) ──
+    # 有评价的商品取评价均值, 无评价的随机分配 1.0-5.0 (模拟真实分布: 有好有差)
+    lines.append("""
+-- 从评价计算 avg_rating (有评价的商品)
+UPDATE pd_products p
+SET avg_rating = sub.avg_r
+FROM (
+    SELECT product_id, round(avg(rating)::numeric, 2) as avg_r
+    FROM pd_product_reviews
+    GROUP BY product_id
+) sub
+WHERE p.id = sub.product_id;
+
+-- 无评价的商品: 随机分配评分 (1.0-5.0, 模拟真实分布)
+UPDATE pd_products
+SET avg_rating = round((random() * 4 + 1)::numeric, 2)
+WHERE avg_rating = 0.00;
+""")
+
     # ── 搜索日志 ──
     search_keywords = ["连衣裙", "手机", "面膜", "空调", "零食", "跑步鞋", "口红", "笔记本电脑", "婴儿推车", "帐篷",
                        "羽绒服", "保温杯", "充电宝", "洗面奶", "坚果", "耳机", "沙发", "奶粉", "瑜伽垫", "行李箱"]
@@ -2134,7 +2159,7 @@ def dml():
             amt = round(ords * random.uniform(50, 500), 2)
             refs = random.randint(0, ords // 5)
             ref_amt = round(refs * random.uniform(30, 200), 2)
-            rt = round(random.uniform(4.0, 5.0), 2)
+            rt = round(random.uniform(2.5, 5.0), 2)
             sdr_vals.append(f"  ({sid}, '{date}', {vis}, {ords}, {amt}, {refs}, {ref_amt}, {rt})")
     lines.append(",\n".join(sdr_vals) + ";\n")
 

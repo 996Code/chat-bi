@@ -13,7 +13,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,28 @@ router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 
 # ── DTO ─────────────────────────────────────────────────────
 
+class DashboardCreate(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("看板名称不能为空")
+        return v
+
+class DashboardUpdate(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("看板名称不能为空")
+        return v
+
 class DashboardOut(BaseModel):
     id: str
     name: str
@@ -41,6 +63,7 @@ class WidgetOut(BaseModel):
     query_sql: str | None = None
     datasource_id: str
     chart_type: str = "table"
+    chart_option: dict | None = None  # 缓存的图表配置 (对标 F1: list/get 也需返回)
     columns: list = []
     rows: list = []
     row_count: int | None = None
@@ -50,6 +73,36 @@ class WidgetOut(BaseModel):
     height: int = 4
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class WidgetCreate(BaseModel):
+    question: str
+    datasource_id: str
+    query_sql: str
+    chart_type: str = "bar"
+    position_x: int | None = None
+    position_y: int | None = None
+    width: int = 6
+    height: int = 4
+
+    @field_validator("question")
+    @classmethod
+    def _question_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("组件名称不能为空")
+        return v
+
+    # datasource_id: UUID 格式, 来自前端下拉; 空值会在 DB 查询时返回 404
+    # query_sql: 空 SQL 在 validate_sql() 校验时会被拦截; 无需重复校验
+
+
+class WidgetLayoutItem(BaseModel):
+    id: str
+    x: int | None = None
+    y: int | None = None
+    w: int | None = None
+    h: int | None = None
 
 
 def _iso(dt) -> str | None:
@@ -114,6 +167,7 @@ def _widget_to_dict(w: DashboardWidget) -> dict:
         "query_sql": w.query_sql,
         "datasource_id": w.datasource_id,
         "chart_type": w.chart_type,
+        "chart_option": w.chart_option,  # 对标 F1: list/get 也返回图表配置
         "columns": cols,
         "rows": rows,
         "row_count": w.row_count,
@@ -152,18 +206,15 @@ async def list_dashboards(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_dashboard(
-    data: dict,
+    body: DashboardCreate,
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     """新建看板。"""
-    name = (data.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="看板名称不能为空")
     dash = Dashboard(
         tenant_id=user.tenant_id,
         user_id=user.user_id,
-        name=name,
+        name=body.name,
     )
     db.add(dash)
     await db.commit()
@@ -177,7 +228,7 @@ async def create_dashboard(
 @router.put("/{dashboard_id}")
 async def update_dashboard(
     dashboard_id: str,
-    data: dict,
+    body: DashboardUpdate,
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -192,10 +243,7 @@ async def update_dashboard(
     ).scalar_one_or_none()
     if not dash:
         raise HTTPException(status_code=404, detail="看板不存在")
-    name = (data.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="看板名称不能为空")
-    dash.name = name
+    dash.name = body.name
     await db.commit()
     await db.refresh(dash)
     return DashboardOut(
@@ -222,7 +270,10 @@ async def delete_dashboard(
     if not dash:
         raise HTTPException(status_code=404, detail="看板不存在")
     await db.execute(
-        DashboardWidget.__table__.delete().where(DashboardWidget.dashboard_id == dashboard_id)
+        DashboardWidget.__table__.delete().where(
+            DashboardWidget.dashboard_id == dashboard_id,
+            DashboardWidget.tenant_id == user.tenant_id,  # 对标 S4: 级联删也加 tenant_filter
+        )
     )
     await db.delete(dash)
     await db.commit()
@@ -251,7 +302,10 @@ async def get_dashboard(
     widgets = (
         await db.execute(
             select(DashboardWidget)
-            .where(DashboardWidget.dashboard_id == dashboard_id)
+            .where(
+                DashboardWidget.dashboard_id == dashboard_id,
+                DashboardWidget.tenant_id == user.tenant_id,  # 对标防御纵深: 与 delete_widget 一致
+            )
             .order_by(DashboardWidget.position_y, DashboardWidget.position_x)
         )
     ).scalars().all()
@@ -267,7 +321,7 @@ async def get_dashboard(
 @router.post("/{dashboard_id}/widgets", status_code=status.HTTP_201_CREATED)
 async def add_widget(
     dashboard_id: str,
-    data: dict,
+    body: WidgetCreate,
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -288,16 +342,8 @@ async def add_widget(
     if not dash:
         raise HTTPException(status_code=404, detail="看板不存在")
 
-    question = (data.get("question") or "").strip()
-    if not question:
-        raise HTTPException(status_code=400, detail="组件名称不能为空")
-
-    datasource_id = data.get("datasource_id") or ""
-    query_sql = data.get("query_sql") or ""
-    if not datasource_id:
-        raise HTTPException(status_code=400, detail="数据源不能为空")
-    if not query_sql:
-        raise HTTPException(status_code=400, detail="SQL 不能为空 (看板需基于 SQL 实时查询)")
+    datasource_id = body.datasource_id
+    query_sql = body.query_sql
 
     # 保存时跑一次 SQL, 用于生成图表配置缓存 (避免每次 refresh 都调 LLM)
     chart_config = None
@@ -329,10 +375,10 @@ async def add_widget(
                 # 生成图表配置 (LLM 选型, 一次性), 缓存 config 供 refresh 复用
                 from app.ai.chart_agent import generate_chart
                 chart_result = await generate_chart(
-                    question=question,
+                    question=body.question,
                     columns=cols,
                     rows=rows_data,
-                    chart_type_hint=data.get("chart_type", "bar"),
+                    chart_type_hint=body.chart_type,
                 )
                 if chart_result.ok and chart_result.config:
                     chart_config = chart_result.config
@@ -344,7 +390,10 @@ async def add_widget(
     existing = (
         await db.execute(
             select(DashboardWidget.position_x, DashboardWidget.position_y, DashboardWidget.width)
-            .where(DashboardWidget.dashboard_id == dashboard_id)
+            .where(
+                DashboardWidget.dashboard_id == dashboard_id,
+                DashboardWidget.tenant_id == user.tenant_id,  # 对标防御纵深
+            )
             .order_by(DashboardWidget.position_y, DashboardWidget.position_x)
         )
     ).all()
@@ -353,18 +402,18 @@ async def add_widget(
     widget = DashboardWidget(
         dashboard_id=dashboard_id,
         tenant_id=user.tenant_id,
-        question=question,
+        question=body.question,
         query_sql=query_sql,
         datasource_id=datasource_id,
-        chart_type=data.get("chart_type", "bar"),
+        chart_type=body.chart_type,
         columns="",
         rows="",
         row_count=0,
         chart_option=chart_config,  # 缓存 {chart_type, dim_col, measure_cols}
-        position_x=int(data.get("position_x", auto_position_x)),
-        position_y=int(data.get("position_y", auto_position_y)),
-        width=int(data.get("width", 6)),
-        height=int(data.get("height", 4)),
+        position_x=body.position_x if body.position_x is not None else auto_position_x,
+        position_y=body.position_y if body.position_y is not None else auto_position_y,
+        width=body.width,
+        height=body.height,
     )
     db.add(widget)
     await db.commit()
@@ -399,7 +448,7 @@ async def delete_widget(
 @router.put("/{dashboard_id}/widgets/layout")
 async def update_widget_layout(
     dashboard_id: str,
-    items: list[dict],
+    items: list[WidgetLayoutItem],
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -418,13 +467,10 @@ async def update_widget_layout(
 
     updated = 0
     for item in items:
-        wid = item.get("id")
-        if not wid:
-            continue
         w = (
             await db.execute(
                 select(DashboardWidget).where(
-                    DashboardWidget.id == wid,
+                    DashboardWidget.id == item.id,
                     DashboardWidget.dashboard_id == dashboard_id,
                     DashboardWidget.tenant_id == user.tenant_id,
                 )
@@ -432,10 +478,10 @@ async def update_widget_layout(
         ).scalar_one_or_none()
         if not w:
             continue
-        w.position_x = int(item.get("x", w.position_x))
-        w.position_y = int(item.get("y", w.position_y))
-        w.width = int(item.get("w", w.width))
-        w.height = int(item.get("h", w.height))
+        if item.x is not None: w.position_x = item.x
+        if item.y is not None: w.position_y = item.y
+        if item.w is not None: w.width = item.w
+        if item.h is not None: w.height = item.h
         updated += 1
     await db.commit()
     return {"updated": updated}

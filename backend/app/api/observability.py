@@ -162,8 +162,9 @@ async def list_conversations(
             })
         except (json.JSONDecodeError, KeyError):
             continue
-    # 按 token 消耗倒序 (T050: Top 50 高消耗对话)
-    conversations.sort(key=lambda c: c["total_tokens"], reverse=True)
+    # 按时间倒序 (最新对话在前, 与 ChatGPT/微信等聊天应用一致)
+    # T050 的 token 排序需求由 ObservabilityView 的 Top 50 高消耗对话面板满足
+    conversations.sort(key=lambda c: c["timestamp"], reverse=True)
     return conversations
 
 
@@ -269,8 +270,8 @@ async def health_detail(
 
     # Skills
     try:
-        from app.services.skills_loader import get_skills_loader
-        skills = get_skills_loader().load_all()
+        from app.services.skills_loader import SkillsLoader
+        skills = SkillsLoader(base_dir=f"skills/{user.tenant_id}").load_all()
         components["skills"] = f"{len(skills)} loaded"
     except Exception:
         components["skills"] = "0 (none)"

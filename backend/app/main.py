@@ -108,13 +108,26 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS
+    # CORS (对标 S5: allow_credentials=True + origins=["*"] 违反 CORS 规范)
+    # 浏览器规范禁止 credentials + wildcard origin 同时使用;
+    # FastAPI CORSMiddleware 遇到此组合会反射 Origin header, 等于允许任意源带 cookie。
+    # 防御: 如果 cors_origins 含 "*", 关闭 credentials (降级, 不拒绝启动)。
+    cors_origins = settings.cors_origins
+    allow_credentials = True
+    if "*" in cors_origins:
+        import logging
+        logging.getLogger("app.main").warning(
+            "⚠️  CORS: cors_origins 含 '*' 且 allow_credentials=True 违反规范, "
+            "已自动关闭 credentials。生产环境请配置具体域名。"
+        )
+        allow_credentials = False
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=cors_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
     )
 
     # 限流 (slowapi, 对标 config rate_limit_*)
@@ -138,4 +151,6 @@ def create_app() -> FastAPI:
     return app
 
 
+# 对标 M3: 模块级 create_app() 是 FastAPI 标准模式 (uvicorn app.main:app 需要模块级 app 对象)
+# 测试用 create_app() 工厂函数隔离, 生产用此模块级实例
 app = create_app()

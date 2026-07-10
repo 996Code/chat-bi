@@ -66,6 +66,25 @@ def _sse(event: str, data: dict, seq: int | None = None) -> str:
     return "\n".join(parts) + "\n\n"
 
 
+def _format_token_usage(token_stats: dict | None) -> dict | None:
+    """格式化 token_usage: 与 REST 端点 TokenUsagePayload 结构一致 (对标一致性)。
+
+    SSE 不需要 Pydantic 验证, 但确保字段名/结构与 ChatResponse.token_usage 对齐。
+    extra=allow 保证 nodes 等额外字段透传。
+    """
+    if not token_stats:
+        return None
+    return {
+        "prompt_tokens": token_stats.get("prompt_tokens", 0),
+        "completion_tokens": token_stats.get("completion_tokens", 0),
+        "total_tokens": token_stats.get("total_tokens", 0),
+        "llm_calls": token_stats.get("llm_calls", 0),
+        # nodes 等额外字段透传
+        **{k: v for k, v in token_stats.items()
+           if k not in ("prompt_tokens", "completion_tokens", "total_tokens", "llm_calls")},
+    }
+
+
 @_limiter.limit(_chat_rate)
 @router.post("/stream")
 async def chat_stream(
@@ -102,7 +121,7 @@ async def chat_stream(
         deps, content = await build_agent_deps(data_source_id, user.tenant_id, db)
     except Exception as e:
         logger.exception("Agent 依赖装配失败")
-        raise HTTPException(status_code=500, detail=f"Agent 初始化失败: {e}")
+        raise HTTPException(status_code=500, detail="Agent 初始化失败, 请稍后重试")
 
     # 追问时恢复上下文 (对标 ARC-04): 取历史轮次 → 格式化 (含压缩+状态补偿)
     history_text = None
@@ -137,7 +156,7 @@ async def chat_stream(
         # M2: SSE event ID 自增序号 (断线重连用)
         _seq = 0
         # 追踪自愈前的原始 SQL (持久化用, 取第一次自愈前的 SQL)
-        _heal_before_sql: str | None = None
+        # AgentState.heal_before_sql 字段追踪, 与 REST 管线一致
 
         def emit(event: str, data: dict, node: str | None = None) -> str:
             """格式化 SSE 事件并自增序号。
@@ -159,6 +178,8 @@ async def chat_stream(
         from app.core.prompt_capture import start_prompt_capture, stop_prompt_capture
         _tt_token = start_token_tracking()
         _pc_token = start_prompt_capture()
+        # 各步骤耗时收集 (历史对话回放用)
+        _step_durations: dict[str, int] = {}
         try:
             # ── Stage 1: 意图识别 ───────────────────────────────
             t0 = time.monotonic()
@@ -172,6 +193,7 @@ async def chat_stream(
                     state.reply = await deps.generate_reply(state.question, intent)
                     state.llm_call_count += 1
                 state.success = True
+                state.stage = AgentStage.FINAL
                 state.persist = False  # 纯闲聊不入对话历史
                 yield emit("intent", {
                     "intent": intent,
@@ -184,13 +206,27 @@ async def chat_stream(
                 "intent": intent,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
             }, node="intent")
+            _step_durations["intent"] = round((time.monotonic() - t0) * 1000)
 
             # CHART_MODIFY → 复用上轮 SQL, 只换图表类型 (对标 ARC-04)
             if intent == "CHART_MODIFY":
                 if not state.prev_sql:
                     state.reply = '图表修改需要对话上下文, 请先查询数据后再换图表类型。'
                     state.error = state.reply
+                    state.stage = AgentStage.FINAL
+                    state.success = False
                     yield emit("intent", {"intent": intent, "reply": state.reply}, node="intent")
+                    return
+                # SEC (对标 S7): prev_sql 来自持久化状态, 必须重新校验
+                from app.core.sql_validator import validate_sql
+                revalidation = validate_sql(state.prev_sql, allowed_columns=set())
+                if not revalidation.ok:
+                    state.error = "上轮 SQL 已不再合规, 请重新提问"
+                    state.reply = "上轮 SQL 校验未通过, 请重新提问, 我会生成新的查询。"
+                    state.stage = AgentStage.FINAL
+                    state.success = False
+                    state.error_is_internal = False  # 业务错误: 用户可操作
+                    yield emit("error", {"error": state.error})
                     return
                 state.sql = state.prev_sql
                 state.current_tables = list(state.prev_tables)  # 表未变, 继承上轮
@@ -200,7 +236,10 @@ async def chat_stream(
                 state.execute_result = exec_result
                 if exec_result.error:
                     state.error = f"上轮 SQL 执行失败: {exec_result.error}"
-                    yield emit("error", {"error": state.error})
+                    state.error_is_internal = True  # DB 异常可能含连接串
+                    state.stage = AgentStage.FINAL
+                    state.success = False
+                    yield emit("error", {"error": "SQL 执行失败"})
                     return
                 # 数据事件 (前端展示)
                 yield emit("data", {
@@ -219,12 +258,16 @@ async def chat_stream(
                 )
                 state.llm_call_count += 1
                 state.chart_option = chart.option if hasattr(chart, "option") else None
+                # 对标 O8: 图表降级也传播
+                if getattr(chart, "degraded", False):
+                    state.degraded = True
                 if state.chart_option:
                     yield emit("chart", {
                         "option": state.chart_option,
                         "duration_ms": round((time.monotonic() - t0) * 1000),
                     }, node="generate_chart")
                 state.reply = f"已将图表切换为 {chart_hint or '新'} 类型。"
+                state.stage = AgentStage.FINAL
                 state.success = True
                 return
 
@@ -232,6 +275,8 @@ async def chat_stream(
             if intent == "CLARIFICATION":
                 from app.ai.ask_user import AskUserRequest, AskUserReason
                 state.current_tables = list(state.prev_tables)  # 继承上轮表, 防追问丢表
+                state.stage = AgentStage.FINAL
+                state.success = False
                 state.ask_user_request = AskUserRequest(
                     reason=AskUserReason.SCHEMA_AMBIGUOUS,
                     question=state.intent_output.reason or "请提供更具体的问题",
@@ -239,38 +284,52 @@ async def chat_stream(
                 state.error = f"需要澄清: {state.intent_output.reason}"
                 yield emit("clarify", {
                     "question": state.ask_user_request.question,
-                    "reason": state.ask_user_request.reason,
+                    "reason": str(state.ask_user_request.reason.value)
+                        if hasattr(state.ask_user_request.reason, "value")
+                        else str(state.ask_user_request.reason),
                     "options": getattr(state.ask_user_request, "options", None),
                 })
                 return
 
             # ── Stage 2: schema 检索 ─────────────────────────────
             t0 = time.monotonic()
-            norm_q = state.intent_output.normalized_question or question
+            from app.ai.intent import safe_normalized_question
+            norm_q = safe_normalized_question(state.intent_output, question)
             retrieval = await deps.retrieve(norm_q)
             # NOTE: retrieve 是向量检索, 不是 LLM 调用, 不计 llm_call_count
             state.retrieved_models = retrieval.models
+            # 对标 O8: 传播降级标记
+            if retrieval.degraded:
+                state.degraded = True
             tables = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
             yield emit("schema", {
                 "tables": tables,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
             }, node="retrieve")
+            _step_durations["schema"] = round((time.monotonic() - t0) * 1000)
 
             # schema 不确定 / 无召回 → ask_user 或结束
             ask = deps.should_ask_for_schema(retrieval)
             if ask is not None:
                 state.current_tables = list(state.prev_tables)  # 继承上轮表, 防追问丢表
+                state.stage = AgentStage.FINAL
+                state.success = False
                 state.ask_user_request = ask
                 state.error = "Schema 不确定, 需要用户确认"
+                _reason = getattr(ask, "reason", "")
                 yield emit("clarify", {
                     "question": getattr(ask, "question", "请确认要查询的表"),
-                    "reason": getattr(ask, "reason", ""),
+                    "reason": str(_reason.value) if hasattr(_reason, "value") else str(_reason),
                     "options": getattr(ask, "options", None),
                 })
                 return
-            if retrieval.no_match_reason and not tables:
+            if retrieval.no_match_reason and not state.retrieved_models:
                 state.current_tables = list(state.prev_tables)  # 继承上轮表, 防追问丢表
+                state.stage = AgentStage.FINAL
+                state.success = False
                 state.error = retrieval.no_match_reason
+                state.error_is_internal = False  # 业务错误: 无匹配表
+                yield emit("error", {"error": "服务内部错误, 请稍后重试" if state.error_is_internal else state.error})
                 return
 
             # ── Stage 3: 预思考 + schema context ────────────────
@@ -289,7 +348,11 @@ async def chat_stream(
             # 白名单列: 取整个语义层的全部列 (语义层本身是安全边界)
             allowed_columns = extract_allowed_columns(state.semantic_content)
             if not allowed_columns:
+                state.stage = AgentStage.FINAL
+                state.success = False
                 state.error = "无语义层定义, 请先扫描数据源"
+                state.error_is_internal = False  # 业务错误: 未扫描数据源
+                yield emit("error", {"error": "服务内部错误, 请稍后重试" if state.error_is_internal else state.error})
                 return
             t_think = time.monotonic()
             state.thinking = await deps.think(norm_q, schema_context, state.retrieved_models, history=state.history)
@@ -304,6 +367,7 @@ async def chat_stream(
                     "prev_sql_review": getattr(thinking, "prev_sql_review", ""),
                     "duration_ms": round((time.monotonic() - t_think) * 1000),
                 }, node="thinking")
+                _step_durations["thinking"] = round((time.monotonic() - t_think) * 1000)
 
             # ── Stage 4+5: SQL 生成/校验/执行 + 自愈循环 ──────────
             t0 = time.monotonic()
@@ -317,25 +381,31 @@ async def chat_stream(
             state.llm_call_count += 1
 
             if gen_result.error and not gen_result.sql:
+                state.stage = AgentStage.FINAL
+                state.success = False
                 state.error = gen_result.error
-                yield emit("sql", {"error": gen_result.error, "duration_ms": round((time.monotonic() - t0) * 1000)}, node="generate_sql")
+                state.error_is_internal = True  # LLM API 错误可能含模型名/端点
+                yield emit("sql", {"error": "SQL 生成失败", "duration_ms": round((time.monotonic() - t0) * 1000)}, node="generate_sql")
                 return
 
             state.sql = gen_result.sql
             state.fewshot_count = gen_result.fewshot_count  # 传播到 AgentState (与 agent.py 一致)
             validation_ok = True
             violated = ""
+            violated_layer = ""
             if not gen_result.validation.ok:
                 validation_ok = False
                 violated = gen_result.validation.reason
+                violated_layer = gen_result.validation.violated_layer
 
             yield emit("sql", {
                 "sql": state.sql,
                 "fewshot_count": gen_result.fewshot_count,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
             }, node="generate_sql")
+            _step_durations["generate_sql"] = round((time.monotonic() - t0) * 1000)
 
-            last_error = None if validation_ok else f"校验失败: {violated}"
+            last_error = None if validation_ok else f"校验失败 ({violated_layer}): {violated}"
             exec_result = None
             t_exec = time.monotonic()  # SQL 执行计时 (含自愈后重执行)
 
@@ -358,26 +428,28 @@ async def chat_stream(
                 state.llm_call_count += 1
                 # 记录自愈前的 SQL (OBS-003: 展示修复前后对比)
                 before_sql = state.sql
-                if _heal_before_sql is None:
-                    _heal_before_sql = before_sql
+                if state.heal_before_sql is None:
+                    state.heal_before_sql = before_sql
                 if not heal_result.success:
                     yield emit("heal", {
                         "retry": state.self_heal_rounds, "success": False,
-                        "error": heal_result.error, "before_sql": before_sql,
+                        "error": "自愈失败", "before_sql": before_sql,
                     }, node="heal_sql")
+                    state.error = f"SQL 自愈失败 ({state.self_heal_rounds} 轮): {heal_result.error}"
+                    state.error_is_internal = True  # 自愈错误可能含 schema 上下文
                     break
                 state.sql = heal_result.sql
                 yield emit("heal", {
                     "retry": state.self_heal_rounds, "success": True,
                     "sql": state.sql, "before_sql": before_sql,
-                    "error": last_error,
+                    "error": "已修复",
                     "duration_ms": round((time.monotonic() - t0) * 1000),
                 }, node="heal_sql")
                 # 重新校验 + 执行
                 heal_valid = True
                 if hasattr(heal_result, "validation") and not heal_result.validation.ok:
                     heal_valid = False
-                    last_error = heal_result.validation.reason
+                    last_error = f"校验失败 ({heal_result.validation.violated_layer}): {heal_result.validation.reason}"
                 if heal_valid:
                     exec_result = await deps.execute_sql(state.sql)
                     state.execute_result = exec_result
@@ -385,15 +457,21 @@ async def chat_stream(
 
             # 执行结果事件
             if exec_result and not exec_result.error:
+                _exec_dur = round((time.monotonic() - t_exec) * 1000)
                 yield emit("data", {
                     "columns": list(exec_result.columns) if hasattr(exec_result, "columns") else [],
                     "rows": [[normalize_value(v) for v in r] for r in exec_result.rows] if hasattr(exec_result, "rows") else [],
                     "row_count": len(exec_result.rows) if hasattr(exec_result, "rows") else 0,
                     "truncated": exec_result.truncated if hasattr(exec_result, "truncated") else False,
-                    "duration_ms": round((time.monotonic() - t_exec) * 1000),
+                    "duration_ms": _exec_dur,
                 })
+                _step_durations["execute_sql"] = _exec_dur
             elif last_error:
-                state.error = f"SQL 失败 (自愈 {state.self_heal_rounds} 轮): {last_error}"
+                state.stage = AgentStage.FINAL
+                state.success = False
+                if not state.error:
+                    state.error = f"SQL 失败 (自愈 {state.self_heal_rounds} 轮未解决): {last_error}"
+                    state.error_is_internal = True  # DB 错误可能含连接串
                 return
 
             # ── Stage 6: 结果自检 ────────────────────────────────
@@ -441,11 +519,14 @@ async def chat_stream(
                 if not check.ok:
                     ask_result = deps.should_ask_for_result(check)
                     if ask_result is not None:
+                        state.stage = AgentStage.FINAL
+                        state.success = False
                         state.ask_user_request = ask_result
                         state.error = f"结果异常: {check.reason}"
+                        _reason = getattr(ask_result, "reason", "")
                         yield emit("clarify", {
                             "question": getattr(ask_result, "question", "结果可能异常"),
-                            "reason": getattr(ask_result, "reason", ""),
+                            "reason": str(_reason.value) if hasattr(_reason, "value") else str(_reason),
                             "options": getattr(ask_result, "options", None),
                         })
                         return
@@ -461,20 +542,30 @@ async def chat_stream(
             )
             state.llm_call_count += 1
             state.chart_option = chart.option if hasattr(chart, "option") else None
+            # 对标 O8: 图表降级也传播 (LLM 失败 → 规则推断时 degraded=True)
+            if getattr(chart, "degraded", False):
+                state.degraded = True
             if state.chart_option:
+                _chart_dur = round((time.monotonic() - t0) * 1000)
                 yield emit("chart", {
                     "option": state.chart_option,
-                    "duration_ms": round((time.monotonic() - t0) * 1000),
+                    "duration_ms": _chart_dur,
                 }, node="generate_chart")
+                _step_durations["generate_chart"] = _chart_dur
 
             # ── Stage 8: 完成 ────────────────────────────────────
             state.stage = AgentStage.FINAL
             state.success = True
+            # ARC-02: prev_sql_review 是 LLM 内部反思 (注入下一轮 Prompt 辅助追问优化)
+            # 不再拼入 reply 暴露给用户 — 技术性建议干扰阅读, 且历史回放时无意义
 
         except Exception as e:
             logger.exception("流式 Agent 异常")
+            state.stage = AgentStage.FINAL
+            state.success = False
             state.error = f"Agent 执行异常: {e}"
-            yield emit("error", {"error": str(e)})
+            state.error_is_internal = True
+            yield emit("error", {"error": "服务内部错误, 请稍后重试"})
         finally:
             # 统一持久化 + complete 事件 (单一出口, 对标 V1: 审计在管线末尾一次性)
             # 纯闲聊 (GENERAL) 不入对话历史
@@ -488,16 +579,26 @@ async def chat_stream(
                 if get_settings().debug and prompt_capture:
                     # 通过 state 属性传给 _persist (避免改 _persist 签名)
                     state._prompt_records = prompt_capture.get("records", [])
-                # 传递 token_stats 和 heal_before_sql (避免改 _persist 签名, 通过 state 属性)
+                # 传递 token_stats (避免改 _persist 签名, 通过 state 属性)
                 state._token_stats = token_stats
-                state._heal_before_sql = _heal_before_sql
+                # 传递各步骤耗时 (历史对话回放用)
+                state._step_durations = _step_durations
                 await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps)
+            # 客户端安全: 内部异常不泄露详情, 业务错误保留原文
+            _client_error = None
+            if not state.success and state.error:
+                _client_error = "服务内部错误, 请稍后重试" if state.error_is_internal else state.error
             yield emit("complete", {
                 "success": state.success,
                 "conversation_id": conv_id if should_persist else None,
-                "error": state.error if not state.success else None,
-                "token_usage": token_stats or None,
+                "error": _client_error,
+                "token_usage": _format_token_usage(token_stats),
                 "prompts_count": len(prompt_capture.get("records", [])) if prompt_capture else 0,
+                "degraded": state.degraded,  # 对标 O8: 前端可提示用户结果可能不精确
+                # 与 REST ChatResponse 对齐 (前端 SSE 消费者也需要这些字段)
+                "stage": state.stage.value if hasattr(state.stage, "value") else str(state.stage),
+                "llm_calls": state.llm_call_count,
+                "self_heal_rounds": state.self_heal_rounds,
             })
 
     return StreamingResponse(
@@ -512,30 +613,34 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
     # StateStore 持久化
     try:
         from app.ai.state_store import ConversationState, StateStore
+        from app.core.config import get_settings
         store = StateStore()
         prev_state = store.load(user.tenant_id, conv_id) if req_conv_id else None
         is_new = prev_state is None
         title = ""
+        _max_title = get_settings().conversation_title_max_length
         if is_new:
             from app.core.llm_client import llm_chat
             try:
                 title, _ = await llm_chat(
                     messages=[
-                        {"role": "system", "content": "把用户的提问总结为一个简短的对话标题(不超过16个字, 不要标点)。只输出标题文字。"},
+                        {"role": "system", "content": f"把用户的提问总结为一个简短的对话标题(不超过{_max_title}个字, 不要标点)。只输出标题文字。"},
                         {"role": "user", "content": state.question},
                     ],
                     temperature=0.0,
                 )
-                title = title.strip().strip('"\'""')[:16] or state.question[:16]
-            except Exception:
-                title = state.question[:16] or "新对话"
+                title = title.strip().strip('"\'""')[:_max_title] or state.question[:_max_title].strip() or "新对话"
+            except Exception as e:
+                logger.warning("标题生成失败, 降级为问题截断: %s", e)
+                title = state.question[:_max_title].strip() or "新对话"
         exec_result = state.execute_result
-        # 结果采样 (前 50 行, 防大结果撑爆 JSONL)
+        # 结果采样 (防大结果撑爆 JSONL, 采样行数可配置)
         rows_sample = []
         cols = []
         if exec_result and hasattr(exec_result, "rows"):
+            _row_limit = get_settings().state_store_row_sample_limit
             rows_sample = [
-                [normalize_value(v) for v in r] for r in (exec_result.rows or [])[:50]
+                [normalize_value(v) for v in r] for r in (exec_result.rows or [])[:_row_limit]
             ]
             cols = list(exec_result.columns) if hasattr(exec_result, "columns") else []
         conv_state = ConversationState(
@@ -562,9 +667,10 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             intent=state.intent_output.intent if state.intent_output else None,
             token_usage=getattr(state, "_token_stats", None),
             sql_duration_ms=getattr(exec_result, "duration_ms", None) if exec_result else None,
+            step_durations=getattr(state, "_step_durations", None) or None,
             error=state.error or None,
             self_heal_rounds=state.self_heal_rounds,
-            heal_before_sql=getattr(state, "_heal_before_sql", None),
+            heal_before_sql=state.heal_before_sql,
         )
         # turn: 从已有轮次推算 (防御: 取 max(行数, 最大turn值) + 1, 自愈历史脏数据)
         existing_turns = store.list_turns(user.tenant_id, conv_id)
@@ -617,36 +723,58 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             except Exception:
                 logger.debug("fewshot 回流失败 (不阻塞)")
 
+        # LLM 自主提炼记忆: 成功查询后判断是否产生值得保留的新知识
+        if state.success and state.sql:
+            try:
+                from app.ai.recall import extract_memory_from_turn
+                from app.core.agent_memory import AgentMemoryStore
+                mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
+                extracted = await extract_memory_from_turn(
+                    question=state.question,
+                    sql=state.sql,
+                    tables=state.current_tables or [],
+                    reply=state.reply or "",
+                    memory_dir=mem_dir,
+                )
+                if extracted:
+                    mem_store = AgentMemoryStore(base_dir=mem_dir)
+                    mem_store.save_memory(
+                        name=extracted["name"],
+                        description=extracted["description"],
+                        content=extracted["content"],
+                        memory_type=extracted.get("type", "project"),
+                    )
+                    logger.info("LLM 自主提炼记忆: %s (ds=%s)", extracted["name"], data_source_id)
+            except Exception:
+                logger.debug("LLM 自主提炼记忆失败 (不阻塞)")
+
     except Exception as e:
         logger.warning("流式 StateStore 持久化失败 (不阻塞): %s", e)
 
     # 审计
-    try:
-        # SEC-006: SQL 注入拦截专项标识 — Layer 1(AST/多语句/写操作) 或 Layer 2(危险函数) 失败
-        # 视为注入拦截, 用 action="sql_injection_blocked" 单独标记便于检索
-        _INJECTION_LAYERS = ("AST", "dangerous_function")
-        is_injection_block = bool(
-            state.error and any(f"({layer})" in state.error for layer in _INJECTION_LAYERS)
-        )
-        # DSO-07: 从执行结果取耗时, 判定慢查询 (阈值可配置)
-        from app.core.config import get_settings
-        _settings = get_settings()
-        exec_duration = getattr(state.execute_result, "duration_ms", None) if state.execute_result else None
-        is_slow = bool(
-            exec_duration is not None
-            and exec_duration >= _settings.sql_slow_query_threshold * 1000
-        )
-        await write_audit_log(
-            db, tenant_id=user.tenant_id, user_id=user.user_id,
-            resource_type="chat",
-            action="sql_injection_blocked" if is_injection_block else "query",
-            status="success" if state.success else "fail",
-            sql_text=state.sql or None,
-            error_message=state.error[:500] if state.error else None,
-            duration_ms=exec_duration,
-            is_slow=is_slow,
-            data_source_id=data_source_id,
-        )
-        await db.commit()
-    except Exception as e:
-        logger.warning("流式审计日志失败 (不阻塞): %s", e)
+    # SEC-006: SQL 注入拦截专项标识 — Layer 1(AST/多语句/写操作) 或 Layer 2(危险函数) 失败
+    # 视为注入拦截, 用 action="sql_injection_blocked" 单独标记便于检索
+    _INJECTION_LAYERS = ("AST", "dangerous_function")
+    is_injection_block = bool(
+        state.error and any(f"({layer})" in state.error for layer in _INJECTION_LAYERS)
+    )
+    # DSO-07: 从执行结果取耗时, 判定慢查询 (阈值可配置)
+    from app.core.config import get_settings
+    _settings = get_settings()
+    exec_duration = getattr(state.execute_result, "duration_ms", None) if state.execute_result else None
+    is_slow = bool(
+        exec_duration is not None
+        and exec_duration >= _settings.sql_slow_query_threshold * 1000
+    )
+    await write_audit_log(
+        db, tenant_id=user.tenant_id, user_id=user.user_id,
+        resource_type="chat",
+        action="sql_injection_blocked" if is_injection_block else "query",
+        status="success" if state.success else "fail",
+        sql_text=state.sql or None,
+        error_message=state.error[:500] if state.error else None,
+        duration_ms=exec_duration,
+        is_slow=is_slow,
+        data_source_id=data_source_id,
+    )
+    await db.commit()

@@ -86,6 +86,7 @@ class SkillsLoader:
 
     扫描 base_dir 下的所有 <name>/SKILL.md 及 <name>/reference/*.md。
     带缓存: invalidate() 后下次 load_all 重新读取文件。
+    首次加载空目录时自动从 _template/ 复制种子规则。
     """
 
     def __init__(self, base_dir: str = "skills"):
@@ -112,6 +113,7 @@ class SkillsLoader:
 
         热更新 (对标 SKL-002): 每次调用比对目录 mtime, 文件改动自动重载,
         无需重启也无需手动 invalidate (admin HTTP 编辑 / 直接改文件都生效)。
+        首次加载空目录时自动从 _template/ 复制种子规则。
         """
         # mtime 变化 → 文件被改过, 失效缓存
         current_mtime = self._current_dir_mtime()
@@ -124,8 +126,10 @@ class SkillsLoader:
 
         skills: list[Skill] = []
         if not self._base_dir.exists():
-            self._cache = skills
-            return skills
+            self._base_dir.mkdir(parents=True, exist_ok=True)
+
+        # 种子数据: 目录为空时从 _template/ 复制默认规则
+        self._ensure_seed_skills()
 
         for skill_file in sorted(self._base_dir.glob("*/SKILL.md")):
             try:
@@ -143,6 +147,29 @@ class SkillsLoader:
     def invalidate(self) -> None:
         """缓存失效 (对标 SKL-002 热更新: 文件改动后调此方法)。"""
         self._cache = None
+
+    def _ensure_seed_skills(self) -> None:
+        """目录为空时从 _template/ 复制种子规则 (不覆盖已有内容)。
+
+        种子规则包含电商场景常见业务约定 (GMV/状态枚举/字段别名),
+        用户可自由编辑或删除, 不影响其他租户。
+        """
+        import shutil
+        # 已有规则 → 不覆盖
+        if any(self._base_dir.glob("*/SKILL.md")):
+            return
+        template_dir = self._base_dir.parent / "_template"
+        if not template_dir.is_dir():
+            return
+        try:
+            for item in template_dir.iterdir():
+                if item.is_dir() and (item / "SKILL.md").exists():
+                    dest = self._base_dir / item.name
+                    if not dest.exists():
+                        shutil.copytree(item, dest)
+            logger.info("种子 Skills 已初始化到 %s", self._base_dir)
+        except Exception as e:
+            logger.warning("种子 Skills 初始化失败 (不阻塞): %s", e)
 
     def format_for_prompt(self, db_type: str | None = None) -> str:
         """格式化所有 Skills 为 prompt 注入文本 (对标 SKL-003 + T060)。

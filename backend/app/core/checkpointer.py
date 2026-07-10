@@ -30,15 +30,23 @@ class Checkpointer:
     - 不强制 PostgreSQL 依赖 (内存模式 for testing)
     """
 
-    def __init__(self, base_dir: str = "data/checkpoints"):
+    def __init__(self, base_dir: str | None = None):
+        if base_dir is None:
+            from app.core.config import get_settings
+            base_dir = get_settings().checkpointer_dir
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _checkpoint_path(self, tenant_id: str, conversation_id: str) -> Path:
-        """Get the JSONL checkpoint file path for a conversation."""
-        tenant_dir = self.base_dir / tenant_id
-        tenant_dir.mkdir(parents=True, exist_ok=True)
-        return tenant_dir / f"{conversation_id}.jsonl"
+        """Get the JSONL checkpoint file path for a conversation (含路径穿越防御)。"""
+        for name, value in [("tenant_id", tenant_id), ("conversation_id", conversation_id)]:
+            if not value or not value.strip():
+                raise ValueError(f"Invalid {name}: empty")
+        candidate = self.base_dir / tenant_id / f"{conversation_id}.jsonl"
+        if not candidate.resolve().is_relative_to(self.base_dir.resolve()):
+            raise ValueError("Path traversal detected")
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        return candidate
 
     def save_turn(
         self,
@@ -182,5 +190,5 @@ def get_checkpointer(base_dir: str | None = None) -> Checkpointer:
     """Get or create the global checkpointer instance."""
     global _checkpointer
     if _checkpointer is None:
-        _checkpointer = Checkpointer(base_dir=base_dir or "data/checkpoints")
+        _checkpointer = Checkpointer(base_dir=base_dir)
     return _checkpointer

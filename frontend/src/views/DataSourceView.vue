@@ -128,6 +128,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { datasource, type DataSource } from '@/api'
+import { extractErrorDetail } from '@/utils/error'
 
 const router = useRouter()
 const list = ref<DataSource[]>([])
@@ -156,7 +157,7 @@ async function fetchList() {
     const { data } = await datasource.list()
     list.value = data
   } catch (e: any) {
-    ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('加载失败: ' + (extractErrorDetail(e)))
   } finally {
     loading.value = false
   }
@@ -172,7 +173,7 @@ async function create() {
     Object.assign(form, { name: '', host: '', database: '', username: '', password: '' })
     await fetchList()
   } catch (e: any) {
-    ElMessage.error('创建失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('创建失败: ' + (extractErrorDetail(e)))
   } finally {
     creating.value = false
   }
@@ -191,7 +192,7 @@ async function scan(row: DataSource) {
     ElMessage.info('扫描已启动（含 LLM 中文推断），进度会实时更新...')
     startPollingScan(row.id)
   } catch (e: any) {
-    ElMessage.error('启动扫描失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('启动扫描失败: ' + (extractErrorDetail(e)))
   }
 }
 
@@ -259,7 +260,7 @@ async function toggle(row: DataSource) {
     ElMessage.success(`已${action}`)
     await fetchList()
   } catch (e: any) {
-    ElMessage.error(`${action}失败: ` + (e.response?.data?.detail || e.message))
+    ElMessage.error(`${action}失败: ` + (extractErrorDetail(e)))
   } finally {
     togglingId.value = null
   }
@@ -276,7 +277,7 @@ async function checkHealth(row: DataSource) {
       ElMessage.error(`「${row.name}」异常: ${data.error || '未知错误'}`)
     }
   } catch (e: any) {
-    ElMessage.error('检查失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('检查失败: ' + (extractErrorDetail(e)))
   } finally {
     healthCheckingId.value = null
   }
@@ -290,7 +291,7 @@ async function checkAllHealth() {
     ElMessage.success(`检查完成: ${data.healthy} 健康 / ${data.unhealthy} 异常${data.recovered ? ` / ${data.recovered} 恢复` : ''}${data.newly_error ? ` / ${data.newly_error} 新异常` : ''}`)
     await fetchList()
   } catch (e: any) {
-    ElMessage.error('全量检查失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('全量检查失败: ' + (extractErrorDetail(e)))
   } finally {
     bulkHealthLoading.value = false
   }
@@ -306,7 +307,7 @@ async function refreshAllMetadata() {
     const { data } = await datasource.refreshAllMetadata()
     ElMessage.success(`刷新完成: ${data.refreshed} 个有变更 / ${data.unchanged} 个无变化${data.failed ? ` / ${data.failed} 失败` : ''}`)
   } catch (e: any) {
-    ElMessage.error('刷新失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('刷新失败: ' + (extractErrorDetail(e)))
   } finally {
     refreshMetaLoading.value = false
   }

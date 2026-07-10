@@ -143,11 +143,16 @@ class MilvusVectorStore(VectorStore):
             }
             for rec in records
         ]
-        await asyncio.to_thread(
-            self._client.upsert,
-            collection_name=self._collection_name,
-            data=data,
-        )
+        try:
+            await asyncio.to_thread(
+                self._client.upsert,
+                collection_name=self._collection_name,
+                data=data,
+            )
+        except Exception as e:
+            logger.error("Milvus upsert 失败 (collection=%s, %d records): %s",
+                         self._collection_name, len(records), e)
+            raise
 
     # ── search ────────────────────────────────────────────────
 
@@ -159,16 +164,21 @@ class MilvusVectorStore(VectorStore):
         filter: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
         filter_expr = _build_filter_expr(filter)
-        results = await asyncio.to_thread(
-            self._client.search,
-            collection_name=self._collection_name,
-            data=[query_vector],
-            anns_field="vector",
-            limit=top_k,
-            filter=filter_expr or None,
-            search_params={"metric_type": "IP", "params": {"ef": 64}},
-            output_fields=["metadata", "text"],
-        )
+        try:
+            results = await asyncio.to_thread(
+                self._client.search,
+                collection_name=self._collection_name,
+                data=[query_vector],
+                anns_field="vector",
+                limit=top_k,
+                filter=filter_expr or None,
+                search_params={"metric_type": "IP", "params": {"ef": 64}},
+                output_fields=["metadata", "text"],
+            )
+        except Exception as e:
+            logger.error("Milvus search 失败 (collection=%s): %s", self._collection_name, e)
+            # search 失败返回空结果 (宁缺毋滥), 不抛异常让调用方崩溃
+            return []
         # results 是 [[hit, ...], ...] (每个查询一个列表, 这里只一个查询)
         hits = results[0] if results else []
         out: list[SearchResult] = []

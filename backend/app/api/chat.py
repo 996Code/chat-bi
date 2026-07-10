@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent import AgentDeps, AgentState, run_agent
 from app.core.auth import AuthUser, require_user, write_audit_log
+from app.core.config import get_settings
 from app.db.models import DataSource, SemanticModel
 from app.db.session import get_db
 from app.ai.chat_utils import normalize_value, serialize_thinking
@@ -43,6 +44,22 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None  # None → 新对话; 有值 → 追问 (恢复上下文)
 
 
+class AskUserPayload(BaseModel):
+    """对标 F4: ask_user 结构化 (替代 untyped dict)。"""
+    reason: str
+    question: str
+    options: list[str] | None = None
+
+
+class TokenUsagePayload(BaseModel):
+    """对标 F4: token_usage 结构化 (替代 untyped dict)。"""
+    model_config = {"extra": "allow"}  # 允许 nodes 等额外字段透传, 不丢弃
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    llm_calls: int = 0
+
+
 class ChatResponse(BaseModel):
     """问答结果 (Agent 全流程产出)。"""
     success: bool
@@ -57,13 +74,22 @@ class ChatResponse(BaseModel):
     chart: dict | None = None
     error: str | None = None
     reply: str | None = None  # 自然语言回复 (GENERAL/EXPLANATION 意图)
-    ask_user: dict | None = None  # 需要用户澄清时的提问
+    ask_user: AskUserPayload | None = None  # 对标 F4: 结构化替代 untyped dict
     # 过程信息 (调试/可观测)
     stage: str = ""
     llm_calls: int = 0
     self_heal_rounds: int = 0
-    token_usage: dict | None = None  # OBS-002: prompt/completion/total token 统计
+    token_usage: TokenUsagePayload | None = None  # 对标 F4: 结构化替代 untyped dict
     fewshot_count: int = 0  # 命中的 few-shot 示例数 (RAG-004)
+    degraded: bool = False  # 对标 O8: 检索/图表降级标记 (前端可提示用户结果可能不精确)
+
+
+def _safe_response_question(intent_output, original: str) -> str:
+    """对标 D4: 响应中 question 字段防空 (与 safe_normalized_question 一致)。"""
+    if intent_output is None:
+        return original
+    nq = (getattr(intent_output, "normalized_question", None) or "").strip()
+    return nq if nq else original
 
 
 async def build_agent_deps(
@@ -90,8 +116,9 @@ async def build_agent_deps(
     store = get_vector_store()
 
     # Skills: 加载业务规则注入 prompt (T040 + T060: 按 db_type 自动加载 reference)
+    # 多租户隔离: 按 tenant_id 读 skills/{tenant_id}/, 与 API 端点一致
     try:
-        from app.services.skills_loader import get_skills_loader
+        from app.services.skills_loader import SkillsLoader
         # T060: 从数据源获取 db_type, 让 format_for_prompt 注入对应方言规则
         ds_for_skill = (
             await db.execute(
@@ -102,7 +129,8 @@ async def build_agent_deps(
             )
         ).scalar_one_or_none()
         db_type = ds_for_skill.db_type if ds_for_skill else None
-        skills_text = get_skills_loader().format_for_prompt(db_type=db_type)
+        skills_loader = SkillsLoader(base_dir=f"skills/{tenant_id}")
+        skills_text = skills_loader.format_for_prompt(db_type=db_type)
     except Exception:
         skills_text = ""
 
@@ -156,9 +184,10 @@ async def build_agent_deps(
         except Exception as e:
             logger.debug("fewshot 检索失败, 降级无 fewshot: %s", e)
         # 2. 按需召回相关记忆 (Relevant Recall, 关键词相关性, 不调 LLM)
+        # 多租户 + 数据源隔离: 按 tenant_id + data_source_id 读记忆目录
         memory_text = ""
         try:
-            memories = recall_memories(question)
+            memories = recall_memories(question, tenant_id=tenant_id, data_source_id=data_source_id)
             memory_text = format_memories_for_prompt(memories)
         except Exception as e:
             logger.debug("记忆召回失败, 降级无记忆: %s", e)
@@ -205,28 +234,28 @@ def _get_embedder():
 
 def _chat_rate():
     """查询限流值 (从 config 读, 对标 rate_limit_queries_per_minute)。"""
-    from app.core.config import get_settings
     return f"{get_settings().rate_limit_queries_per_minute}/minute"
 
 
 
 async def _generate_conversation_title(question: str, deps) -> str:
-    """为新对话生成简短标题 (≤16 字)。
+    """为新对话生成简短标题。
 
     用 LLM 总结首条问题为标题, 失败降级为问题截断 (fail-closed, 不阻塞主流程)。
     """
-    fallback = question[:16].strip() or "新对话"
+    max_len = get_settings().conversation_title_max_length
+    fallback = question[:max_len].strip() or "新对话"
     try:
         from app.core.llm_client import llm_chat
         title, _ = await llm_chat(
             messages=[
-                {"role": "system", "content": "把用户的提问总结为一个简短的对话标题(不超过16个字, 不要标点)。只输出标题文字。"},
+                {"role": "system", "content": f"把用户的提问总结为一个简短的对话标题(不超过{max_len}个字, 不要标点)。只输出标题文字。"},
                 {"role": "user", "content": question},
             ],
             temperature=0.0,
         )
         title = title.strip().strip('"\'""')
-        return title[:16] if title else fallback
+        return title[:max_len] if title else fallback
     except Exception as e:
         logger.warning("标题生成失败, 降级为问题截断: %s", e)
         return fallback
@@ -264,7 +293,7 @@ async def chat(
         deps, content = await build_agent_deps(data_source_id, user.tenant_id, db)
     except Exception as e:
         logger.exception("Agent 依赖装配失败")
-        raise HTTPException(status_code=500, detail=f"Agent 初始化失败: {e}")
+        raise HTTPException(status_code=500, detail="Agent 初始化失败, 请稍后重试")
 
     # 追问时恢复上下文 (T036 State Store, 对标 ARC-04 多轮对话)
     import uuid
@@ -289,7 +318,10 @@ async def chat(
             pass  # 恢复失败不阻塞, 当新对话处理
 
     # 运行 Agent
-    state = AgentState(question=req.question, semantic_content=content)
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="question 不能为空")
+    state = AgentState(question=question, semantic_content=content)
     state.history = history_text  # 注入多轮上下文 (intent/think/generate_sql 都用)
     state.prev_sql = prev_state.current_sql if prev_state else ""  # CHART_MODIFY 复用上轮 SQL
     state.prev_tables = prev_state.current_tables if prev_state else []  # 追问表继承
@@ -308,19 +340,19 @@ async def chat(
     if getattr(state, "persist", True):
         try:
             from app.ai.state_store import ConversationState, StateStore
-            from app.core.config import get_settings
             exec_result = state.execute_result
             is_new_conv = prev_state is None
             # 新对话: 生成标题 (LLM 总结 ≤16 字, 失败降级为首条问题截断)
             title = ""
             if is_new_conv:
-                title = await _generate_conversation_title(req.question, deps)
+                title = await _generate_conversation_title(question, deps)
             # 结果采样 (前 50 行)
             rows_sample = []
             cols = []
             if exec_result and hasattr(exec_result, "rows"):
+                _row_limit = get_settings().state_store_row_sample_limit
                 rows_sample = [
-                    [normalize_value(v) for v in r] for r in (exec_result.rows or [])[:50]
+                    [normalize_value(v) for v in r] for r in (exec_result.rows or [])[:_row_limit]
                 ]
                 cols = list(exec_result.columns) if hasattr(exec_result, "columns") else []
             conv_state = ConversationState(
@@ -333,8 +365,8 @@ async def chat(
                 } if exec_result or state.success else {},
                 chart_type=state.chart_option.get("series", [{}])[0].get("type") if state.chart_option else None,
                 title=title,
-                first_question=req.question if is_new_conv else "",
-                question=req.question,
+                first_question=question if is_new_conv else "",
+                question=question,
                 reply=state.reply or "",
                 columns=cols,
                 rows_sample=rows_sample,
@@ -345,11 +377,11 @@ async def chat(
                 prompts=prompt_capture.get("records", []) if get_settings().debug and prompt_capture else None,
                 # 增强字段: 意图 / token / 耗时 / 错误 / 自愈
                 intent=state.intent_output.intent if state.intent_output else None,
-                token_usage=token_stats or None,
+                token_usage=token_stats if token_stats else None,
                 sql_duration_ms=getattr(exec_result, "duration_ms", None) if exec_result else None,
                 error=state.error or None,
                 self_heal_rounds=state.self_heal_rounds,
-                heal_before_sql=None,  # 自愈前的 SQL 在 AgentState 中不追踪, 由 SSE heal 事件记录
+                heal_before_sql=state.heal_before_sql,
             )
             # turn_number: 从已有轮次推算 (防御: 取 max(行数, 最大turn值) + 1, 自愈历史脏数据)
             existing_turns = StateStore().list_turns(user.tenant_id, conversation_id)
@@ -368,7 +400,7 @@ async def chat(
                         select(SavedQuery.id).where(
                             SavedQuery.tenant_id == user.tenant_id,
                             SavedQuery.data_source_id == data_source_id,
-                            SavedQuery.question == req.question,
+                            SavedQuery.question == question,
                             SavedQuery.sql_text == state.sql,
                         ).limit(1)
                     )
@@ -378,7 +410,7 @@ async def chat(
                             user_id=user.user_id,
                             data_source_id=data_source_id,
                             conversation_id=conversation_id,
-                            question=req.question,
+                            question=question,
                             sql_text=state.sql,
                             result_summary=json.dumps({
                                 "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
@@ -395,7 +427,7 @@ async def chat(
                     from app.services.fewshot import index_fewshot_example
                     from app.services.embedder import get_embedder
                     await index_fewshot_example(
-                        question=req.question,
+                        question=question,
                         sql=state.sql,
                         embedder=get_embedder(),
                         data_source_id=data_source_id,
@@ -414,11 +446,10 @@ async def chat(
         state.error and any(f"({layer})" in state.error for layer in _INJECTION_LAYERS)
     )
     # DSO-07: 从执行结果取耗时, 判定慢查询 (阈值可配置)
-    from app.core.config import get_settings as _get_settings
     exec_duration = getattr(state.execute_result, "duration_ms", None) if state.execute_result else None
     is_slow = bool(
         exec_duration is not None
-        and exec_duration >= _get_settings().sql_slow_query_threshold * 1000
+        and exec_duration >= get_settings().sql_slow_query_threshold * 1000
     )
     await write_audit_log(
         db, tenant_id=user.tenant_id, user_id=user.user_id,
@@ -433,29 +464,34 @@ async def chat(
     )
     await db.commit()
 
+    # 客户端安全: 内部异常不泄露详情, 业务错误保留原文
+    _client_error = "服务内部错误, 请稍后重试" if state.error_is_internal else state.error
     # 组装响应
     exec_result = state.execute_result
     return ChatResponse(
         success=state.success,
         conversation_id=conversation_id,
         intent=state.intent_output.intent if state.intent_output else None,
-        question=state.intent_output.normalized_question if state.intent_output else req.question,
+        question=_safe_response_question(state.intent_output, question),
         sql=state.sql or None,
         columns=list(exec_result.columns) if exec_result and hasattr(exec_result, "columns") else [],
         rows=[[normalize_value(v) for v in r] for r in exec_result.rows] if exec_result and hasattr(exec_result, "rows") else [],
         row_count=len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
         truncated=exec_result.truncated if exec_result and hasattr(exec_result, "truncated") else False,
         chart=state.chart_option,
-        error=state.error,
+        error=_client_error,
         reply=state.reply or None,
-        ask_user={
-            "reason": state.ask_user_request.reason,
-            "question": state.ask_user_request.question,
-            "options": state.ask_user_request.options,
-        } if state.ask_user_request else None,
+        ask_user=AskUserPayload(
+            reason=str(state.ask_user_request.reason.value)
+                if hasattr(state.ask_user_request.reason, "value")
+                else str(state.ask_user_request.reason),
+            question=state.ask_user_request.question,
+            options=state.ask_user_request.options,
+        ) if state.ask_user_request else None,
         stage=state.stage.value,
         llm_calls=state.llm_call_count,
         self_heal_rounds=state.self_heal_rounds,
-        token_usage=token_stats or None,
+        token_usage=TokenUsagePayload(**token_stats) if token_stats else None,
         fewshot_count=state.fewshot_count,
+        degraded=state.degraded,
     )

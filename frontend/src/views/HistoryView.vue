@@ -223,6 +223,7 @@ import { nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, ArrowDown, ArrowUp, ChatDotRound } from '@element-plus/icons-vue'
 import { observability } from '@/api'
+import { extractErrorDetail } from '@/utils/error'
 import * as echarts from 'echarts'
 
 const activeTab = ref('audit')
@@ -286,7 +287,7 @@ async function loadAudit() {
     const { data } = await observability.auditLogs({ limit: 50 })
     auditLogs.value = data
   } catch (e: any) {
-    ElMessage.error('加载审计日志失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('加载审计日志失败: ' + (extractErrorDetail(e)))
   } finally { loading.value = false }
 }
 
@@ -296,7 +297,7 @@ async function loadSlow() {
     const { data } = await observability.slowQueries(50)
     slowQueries.value = data
   } catch (e: any) {
-    ElMessage.error('加载慢查询失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('加载慢查询失败: ' + (extractErrorDetail(e)))
   } finally { loading.value = false }
 }
 
@@ -306,7 +307,7 @@ async function loadConversations() {
     const { data } = await observability.conversations()
     conversations.value = data
   } catch (e: any) {
-    ElMessage.error('加载对话列表失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('加载对话列表失败: ' + (extractErrorDetail(e)))
   } finally { loading.value = false }
 }
 

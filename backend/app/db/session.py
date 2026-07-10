@@ -45,7 +45,7 @@ def _get_engine_kwargs(database_url: str, debug: bool) -> dict:
     """Build engine kwargs based on database type.
 
     SQLite (used in tests) doesn't support pool_size/max_overflow.
-    PostgreSQL supports the full set of pooling options.
+    PostgreSQL/MySQL: pool_size/max_overflow from config (对标 O12: 不硬编码)。
     """
     kwargs = {"echo": debug}
 
@@ -55,18 +55,14 @@ def _get_engine_kwargs(database_url: str, debug: bool) -> dict:
     if is_sqlite:
         # SQLite: use StaticPool, no pool_size kwargs
         kwargs["connect_args"] = {"check_same_thread": False}
-    elif is_postgresql:
+    elif is_postgresql or "mysql" in database_url or "aiomysql" in database_url:
+        from app.core.config import get_settings
+        settings = get_settings()
         kwargs.update({
-            "pool_size": 10,
-            "max_overflow": 20,
+            "pool_size": settings.db_pool_size,
+            "max_overflow": settings.db_max_overflow,
             "pool_pre_ping": True,
-        })
-    # MySQL: also supports pool_size
-    elif "mysql" in database_url or "aiomysql" in database_url:
-        kwargs.update({
-            "pool_size": 10,
-            "max_overflow": 20,
-            "pool_pre_ping": True,
+            "pool_recycle": settings.business_db_pool_recycle,  # 对标审计: 元数据 DB 也需连接回收
         })
 
     return kwargs

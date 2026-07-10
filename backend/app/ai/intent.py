@@ -206,3 +206,16 @@ async def classify_intent(question: str, history: str | None = None) -> IntentOu
         confidence=0.0,
         reason=f"重试 {MAX_RETRIES} 次后仍无法识别意图",
     )
+
+
+def safe_normalized_question(output: IntentOutput, original: str) -> str:
+    """对标 D4: 确保 normalized_question 非空。
+
+    LLM 可能返回空字符串的 normalized_question (如只输出 intent),
+    此时用原始问题替代 (空字符串会导致后续检索/生成完全失效)。
+    """
+    nq = (output.normalized_question or "").strip()
+    if not nq:
+        logger.warning("normalized_question 为空, 使用原始问题替代")
+        nq = original
+    return nq

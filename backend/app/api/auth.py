@@ -209,14 +209,15 @@ async def login(
     # 3. 用户不存在 or 密码错 → 统一返回 "邮箱或密码错误" (不泄露用户是否存在)
     if user is None or not verify_password(body.password, user.hashed_password):
         _record_login_failure(email)
-        # 审计失败: 用户不存在时无合法租户 → tenant_id=None (audit_logs.tenant_id 可空, 不设 FK)
-        await write_audit_log(
-            db, tenant_id=user.tenant_id if user else None,
-            user_id=user.id if user else None,
-            resource_type="auth", action="login", status="fail",
-            error_message="邮箱或密码错误",
-        )
-        await db.commit()
+        # 审计登录失败: 用户存在时记录 (有合法 tenant_id);
+        # 用户不存在时不写审计 (无合法 tenant_id, audit_logs.tenant_id 是 NOT NULL + FK)
+        if user is not None:
+            await write_audit_log(
+                db, tenant_id=user.tenant_id, user_id=user.id,
+                resource_type="auth", action="login", status="fail",
+                error_message="邮箱或密码错误",
+            )
+            await db.commit()
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
 
     # 4. 账号禁用

@@ -210,10 +210,15 @@ async def heal_sql(
 
     # ── 自愈 prompt (保留全部安全规则, 对标 v1 #32) ───────────
     from app.core.llm_client import llm_chat
-    from app.core.text_sanitize import sanitize_text
 
-    # SEC-007: DB 返回的错误信息可能含表名/列名, 进 LLM 前清洗
-    error = sanitize_text(error)
+    # SEC (对标 S6): 仅保留错误类别信息, 不传原始 DB 错误 (防泄露跨租户 schema)
+    # 原始错误可能含 "Table 'tenant_xxx.table' doesn't exist" 等跨租户信息
+    # LLM 只需知道错误类别 + hint 即可修正, 不需要原始错误文本
+    # 用类别提示替代原始错误 (更安全, LLM 仍能修正)
+    error_for_prompt = f"[{category.value}] {hint}"
+    # 如果有错误码, 附上 (code 已在上方 extract_error_code 提取)
+    if code:
+        error_for_prompt = f"[错误码 {code}] {error_for_prompt}"
 
     prompt = (
         f"你是 BI SQL 修正器。下面这条 SQL 执行失败了, 请修正。\n\n"
@@ -221,7 +226,7 @@ async def heal_sql(
         f"【schema】{schema_context}\n"
         f"【允许的列】{', '.join(sorted(allowed_columns))}\n\n"
         f"【失败的 SQL】{sql}\n"
-        f"【错误信息】{error}\n"
+        f"【错误信息】{error_for_prompt}\n"
         f"【纠正方向】{hint}\n\n"
         f"只返回修正后的 SQL:"
     )

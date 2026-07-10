@@ -189,6 +189,9 @@ def get_vector_store(collection_name: str = "semantic_models") -> VectorStore:
     mock:   MockVectorStore (测试/降级, 纯内存)
     Milvus 连不上时降级到 mock (fail-closed, 对标 Redis/Milvus 降级模式)。
 
+    降级恢复: 如果当前缓存的是 MockVectorStore 但 backend=milvus,
+    尝试重新连接 Milvus (Milvus 可能恢复了), 成功则替换缓存 (不再永久降级)。
+
     collection 名隔离: 拼上 config.vector_store_collection_prefix 前缀,
     测试/开发/多实例互不串数据 (对标 PG 库隔离; 一次配置, 全局生效)。
     向后兼容: 无参调用 (默认 semantic_models) 仍走 _vector_store 单例。
@@ -202,11 +205,54 @@ def get_vector_store(collection_name: str = "semantic_models") -> VectorStore:
     # 向后兼容: 默认 collection 走原单例
     is_default = collection_name == "semantic_models"
     if is_default and _vector_store is not None:
-        return _vector_store
-    # 多 collection 缓存
-    if actual in _vector_stores:
-        return _vector_stores[actual]
+        cached = _vector_store
+    elif actual in _vector_stores:
+        cached = _vector_stores[actual]
+    else:
+        cached = None
 
+    # 降级恢复: 当前是 Mock + backend=milvus → 检查 Milvus 是否恢复了
+    # 或当前是 MilvusVectorStore 但连接已断 → 检查并重建
+    if cached is not None and settings.vector_store_backend == "milvus":
+        need_rebuild = False
+        if isinstance(cached, MockVectorStore):
+            need_rebuild = True  # Mock 降级 → 尝试恢复到 Milvus
+        else:
+            # MilvusVectorStore: 检查 Milvus 连接是否仍然健康
+            # 对标审计发现: 缓存的 MilvusVectorStore 可能持有断裂的 _client 引用
+            try:
+                from app.core.milvus_client import is_milvus_healthy
+                if not is_milvus_healthy():
+                    need_rebuild = True  # 连接断了 → 重建 (is_milvus_healthy 已重置单例)
+            except Exception:
+                need_rebuild = True  # 健康检查失败 → 重建
+
+        if need_rebuild:
+            try:
+                from app.core.milvus_client import is_milvus_healthy, get_milvus_client
+                if is_milvus_healthy():
+                    from app.services.milvus_vector_store import MilvusVectorStore
+                    client = get_milvus_client()
+                    store = MilvusVectorStore(
+                        client=client,
+                        collection_name=actual,
+                        dim=settings.embedding_dim,
+                    )
+                    _logger.warning("VectorStore: 从降级恢复为 Milvus (collection=%s)", actual)
+                    _vector_stores[actual] = store
+                    if is_default:
+                        _vector_store = store
+                    return store
+            except Exception as e:
+                _logger.debug("VectorStore: Milvus 恢复失败, 继续用当前 store: %s", e)
+        else:
+            # MilvusVectorStore 且连接健康, 直接返回
+            return cached
+
+    if cached is not None:
+        return cached
+
+    # 首次创建
     backend = settings.vector_store_backend
     store: VectorStore
     if backend == "milvus":
