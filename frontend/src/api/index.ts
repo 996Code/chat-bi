@@ -325,11 +325,22 @@ export interface Memory {
   consolidated?: boolean
 }
 
+export interface ConsolidateStatus {
+  status: string       // idle | running | done | failed
+  progress: number     // 0-100
+  stage: string        // 当前步骤文字
+  result?: { consolidated: number; total: number; detail: string }
+  error?: string
+}
+
 export const memory = {
   list(dataSourceId: string, includeConsolidated = false) { return apiClient.get<Memory[]>('/memory', { params: { data_source_id: dataSourceId, include_consolidated: includeConsolidated } }) },
   save(data: Partial<Memory> & { name: string; description: string; content: string }, dataSourceId: string) { return apiClient.put<Memory>('/memory', data, { params: { data_source_id: dataSourceId } }) },
   delete(id: string, dataSourceId: string) { return apiClient.delete(`/memory/${id}`, { params: { data_source_id: dataSourceId } }) },
-  consolidate(dataSourceId: string, ids?: string[]) { return apiClient.post('/memory/consolidate', ids ? { ids } : null, { params: { data_source_id: dataSourceId } }) },
+  /** 触发整理 (异步, 返回 202) */
+  consolidate(dataSourceId: string, ids?: string[]) { return apiClient.post<ConsolidateStatus>('/memory/consolidate', ids ? { ids } : null, { params: { data_source_id: dataSourceId } }) },
+  /** 查询整理状态 (轮询用) */
+  consolidateStatus(dataSourceId: string) { return apiClient.get<ConsolidateStatus>('/memory/consolidate/status', { params: { data_source_id: dataSourceId } }) },
 }
 
 // ── 看板 (V1 Dashboard + Widget) ─────────────────────────────

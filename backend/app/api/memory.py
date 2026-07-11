@@ -10,13 +10,16 @@ Agent Memory API — 记忆管理 (T045)
             避免跨库召回错误知识)。
 
 标识: 每条记忆有不可变的 UUID id (文件名), name 是可编辑的标题。
+
+整理: 异步任务模式 (对标数据源扫描), POST 返回 202, 前端轮询状态。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.core.auth import require_admin
@@ -120,8 +123,26 @@ class MemorySave(BaseModel):
 
 
 class ConsolidateRequest(BaseModel):
-    """整理记忆请求。names=None 整理全部, 有值只整理指定的。"""
+    """整理记忆请求。ids=None 整理全部, 有值只整理指定的。"""
     ids: list[str] | None = None
+
+
+class ConsolidateStatus(BaseModel):
+    """整理任务状态 (内存 dict, 不存 DB)。"""
+    status: str = "idle"          # idle | running | done | failed
+    progress: int = 0             # 0-100
+    stage: str = ""               # 当前步骤文字
+    result: dict | None = None    # 完成后的结果
+    error: str | None = None      # 失败原因
+
+
+# 内存状态: {(tenant_id, ds_id): ConsolidateStatus}
+_consolidate_status: dict[tuple[str, str], ConsolidateStatus] = {}
+
+
+def _get_consolidate_status(tenant_id: str, ds_id: str) -> ConsolidateStatus:
+    """获取整理状态 (无记录时返回 idle)。"""
+    return _consolidate_status.get((tenant_id, ds_id), ConsolidateStatus())
 
 
 @router.get("", response_model=list[MemoryOut])
@@ -199,19 +220,62 @@ async def delete_memory(
     return {"deleted": mem_id}
 
 
-@router.post("/consolidate")
+@router.post("/consolidate", status_code=status.HTTP_202_ACCEPTED)
 async def consolidate_memories(
     data_source_id: str = Query(..., description="数据源 ID"),
     body: ConsolidateRequest | None = None,
     user=Depends(require_admin),
 ):
-    """整理记忆 — LLM 合并去重, 保留精炼版。
+    """整理记忆 — 异步任务模式 (对标数据源扫描)。
 
-    body.ids 指定只整理哪些记忆 (None = 整理全部未整理的)。
-    原有记忆标记 consolidated=true (默认隐藏), 合并结果作为新记忆写入。
+    POST 返回 202, 后台 asyncio.create_task 跑 LLM 整理。
+    前端轮询 GET /memory/consolidate/status 拿进度。
+    防重复: running 时拒绝 (409)。
     """
-    store = _get_ds_store(user.tenant_id, data_source_id)
-    from app.ai.recall import consolidate_memories as _consolidate
+    key = (user.tenant_id, data_source_id)
+    current = _get_consolidate_status(user.tenant_id, data_source_id)
+    if current.status == "running":
+        raise HTTPException(status_code=409, detail="该数据源正在整理中, 请等待完成")
+
+    # 标记运行中
+    cs = ConsolidateStatus(status="running", progress=5, stage="准备中...")
+    _consolidate_status[key] = cs
+
     ids = body.ids if body else None
-    result = await _consolidate(store, memory_dir=f"memory/{user.tenant_id}/{data_source_id}", ids=ids)
-    return result
+    asyncio.create_task(_run_consolidate_background(user.tenant_id, data_source_id, ids))
+
+    return cs
+
+
+@router.get("/consolidate/status", response_model=ConsolidateStatus)
+async def get_consolidate_status(
+    data_source_id: str = Query(..., description="数据源 ID"),
+    user=Depends(require_admin),
+):
+    """查询整理任务状态 — 前端轮询用。"""
+    return _get_consolidate_status(user.tenant_id, data_source_id)
+
+
+async def _run_consolidate_background(tenant_id: str, ds_id: str, ids: list[str] | None) -> None:
+    """后台跑整理全流程 (更新内存状态, 不依赖 DB session)。"""
+    key = (tenant_id, ds_id)
+    cs = _consolidate_status[key]
+
+    def on_progress(pct: int, stage: str):
+        cs.progress = pct
+        cs.stage = stage
+
+    try:
+        store = _get_ds_store(tenant_id, ds_id)
+        from app.ai.recall import consolidate_memories as _consolidate
+        result = await _consolidate(store, memory_dir=f"memory/{tenant_id}/{ds_id}", ids=ids, on_progress=on_progress)
+        cs.status = "done"
+        cs.progress = 100
+        cs.stage = "完成"
+        cs.result = result
+        logger.info("记忆整理完成: tenant=%s ds=%s result=%s", tenant_id, ds_id, result.get("detail", ""))
+    except Exception as e:
+        cs.status = "failed"
+        cs.error = str(e)
+        cs.stage = "失败"
+        logger.warning("记忆整理失败: tenant=%s ds=%s error=%s", tenant_id, ds_id, e)

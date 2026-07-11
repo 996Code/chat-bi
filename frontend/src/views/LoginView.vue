@@ -145,6 +145,7 @@ async function devLogin() {
       tenant_id: devForm.tenant_id, role: devForm.role,
     })
     setToken(data.access_token)
+    localStorage.setItem('refresh_token', data.refresh_token)
     ElMessage.success('登录成功')
     router.push('/chat')
   } catch (e: any) {

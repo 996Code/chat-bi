@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +245,7 @@ async def consolidate_memories(
     store,  # AgentMemoryStore
     memory_dir: str,
     ids: list[str] | None = None,
+    on_progress: Callable[[int, str], None] | None = None,
 ) -> dict:
     """整理记忆 — LLM 合并去重碎片化记忆。
 
@@ -254,10 +256,17 @@ async def consolidate_memories(
         store: AgentMemoryStore 实例
         memory_dir: 记忆目录
         ids: 只整理指定的记忆 (None = 整理全部未整理的)
+        on_progress: 进度回调 (progress 0-100, stage 描述文字)
 
     Returns:
         {"consolidated": int, "total": int, "detail": str}
     """
+    def _progress(pct: int, stage: str):
+        if on_progress:
+            on_progress(pct, stage)
+
+    _progress(5, "准备中...")
+
     all_memories = store.list_memories()
     # 过滤: 已整理的不参与, ids 非空时只取指定的 (空列表/None 都表示整理全部)
     memories = []
@@ -269,9 +278,11 @@ async def consolidate_memories(
         memories.append(m)
 
     if len(memories) <= 1:
+        _progress(100, "完成")
         return {"consolidated": 0, "total": len(memories), "detail": "记忆条目较少, 无需整理"}
 
     # 读取所有记忆内容
+    _progress(10, "读取记忆内容...")
     all_content = []
     for m in memories:
         full = store.read_memory(m["id"]) or ""
@@ -280,7 +291,10 @@ async def consolidate_memories(
             all_content.append(f"[{m['name']}] ({m.get('type', 'project')}) {m.get('description', '')}\n{body}")
 
     if not all_content:
+        _progress(100, "完成")
         return {"consolidated": 0, "total": len(memories), "detail": "无有效记忆内容可整理"}
+
+    _progress(30, "调用 LLM 整理中...")
 
     prompt = (
         "你是 BI Agent 的记忆整理模块。将以下碎片化的记忆合并为更精炼的几条。\n\n"
@@ -301,40 +315,44 @@ async def consolidate_memories(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
         )
+
+        _progress(80, "写入整理结果...")
         from app.core.llm_json import parse_json_response
         parsed = parse_json_response(content)
         if not parsed:
+            _progress(100, "完成")
             return {"consolidated": 0, "total": len(memories), "detail": "LLM 未返回有效结果"}
         # 兼容: LLM 可能返回 dict 而非 list
         if isinstance(parsed, dict):
             parsed = parsed.get("memories", [parsed])
         if not isinstance(parsed, list):
+            _progress(100, "完成")
             return {"consolidated": 0, "total": len(memories), "detail": "LLM 返回格式异常"}
 
-        # 写入整理后的记忆 (每条生成新 UUID, 不用前缀)
+        # 写入整理后的记忆 (每条生成新 UUID, 类型统一为 consolidated)
         saved = 0
         for item in parsed:
             name = item.get("name", "").strip()
             desc = item.get("description", "").strip()
             mem_content = item.get("content", "").strip()
-            mem_type = item.get("type", "project")
             if not name or not mem_content:
                 continue
-            # name 不再需要前缀, UUID 保证唯一
             store.save_memory(
                 name=name,
                 description=desc or name,
                 content=mem_content,
-                memory_type=mem_type,
+                memory_type="consolidated",
             )
             saved += 1
 
         # 标记原始记忆为已整理
+        _progress(90, "标记原始记忆...")
         marked = 0
         for m in memories:
             store.mark_consolidated(m["id"])
             marked += 1
 
+        _progress(100, "完成")
         return {
             "consolidated": saved,
             "total": len(memories),

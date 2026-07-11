@@ -89,8 +89,8 @@ class Settings(BaseSettings):
     secret_key: str = "CHANGE_ME_SECRET_KEY"
     fernet_key: str = "CHANGE_ME_FERNET_KEY"
     jwt_algorithm: str = "HS256"
-    jwt_expire_minutes: int = 60
-    jwt_refresh_expire_days: int = 7
+    jwt_expire_minutes: int = 480  # 8h (开发友好, 生产可通过环境变量调短)
+    jwt_refresh_expire_days: int = 30
     bcrypt_rounds: int = 12
     max_login_attempts: int = 5
     login_lock_minutes: int = 30

@@ -6,11 +6,21 @@
         <el-select v-model="selectedDsId" placeholder="选择数据源" size="small" style="width: 200px; margin-right: 8px" @change="fetchData">
           <el-option v-for="ds in dataSources" :key="ds.id" :label="ds.name" :value="ds.id" />
         </el-select>
-        <el-button type="primary" :icon="Plus" :disabled="!selectedDsId" @click="openEditor()">新建记忆</el-button>
-        <el-button :icon="Sort" :loading="consolidating" :disabled="!selectedDsId || selectableMems.length === 0" @click="doConsolidate">
-          整理记忆<span v-if="selectedIds.size > 0" class="sel-count">({{ selectedIds.size }})</span>
+        <el-button type="primary" :icon="Plus" :disabled="!selectedDsId || consolidating" @click="openEditor()">新建记忆</el-button>
+        <el-button
+          :icon="Sort"
+          :loading="consolidating"
+          :disabled="!selectedDsId || selectableMems.length === 0 || consolidating"
+          @click="doConsolidate"
+        >
+          <template v-if="consolidating">
+            整理中 {{ consolidateProgress }}% — {{ consolidateStage }}
+          </template>
+          <template v-else>
+            整理记忆<span v-if="selectedIds.size > 0" class="sel-count">({{ selectedIds.size }})</span>
+          </template>
         </el-button>
-        <el-button :icon="Refresh" @click="fetchData">刷新</el-button>
+        <el-button :icon="Refresh" :disabled="consolidating" @click="fetchData">刷新</el-button>
       </div>
     </div>
 
@@ -81,7 +91,7 @@
               <el-tag size="small" type="success" style="margin-left: 4px">自动召回</el-tag>
               <el-tag v-if="mem.consolidated" size="small" type="info" style="margin-left: 4px">已整理</el-tag>
             </div>
-            <div v-if="!mem.consolidated">
+            <div v-if="!mem.consolidated || mem.type === 'consolidated'">
               <el-button size="small" :icon="Edit" @click="openEditor(mem)">编辑</el-button>
               <el-button size="small" type="danger" plain :icon="Delete" @click="doDelete(mem)">删除</el-button>
             </div>
@@ -113,6 +123,7 @@
             <el-option label="用户 (user) — 个人偏好和习惯" value="user" />
             <el-option label="反馈 (feedback) — 经验教训" value="feedback" />
             <el-option label="参考 (reference) — 外部知识" value="reference" />
+            <el-option label="整理成果 (consolidated) — AI 整理产出" value="consolidated" />
           </el-select>
         </el-form-item>
         <el-form-item label="内容 (Markdown)">
@@ -129,10 +140,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Edit, Delete, InfoFilled, Sort, Lock } from '@element-plus/icons-vue'
-import { memory as memoryApi, datasource, type Memory } from '@/api'
+import { memory as memoryApi, datasource, type Memory, type ConsolidateStatus } from '@/api'
 import { extractErrorDetail } from '@/utils/error'
 
 const memoryList = ref<Memory[]>([])
@@ -140,6 +151,8 @@ const loading = ref(false)
 const editorVisible = ref(false)
 const saving = ref(false)
 const consolidating = ref(false)
+const consolidateProgress = ref(0)
+const consolidateStage = ref('')
 const editing = ref<Partial<Memory>>({
   name: '', description: '', type: 'project', content: '',
 })
@@ -148,6 +161,10 @@ const selectedDsId = ref<string>('')
 const showConsolidated = ref(false)
 // 勾选的记忆 id 集合 (只允许勾选未整理的)
 const selectedIds = ref<Set<string>>(new Set())
+
+// 轮询定时器
+let _pollTimer: ReturnType<typeof setInterval> | null = null
+let _pollFailCount = 0
 
 // 可勾选的记忆 = 未整理的
 const selectableMems = computed(() => memoryList.value.filter(m => !m.consolidated))
@@ -169,7 +186,68 @@ function toggleSelectAll(checked: boolean) {
   }
 }
 
-// 示例模板
+// ── 整理轮询 ──────────────────────────────────────────────
+
+function startPolling() {
+  stopPolling()
+  _pollFailCount = 0
+  _pollTimer = setInterval(pollConsolidateStatus, 2000)
+}
+
+function stopPolling() {
+  if (_pollTimer) {
+    clearInterval(_pollTimer)
+    _pollTimer = null
+  }
+}
+
+async function pollConsolidateStatus() {
+  if (!selectedDsId.value) return
+  try {
+    const { data } = await memoryApi.consolidateStatus(selectedDsId.value)
+    consolidateProgress.value = data.progress
+    consolidateStage.value = data.stage
+
+    if (data.status === 'done') {
+      stopPolling()
+      consolidating.value = false
+      const detail = data.result?.detail || '整理完成'
+      ElMessage.success(detail)
+      selectedIds.value = new Set()
+      await fetchData()
+    } else if (data.status === 'failed') {
+      stopPolling()
+      consolidating.value = false
+      ElMessage.error('整理失败: ' + (data.error || '未知错误'))
+      await fetchData()
+    }
+    _pollFailCount = 0
+  } catch {
+    _pollFailCount++
+    if (_pollFailCount >= 10) {
+      stopPolling()
+      consolidating.value = false
+      ElMessage.error('网络异常，轮询已停止')
+    }
+  }
+}
+
+/** 页面加载时检查是否有进行中的整理任务 (用户刷新页面后恢复进度) */
+async function checkRunningConsolidate() {
+  if (!selectedDsId.value) return
+  try {
+    const { data } = await memoryApi.consolidateStatus(selectedDsId.value)
+    if (data.status === 'running') {
+      consolidating.value = true
+      consolidateProgress.value = data.progress
+      consolidateStage.value = data.stage
+      startPolling()
+    }
+  } catch { /* 静默忽略 */ }
+}
+
+// ── 示例模板 ──────────────────────────────────────────────
+
 const examples = [
   {
     name: '订单业务约定',
@@ -221,6 +299,8 @@ function createFromExample(ex: typeof examples[0]) {
   editorVisible.value = true
 }
 
+// ── 数据加载 ──────────────────────────────────────────────
+
 async function fetchDataSources() {
   try {
     const { data } = await datasource.list()
@@ -228,6 +308,8 @@ async function fetchDataSources() {
     if (data.length && !selectedDsId.value) {
       selectedDsId.value = data[0].id
       await fetchData()
+      // 检查是否有进行中的整理任务
+      await checkRunningConsolidate()
     }
   } catch (e: any) {
     console.error('数据源列表加载失败:', e)
@@ -304,27 +386,35 @@ async function doConsolidate() {
     await ElMessageBox.confirm(`${hint}，合并后原始记忆标记为已整理（默认隐藏）`, '整理记忆', { type: 'info' })
   } catch { return }
   consolidating.value = true
+  consolidateProgress.value = 0
+  consolidateStage.value = '提交中...'
   try {
-    const { data } = await memoryApi.consolidate(selectedDsId.value, ids)
-    ElMessage.success(data.detail || `整理完成`)
-    await fetchData()
+    await memoryApi.consolidate(selectedDsId.value, ids)
+    // POST 返回 202, 启动轮询
+    startPolling()
   } catch (e: any) {
-    ElMessage.error('整理失败: ' + (extractErrorDetail(e)))
-  } finally {
     consolidating.value = false
+    if (e.response?.status === 409) {
+      // 已在运行, 直接开始轮询
+      consolidating.value = true
+      startPolling()
+    } else {
+      ElMessage.error('整理失败: ' + (extractErrorDetail(e)))
+    }
   }
 }
 
 function typeLabel(t: string): string {
-  const map: Record<string, string> = { project: '项目', user: '用户', feedback: '反馈', reference: '参考' }
+  const map: Record<string, string> = { project: '项目', user: '用户', feedback: '反馈', reference: '参考', consolidated: '整理成果' }
   return map[t] || t
 }
 function typeTag(t: string): any {
-  const map: Record<string, any> = { project: '', user: 'success', feedback: 'warning', reference: 'info' }
+  const map: Record<string, any> = { project: '', user: 'success', feedback: 'warning', reference: 'info', consolidated: 'danger' }
   return map[t] || ''
 }
 
 onMounted(fetchDataSources)
+onUnmounted(stopPolling)
 </script>
 
 <style scoped>
