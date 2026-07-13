@@ -14,7 +14,7 @@ export const devAuth = {
     email?: string
     role?: 'admin' | 'user' | 'read_only'
   }) {
-    return apiClient.post<{ access_token: string; token_type: string }>(
+    return apiClient.post<{ access_token: string; refresh_token: string; token_type: string }>(
       '/dev/token',
       {
         tenant_id: 'default_tenant',

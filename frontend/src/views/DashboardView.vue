@@ -336,9 +336,22 @@ function renderWidgetContent(w: DashboardWidget) {
 
   const chartOpt = widgetCharts[w.id]
   const data = widgetData[w.id]
+  const hasData = data?.rows?.length > 0
 
-  // 有图表配置 → 渲染图表
-  if (chartOpt && chartOpt.series) {
+  // KPI 指标卡 → 紧凑 gauge (200px)
+  if (chartOpt && chartOpt.chart_type === 'kpi' && hasData) {
+    bodyEl.innerHTML = `<div class="widget-chart" data-wid="${w.id}-chart" style="width:100%;height:200px"></div>`
+    nextTick(() => {
+      const chartEl = document.querySelector(`[data-wid="${w.id}-chart"]`) as HTMLElement
+      if (chartEl) {
+        const chart = echarts.init(chartEl)
+        chart.setOption(chartOpt)
+        chartInstances[w.id] = chart
+      }
+    })
+  }
+  // 有图表配置 + 有数据 → 渲染图表
+  else if (chartOpt && chartOpt.series && hasData) {
     bodyEl.innerHTML = `<div class="widget-chart" data-wid="${w.id}-chart" style="width:100%;height:100%;min-height:220px"></div>`
     nextTick(() => {
       const chartEl = document.querySelector(`[data-wid="${w.id}-chart"]`) as HTMLElement
@@ -350,7 +363,7 @@ function renderWidgetContent(w: DashboardWidget) {
     })
   }
   // 无图表但有数据 → 渲染表格
-  else if (data?.columns?.length) {
+  else if (data?.columns?.length && hasData) {
     const rowsHtml = data.rows.slice(0, 20).map((row: any[]) =>
       `<tr>${data.columns.map((c: string, i: number) => `<td>${escapeHtml(String(row[i] ?? ''))}</td>`).join('')}</tr>`
     ).join('')

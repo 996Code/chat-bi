@@ -1,77 +1,51 @@
-## 记忆整理异步化 — 异步+轮询模式
+## 图表选择引擎改进 — KPI 指标卡 + 表格降级
 
-对标数据源扫描的 `asyncio.create_task()` + 状态轮询模式，但**不新增 DB 表**（记忆是文件存储，用内存 dict 跟踪状态即可）。
+### 问题
 
-### 后端改动
+V2 当前图表选择比 V1 差在：
+1. **单值查询**（如"总销售额"）→ 返回空 `{}`，SSE 路径不发送 chart 事件，前端无任何可视化
+2. **默认降级** → 硬塞柱状图，不适合图表的数据也画柱状图
+3. **缺少表格模式** → 单列多行等场景没有表格展示
 
-**1. `backend/app/api/memory.py` — 新增状态管理 + 异步端点**
+### 改动
 
-新增内存状态 dict：
-```python
-# { (tenant_id, ds_id): ConsolidateStatus }
-_consolidate_status: dict[tuple[str, str], ConsolidateStatus] = {}
+#### 1. 后端 `chart_agent.py` — 新增 KPI 和 TABLE 图表类型
 
-class ConsolidateStatus(BaseModel):
-    status: str = "idle"          # idle | running | done | failed
-    progress: int = 0             # 0-100
-    stage: str = ""               # 当前步骤文字
-    result: dict | None = None    # 完成后的结果
-    error: str | None = None      # 失败原因
-```
+**`inject_data` 新增 `kpi` 类型**：
+- 返回 ECharts gauge 无指针模式（大数字居中显示 + 列名作标题）
+- 前端 `setOption` 直接支持，无需额外组件
 
-改造 `POST /memory/consolidate`：
-- 检查是否已在运行（`status == "running"` → 409）
-- 设置 `status="running", progress=5, stage="准备中"`
-- `asyncio.create_task(_run_consolidate_background(...))`
-- 返回 **202 Accepted** + 当前 ConsolidateStatus
+**`infer_chart_by_rule` 修改决策树**（对齐 V1 规划）：
+1. 单值 (1行1列数值) → **kpi** 指标卡
+2. 单列多行 / 维度唯一值 > 50 / 全文本列 → **table**
+3. 时间维度 → line
+4. 占比/分布 ≤10 → pie
+5. 默认 → bar
 
-新增 `GET /memory/consolidate/status`：
-- 返回当前 ConsolidateStatus（无记录时返回 idle）
+**`_CHART_PROMPT` 更新**：新增 kpi 和 table 类型说明
 
-新增后台任务 `_run_consolidate_background(tenant_id, ds_id, ids)`：
-- 独立 session（和扫描一样）
-- 分阶段更新进度：
-  - 10% "读取记忆内容..."
-  - 30% "调用 LLM 整理中..."（最耗时）
-  - 80% "写入整理结果..."
-  - 90% "标记原始记忆..."
-  - 100% "完成"
-- 成功：`status="done", result={consolidated, total, detail}`
-- 失败：`status="failed", error=str(e)`
+**`analyze_data_shape` 新增 `table_recommended` 标志**：维度唯一值 > 50、全文本列等场景
 
-**2. `backend/app/ai/recall.py` — 拆分 consolidate_memories 为可回调进度的版本**
+#### 2. 后端 `chat_stream.py` — 修复空 option 不发送 chart 事件
 
-新增 `consolidate_memories_async(store, memory_dir, ids, on_progress)`：
-- `on_progress(progress: int, stage: str)` 回调函数
-- 逻辑和原版完全一致，只在关键步骤间调用 `on_progress`
-- 原版 `consolidate_memories` 保留（测试用），内部调用 async 版
+`if state.chart_option:` → `if state.chart_option is not None:`，让 KPI gauge option 正常发送
 
-### 前端改动
+#### 3. 后端 `dashboard.py` — 处理 kpi/table 类型
 
-**3. `frontend/src/api/index.ts` — 新增状态查询 API**
+- `chart_type="kpi"` 时 `inject_data` 正常返回 gauge option ✅（已兼容）
+- `chart_type="table"` 时跳过 `inject_data`，直接返回 None → 看板走表格渲染 ✅（已兼容）
 
-```typescript
-consolidate(dataSourceId: string, ids?: string[]) {
-  return apiClient.post('/memory/consolidate', ids ? { ids } : null, { params: { data_source_id: dataSourceId } })
-},
-consolidateStatus(dataSourceId: string) {
-  return apiClient.get<{ status: string; progress: number; stage: string; result?: any; error?: string }>(
-    '/memory/consolidate/status', { params: { data_source_id: dataSourceId } }
-  )
-},
-```
+#### 4. 前端 `ChatView.vue` — 支持 KPI 和 TABLE 渲染
 
-**4. `frontend/src/views/MemoryView.vue` — 轮询进度 UI**
+- **KPI**：ECharts gauge 无指针模式，`setOption` 直接支持，无需额外组件
+- **TABLE**：当 `msg.chart.chart_type === "table"` 时，不调 ECharts，渲染 HTML 表格（复用已有样式）
+- chart 容器判断调整，避免空图表
 
-- 点击"整理记忆"后，POST 返回 202，启动 2 秒轮询 `consolidateStatus`
-- 按钮显示进度条：`整理中 (30%) — 调用 LLM 整理中...`
-- `status === "done"` → 停轮询，显示成功消息，刷新列表
-- `status === "failed"` → 停轮询，显示错误消息
-- 连续 10 次网络错误 → 停轮询
-- `onUnmounted` 清理定时器
-- 页面加载时检查是否有 running 状态（用户刷新页面后能恢复进度）
+#### 5. 前端 `DashboardView.vue` — 无需调整
+
+看板已有 fallback：`chartOpt.series` → ECharts，否则 → HTML 表格。KPI gauge 有 series 自动走 ECharts，table 无 series 自动走表格。
 
 ### 测试
 
 - 跑 `.venv/bin/python -m pytest backend/tests/ -q` 确认不破坏
-- 新增测试：验证 consolidate 端点返回 202、状态查询返回正确进度、防重复 409
+- 手动验证："总销售额" → KPI 指标卡；不适合图表 → 表格

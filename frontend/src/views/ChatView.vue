@@ -114,8 +114,8 @@
               </div>
 
               <!-- BI 图表 (查询完成后图表为主, 展示在流程前面) -->
-              <div v-if="msg.chart" class="chart-box">
-                <div :ref="(el: any) => setChartRef(el, idx)" style="width: 100%; height: 350px"></div>
+              <div v-if="msg.chart && msg.chart.chart_type !== 'table' && msg.rows?.length" class="chart-box">
+                <div :ref="(el: any) => setChartRef(el, idx)" :style="{ width: '100%', height: msg.chart.chart_type === 'kpi' ? '200px' : '350px' }"></div>
                 <div class="chart-toolbar">
                   <!-- 左侧: 导出 Excel + 保存到看板 -->
                   <div class="chart-toolbar-left">
@@ -129,6 +129,25 @@
                     @click="openTraceDialog(msg)"
                   >完整流程</el-button>
                 </div>
+              </div>
+              <!-- TABLE 图表类型: 渲染 HTML 表格 -->
+              <div v-if="msg.chart && msg.chart.chart_type === 'table' && msg.columns?.length && msg.rows?.length" class="chart-box chart-table-box">
+                <div class="chart-table-wrap">
+                  <table class="chart-table">
+                    <thead><tr><th v-for="c in msg.columns" :key="c">{{ c }}</th></tr></thead>
+                    <tbody>
+                      <tr v-for="(row, ri) in (msg.rows || []).slice(0, 20)" :key="ri">
+                        <td v-for="c in msg.columns" :key="c">{{ row[c] ?? '' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div v-if="((msg.rows?.length || 0) > 20)" class="table-more">共 {{ msg.rows?.length }} 行, 仅展示前 20 行</div>
+                </div>
+              </div>
+              <!-- 查询无结果: 有列结构但无数据行 (无论有无旧 chart option) -->
+              <div v-if="msg.columns?.length && !(msg.rows?.length) && msg.done" class="result-meta" style="display:flex;align-items:center;justify-content:space-between;">
+                <span style="color:#909399;font-size:0.82rem;">查询无匹配数据</span>
+                <el-button v-if="msg.steps?.length" text size="small" :icon="QuestionFilled" @click="openTraceDialog(msg)">完整流程</el-button>
               </div>
 
               <!-- Pipeline (V1 交互: 执行中竖排实时显示, 完成后隐藏 → 弹窗看完整流程) -->
@@ -1078,6 +1097,10 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
 function renderChart(idx: number, retries = 3) {
   const msg = messages.value[idx]
   if (!msg?.chart) return
+  // table 类型不调 ECharts, 由模板直接渲染 HTML 表格
+  if (msg.chart.chart_type === 'table') return
+  // 0 行数据不渲染图表 (避免空坐标轴)
+  if (!msg.rows?.length) return
   const el = chartRefs[idx]
   if (!el) {
     // ref 未就绪: DOM 可能还在更新中, 短延迟重试 (健壮性, 不只为特定场景)
@@ -1098,7 +1121,15 @@ function renderChart(idx: number, retries = 3) {
     }
   }
   try {
-    chart.setOption(msg.chart, true)  // true = notMerge, 替换而非合并
+    // KPI gauge: 替换 formatter 为千分位格式化 (JSON option 不支持函数, 需前端注入)
+    const opt = msg.chart
+    if (opt.chart_type === 'kpi' && opt.series?.[0]) {
+      opt.series[0].detail = { ...opt.series[0].detail, formatter: (v: any) => {
+        const num = typeof v === 'object' ? v.value : v
+        return num != null ? Number(num).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '-'
+      }}
+    }
+    chart.setOption(opt, true)  // true = notMerge, 替换而非合并
   } catch (e) {
     console.warn(`[ChatView] chart.setOption failed for msg ${idx}:`, e)
     try { chart.dispose() } catch { /* ignore */ }
@@ -1109,6 +1140,8 @@ function renderChart(idx: number, retries = 3) {
 /** 当前图表类型 (从 series 推断) */
 /** 获取当前图表类型 (从 series[0].type 推断) */
 function currentChartType(msg: Message): string {
+  // 优先使用 chart_type 字段 (kpi/table 由后端显式标记)
+  if (msg.chart?.chart_type) return msg.chart.chart_type
   if (!msg.chart?.series?.length) return 'bar'
   return msg.chart.series[0].type || 'bar'
 }
@@ -1399,6 +1432,13 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
 .result-box { margin: 4px 0 8px; }
 .result-meta { font-size: 0.8rem; color: #909399; margin-bottom: 6px; }
 .chart-box { margin-bottom: 12px; }
+.chart-table-box { background: #fafafa; border-radius: 6px; padding: 12px; }
+.chart-table-wrap { overflow-x: auto; }
+.chart-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.chart-table th { background: #f5f7fa; padding: 6px 10px; text-align: left; border-bottom: 2px solid #ebeef5; font-weight: 600; white-space: nowrap; }
+.chart-table td { padding: 5px 10px; border-bottom: 1px solid #ebeef5; white-space: nowrap; }
+.chart-table tbody tr:hover { background: #f5f7fa; }
+.table-more { font-size: 0.75rem; color: #909399; margin-top: 6px; text-align: center; }
 /* 弹窗内结果表格 */
 .trace-result-table { margin-top: 4px; overflow-x: auto; }
 .trace-result-table .el-table { border-radius: 4px; }

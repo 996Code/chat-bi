@@ -261,7 +261,7 @@ async def chat_stream(
                 # 对标 O8: 图表降级也传播
                 if getattr(chart, "degraded", False):
                     state.degraded = True
-                if state.chart_option:
+                if state.chart_option is not None:
                     yield emit("chart", {
                         "option": state.chart_option,
                         "duration_ms": round((time.monotonic() - t0) * 1000),
@@ -545,7 +545,7 @@ async def chat_stream(
             # 对标 O8: 图表降级也传播 (LLM 失败 → 规则推断时 degraded=True)
             if getattr(chart, "degraded", False):
                 state.degraded = True
-            if state.chart_option:
+            if state.chart_option is not None:
                 _chart_dur = round((time.monotonic() - t0) * 1000)
                 yield emit("chart", {
                     "option": state.chart_option,
@@ -650,7 +650,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
                 "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
                 "success": state.success,
             } if (exec_result or state.success) else {},
-            chart_type=state.chart_option.get("series", [{}])[0].get("type") if state.chart_option else None,
+            chart_type=state.chart_option.get("chart_type") or (state.chart_option.get("series", [{}])[0].get("type") if state.chart_option.get("series") else None) if state.chart_option else None,
             title=title,
             first_question=state.question if is_new else "",
             # 本轮完整信息 (历史对话恢复用)

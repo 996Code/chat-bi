@@ -363,7 +363,7 @@ async def chat(
                     "row_count": len(exec_result.rows) if exec_result and hasattr(exec_result, "rows") else 0,
                     "success": state.success,
                 } if exec_result or state.success else {},
-                chart_type=state.chart_option.get("series", [{}])[0].get("type") if state.chart_option else None,
+                chart_type=state.chart_option.get("chart_type") or (state.chart_option.get("series", [{}])[0].get("type") if state.chart_option.get("series") else None) if state.chart_option else None,
                 title=title,
                 first_question=question if is_new_conv else "",
                 question=question,

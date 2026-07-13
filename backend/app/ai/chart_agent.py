@@ -163,6 +163,7 @@ def analyze_data_shape(columns: list[str], rows: list[tuple]) -> dict:
         "first_col_is_time": False,
         "has_ratio_col": False,
         "single_value": False,
+        "table_recommended": False,
         "summary": "0行0列",
     }
     if col_count == 0:
@@ -220,8 +221,19 @@ def analyze_data_shape(columns: list[str], rows: list[tuple]) -> dict:
         for col in numeric_cols
     )
 
-    # 单值汇总: 1行 + 最多1个数值列
-    single_value = row_count == 1 and len(numeric_cols) <= 1
+    # 单值汇总: 1行 + 最多1个数值列 + 必须有数值列 (纯文本不算 KPI)
+    single_value = row_count == 1 and len(numeric_cols) <= 1 and len(numeric_cols) > 0
+
+    # 表格推荐: 不适合图表的场景 (对标 V1 规划: 默认 → TABLE)
+    # 1. 单列多行 (只有1列, 无法做维度-数值映射)
+    # 2. 维度唯一值 > 50 (柱状图太密, 饼图不可读)
+    # 3. 无数值列 (全文本, 无法做数值映射)
+    table_recommended = (
+        (col_count == 1 and row_count > 1)
+        or (dim_unique_count > 50)
+        or (len(numeric_cols) == 0 and row_count > 1)
+        or (row_count == 1 and len(numeric_cols) > 1)  # 单行多数值列, 柱状图无意义
+    )
 
     shape = {
         "row_count": row_count,
@@ -233,6 +245,7 @@ def analyze_data_shape(columns: list[str], rows: list[tuple]) -> dict:
         "first_col_is_time": first_col_is_time,
         "has_ratio_col": has_ratio_col,
         "single_value": single_value,
+        "table_recommended": table_recommended,
     }
 
     # 人类可读摘要 (供 LLM prompt 使用)
@@ -250,31 +263,86 @@ def analyze_data_shape(columns: list[str], rows: list[tuple]) -> dict:
     return shape
 
 
+def _build_kpi_option(val: float, col_name: str) -> dict:
+    """构建 KPI 指标卡 ECharts option (gauge 无指针, 大数字居中)。"""
+    # 动态范围: 正值 [0, val*1.5], 负值 [val*1.5, 0], 零值 [0, 1]
+    if val > 0:
+        g_min, g_max = 0, val * 1.5
+    elif val < 0:
+        g_min, g_max = val * 1.5, 0
+    else:
+        g_min, g_max = 0, 1
+    return {
+        "chart_type": "kpi",
+        "series": [{
+            "type": "gauge",
+            "startAngle": 0,
+            "endAngle": 0,
+            "min": g_min,
+            "max": g_max,
+            "pointer": {"show": False},
+            "progress": {"show": False},
+            "axisLine": {"lineStyle": {"width": 0}},
+            "axisTick": {"show": False},
+            "splitLine": {"show": False},
+            "axisLabel": {"show": False},
+            "detail": {
+                "valueAnimation": True,
+                "formatter": "{value}",
+                "fontSize": 36,
+                "offsetCenter": [0, "0%"],
+                "color": "inherit",
+            },
+            "title": {"show": True, "offsetCenter": [0, "60%"], "fontSize": 16},
+            "data": [{"value": val, "name": col_name}],
+        }],
+    }
+
+
 def infer_chart_by_rule(columns: list[str], rows: list[tuple]) -> dict | None:
-    """规则推断基础图表 (LLM 失败时的降级, 对标 AEE-008)。
+    """规则推断基础图表 (LLM 失败时的降级, 对标 AEE-008 + V1 规划)。
 
     基于数据特征推断 (而非硬编码列名关键词匹配):
-      - 单值汇总 (1行1列) → 空图表
+      - 单值汇总 (1行1列数值) → KPI 指标卡 (gauge 无指针)
+      - 不适合图表 (单列多行/维度过多/全文本) → 表格标记
       - 维度列含时间语义 → 折线图 (趋势)
       - 占比列 + 维度唯一值 ≤ _PIE_MAX_SLICES → 饼图
       - 维度唯一值 ≤ _PIE_MAX_SLICES + 单数值列 → 饼图 (分布场景)
       - 默认 → 柱状图
 
-    0 行结果: 仍返回图表 (空数据柱状图), 因为 0 是合法结果不是异常。
-              None 只在连列都没有时返回。
+    0 行结果: 不返回图表 (空数据画图无意义, 前端显示"无结果"提示)。
+              None 在无列结构或 0 行时返回。
 
     Returns:
-        ECharts option dict, 或 None (无列结构)
+        ECharts option dict, 或 None (无列结构 / 0 行结果)
     """
     if not columns:
+        return None
+
+    # 0 行结果: 不画空图表, 前端会显示"查询无结果"提示
+    if not rows:
         return None
 
     # 分析数据特征
     shape = analyze_data_shape(columns, rows)
 
-    # 单值汇总 → 空图表
+    # 单值汇总 → KPI 指标卡 (gauge 无指针, 大数字居中)
     if shape["single_value"]:
-        return {}
+        # 取数值
+        val = 0
+        col_name = columns[0] if columns else ""
+        if rows and rows[0]:
+            for ci, c in enumerate(columns):
+                v = _to_float(rows[0][ci]) if ci < len(rows[0]) else None
+                if v is not None:
+                    val = v
+                    col_name = c
+                    break
+        return _build_kpi_option(val, col_name)
+
+    # 不适合图表 → 表格标记 (前端渲染 HTML 表格)
+    if shape.get("table_recommended"):
+        return {"chart_type": "table"}
 
     # 维度列 → 列索引 (自动识别, 不假设第一列)
     dim_col = shape.get("dim_col") or columns[0]
@@ -346,17 +414,27 @@ def infer_chart_by_rule(columns: list[str], rows: list[tuple]) -> dict | None:
 
 _CHART_PROMPT = """你是 BI 数据可视化专家。根据查询结果的数据特征选择最合适的图表类型。
 
-图表类型选择规则:
+图表类型选择规则 (按优先级):
+- 单个汇总值 (1行1列数值, 如"总销售额") → kpi 指标卡
+- 不适合图表 (单列多行/维度唯一值>50/全文本列) → table 表格
 - 趋势/时间序列 (维度列含时间语义) → line 折线图
 - 占比/分布 (维度唯一值 ≤ 10 + 单数值列, 如各省份销售额) → pie 饼图
 - 对比/排名 (多类别 + 数值, 或多数值列) → bar 柱状图
 - 关联/相关性 (两个数值维度) → scatter 散点图
-- 单个汇总值 (1行1列数值) → 不需要 series, 返回空 option {{{{}}}}
 
 重要: 你只负责选择图表类型和指定数据列映射, 不要自己填充数据!
 数据将由系统根据你指定的列映射从完整结果集自动填充。
 
 你必须返回如下结构的 JSON:
+- 对于 kpi 指标卡:
+  {{{{
+    "chart_type": "kpi",
+    "measure_cols": ["数值列名"]
+  }}}}
+- 对于 table 表格:
+  {{{{
+    "chart_type": "table"
+  }}}}
 - 对于 line/bar/scatter 图:
   {{{{
     "chart_type": "bar|line|scatter",
@@ -369,13 +447,11 @@ _CHART_PROMPT = """你是 BI 数据可视化专家。根据查询结果的数据
     "dim_col": "类别列名",
     "measure_cols": ["单个数值列名"]
   }}}}
-- 单值汇总 (1行1列):
-  {{{{}}}}
 
 规则:
 1. 只返回 JSON, 不要解释, 不要 markdown 包裹
 2. dim_col 通常是分类或时间维度列
-3. measure_cols 是要展示的数值列 (可多个, 但 pie 只能1个)
+3. measure_cols 是要展示的数值列 (可多个, 但 pie 只能1个, kpi 只能1个)
 4. 0 行结果正常返回结构即可
 
 数据特征:
@@ -403,19 +479,43 @@ def inject_data(
         rows: 完整结果行
 
     Returns:
-        ECharts option dict, 或 None (配置无效)
+        ECharts option dict, 或 None (配置无效 / 0 行结果)
     """
     if not chart_config or not columns:
+        return None
+
+    # 0 行结果: 不画空图表
+    if not rows:
         return None
 
     chart_type = chart_config.get("chart_type", "bar")
     dim_col = chart_config.get("dim_col")
     measure_cols = chart_config.get("measure_cols") or []
 
-    # 空配置 (单值汇总) → 返回空 option
-    if not chart_type or (chart_type == "bar" and not measure_cols and not dim_col):
-        if not chart_config:
-            return {}
+    # table 标记: 直接透传, 前端渲染 HTML 表格
+    if chart_type == "table":
+        return {"chart_type": "table"}
+
+    # KPI 指标卡: LLM 返回 chart_type=kpi 时程序化构建 gauge
+    if chart_type == "kpi":
+        # 取第一个数值列的值
+        col_index = {c: i for i, c in enumerate(columns)}
+        val = 0
+        col_name = columns[0] if columns else ""
+        if measure_cols:
+            m_idx = col_index.get(measure_cols[0])
+            if m_idx is not None and rows and rows[0] and len(rows[0]) > m_idx:
+                v = _to_float(rows[0][m_idx])
+                val = v if v is not None else 0
+                col_name = measure_cols[0]
+        elif rows and rows[0]:
+            for ci, c in enumerate(columns):
+                v = _to_float(rows[0][ci]) if ci < len(rows[0]) else None
+                if v is not None:
+                    val = v
+                    col_name = c
+                    break
+        return _build_kpi_option(val, col_name)
 
     # 列名 → 索引 (容错: 列名找不到时回退到默认假设)
     col_index = {c: i for i, c in enumerate(columns)}
@@ -496,9 +596,13 @@ async def generate_chart(
         chart_type_hint: 来自 T026 的图表类型提示
 
     Returns:
-        ChartResult — 始终返回 option (fail-closed, 降级到规则推断也不返回空)
+        ChartResult — 有数据时始终返回 option (fail-closed), 0 行时 option=None
     """
     from app.core.llm_client import llm_chat
+
+    # 0 行结果: 不画空图表, 跳过 LLM 调用 (省 token + 避免空图表)
+    if not rows:
+        return ChartResult(ok=False, option=None, error="查询无结果, 不生成图表")
 
     # 数据摘要 (不全量灌入, 防大结果撑爆 prompt)
     sample = rows[:5]
