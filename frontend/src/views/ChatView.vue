@@ -29,7 +29,8 @@
     <div class="chat-main">
       <div class="chat-header">
         <span class="title">ChatBI 问答</span>
-        <el-select v-model="selectedDsId" placeholder="选择数据源" size="small" style="width: 200px">
+        <span v-if="conversationId" class="conv-id-hint">{{ conversationId }}</span>
+        <el-select v-model="selectedDsId" placeholder="选择数据源" size="small" style="margin-left: auto; width: 200px">
           <el-option v-for="ds in dataSources" :key="ds.id" :label="ds.name" :value="ds.id" />
         </el-select>
         <el-button text size="small" @click="$router.push('/datasources')">数据源</el-button>
@@ -753,6 +754,33 @@ function formatTime(ts: string): string {
   }
 }
 
+// 乐观更新阶段的问题标题美化 (临时显示, complete 后被后端 LLM 标题覆盖)
+// 规则: 去问号/语气词/前后标点 → 截到首个自然断点(逗号/句号/空格)保证语义完整 → 限 30 字
+function prettifyTitle(q: string): string {
+  let t = q.trim()
+  // 去尾部问号 (中英文)
+  t = t.replace(/[?？]+$/, '')
+  // 循环剥离句首语气词 (复合前缀如"帮我看一下"需多轮剥离)
+  while (true) {
+    const m = t.match(/^(帮我|请帮|麻烦|能不能|可以|我想|给我|看一下|看一下吧|那个)\s*/)
+    if (!m) break
+    t = t.slice(m[0].length)
+  }
+  // 去句尾语气词 ($ 锚定, 只匹配一次)
+  t = t.replace(/(吧|呢|啊|呀|哦|嘛|哈)+$/, '')
+  t = t.trim()
+  // 截到自然断点 (逗号/顿号/分号/句号/空格), 超过上限优先在断点截断
+  const MAX = 30
+  const MIN_BREAK = 8  // 断点位置不足此长度则视为太靠前, 直接硬截到 MAX
+  if (t.length <= MAX) return t || '新对话'
+  const slice = t.slice(0, MAX)
+  const lastBreak = Math.max(
+    slice.lastIndexOf('，'), slice.lastIndexOf('、'),
+    slice.lastIndexOf(';'), slice.lastIndexOf(' '), slice.lastIndexOf('。'),
+  )
+  return (lastBreak > MIN_BREAK ? slice.slice(0, lastBreak) : slice).trim() || '新对话'
+}
+
 // ── 流式发送 (对标 V1 chatStore: fetch + ReadableStream 逐行解析) ──
 async function send() {
   const q = input.value.trim()
@@ -908,6 +936,29 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
   }
 
   switch (type) {
+    case 'start':
+      // 首事件: 立刻拿到 conversation_id (本地LLM慢, 不用等complete)
+      if (data.conversation_id) {
+        conversationId.value = data.conversation_id
+        // 乐观更新: 后端 _persist 在 pipeline 末尾才落库, 此时列表接口还读不到新对话
+        // 直接插入临时项 (标题前端规则美化), 等 complete 后 fetchConversations 拉真数据覆盖
+        // (start 时调 fetchConversations 拉到的是旧数据, 反而会用空结果覆盖乐观项)
+        if (!conversations.value.some(c => c.conversation_id === data.conversation_id)) {
+          const userMsg = messages.value[msgIdx - 1]
+          conversations.value.unshift({
+            conversation_id: data.conversation_id,
+            title: prettifyTitle(userMsg?.text || '新对话'),
+            turn_count: 0,
+            last_sql: '',
+            last_tables: [],
+            timestamp: new Date().toISOString(),
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            total_tokens: 0,
+          })
+        }
+      }
+      break
     case 'intent':
       updateStep('意图识别', 'done', { detail: data.intent, duration: data.duration_ms, ...llmInfo(data) })
       if (data.intent === 'GENERAL' || data.intent === 'EXPLANATION') {
@@ -1381,7 +1432,8 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
   display: flex; align-items: center; gap: 12px;
   padding: 12px 20px; border-bottom: 1px solid #ebeef5; background: #fff;
 }
-.title { font-size: 1.1rem; font-weight: bold; flex: 1; }
+.title { font-size: 1.1rem; font-weight: bold; }
+.conv-id-hint { font-size: 0.7rem; color: #c0c4cc; margin-left: 8px; font-family: monospace; }
 .chat-body { flex: 1; overflow-y: auto; padding: 24px 20px; min-height: 0; background: #f5f7fa; }
 .empty-hint { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; }
 
