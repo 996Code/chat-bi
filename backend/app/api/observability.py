@@ -177,11 +177,8 @@ async def get_conversation_detail(
     from app.ai.state_store import StateStore
     store = StateStore()
     turns = store.list_turns(user.tenant_id, conv_id)
-    # 自愈: 如果所有 turn 值相同 (历史脏数据全为 1), 按行序重新编号
-    turn_values = [t.get("turn", 0) for t in turns]
-    if turns and len(set(turn_values)) == 1:
-        for i, t in enumerate(turns):
-            t["turn"] = i + 1
+    # 注: 骨架行 + 完整行故意复用同一 turn 号 (start 落骨架, 末尾落完整, 复用 turn)
+    # 前端 loadConversation 按 question 合并连续同 turn 行, 不需要这里重新编号
     return turns
 
 
