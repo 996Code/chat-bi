@@ -345,7 +345,7 @@ async def chat(
     prompt_capture = stop_prompt_capture(_pc_token)
 
     # 持久化结构化状态到 StateStore (T036, 支持追问恢复)
-    # 纯闲聊 (GENERAL) 不入对话历史 (state.persist=False)
+    # 闲聊也入库 (历史记录完整留存); persist 字段保留作兜底守卫
     if getattr(state, "persist", True):
         try:
             from app.ai.state_store import ConversationState, StateStore

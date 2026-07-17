@@ -685,14 +685,25 @@ async function loadConversation(convId: string) {
   messages.value = []
   try {
     const { data } = await observability.conversationDetail(convId)
-    for (const turn of data) {
+    for (let ti = 0; ti < data.length; ti++) {
+      const turn = data[ti]
       const st = turn.state || {}
+      // 骨架行合并: start 事件落的骨架 (只有问题, 无 sql/reply), 若后续有同问题的完整行
+      // 则跳过骨架 (完整行自带用户气泡), 仅当骨架后无完整行 (断流场景) 才显示骨架问题
+      const isSkeleton = st.result_summary?.skeleton && !st.current_sql && !st.reply
+      if (isSkeleton) {
+        const next = data[ti + 1]
+        const nextSt = next?.state || {}
+        if (nextSt.question === st.question && (nextSt.current_sql || nextSt.reply)) {
+          continue  // 完整行会显示, 跳过骨架避免重复问题
+        }
+      }
       // 恢复用户问题
       if (st.question) {
         messages.value.push({ role: 'user', text: st.question })
       }
-      // 恢复助手回复 (有完整信息: SQL/结果/图表)
-      if (st.current_sql || st.reply) {
+      // 恢复助手回复 (有完整信息: SQL/结果/图表/确认问题)
+      if (st.current_sql || st.reply || st.ask_user) {
         const rows = (st.rows_sample || []).map((row: any[]) => {
           const obj: Record<string, any> = {}
           ;(st.columns || []).forEach((col: string, ci: number) => { obj[col] = row[ci] })
@@ -715,6 +726,9 @@ async function loadConversation(convId: string) {
           rows,
           rowCount: st.result_summary?.row_count,
           chart: st.chart_option || undefined,
+          // 全量回放: 主动确认内容 (刷新后还原 Agent 的确认问题 + 候选)
+          askUser: st.ask_user ? { question: st.ask_user.question, options: st.ask_user.options || null } : null,
+          done: true,
           steps: [
             {
               label: '意图识别', status: 'done' as const,

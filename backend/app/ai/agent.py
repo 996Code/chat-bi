@@ -145,7 +145,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             if deps.generate_reply is not None:
                 state.reply = await deps.generate_reply(state.question, intent)
                 state.llm_call_count += 1
-            state.persist = False  # 纯闲聊不入对话历史
+            # 闲聊也入库 (用户要求: 历史记录要完整留存, 含闲聊)
             state.stage = AgentStage.FINAL
             state.success = True
             return state

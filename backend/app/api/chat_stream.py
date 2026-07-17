@@ -193,6 +193,9 @@ async def chat_stream(
             # ── Stage 0: 首事件 — 立刻发 conversation_id ──────────
             # 本地 LLM 慢, 完整 pipeline 要 1-2 分钟; 让前端尽早拿到 conv_id
             # (侧边栏可提前显示对话项 + header 灰色展示 id 方便定位)
+            # 同步落骨架行: 把用户问题先存下, 即使中途刷新/断流, 历史里也能看到"问过这个问题"
+            # (末尾 _persist 会复用骨架 turn 号追加完整行, 不会产生重复轮次)
+            _skeleton_turn = await _persist_skeleton(user, question, conv_id, is_new=not conversation_id)
             yield emit("start", {"conversation_id": conv_id})
 
             # ── Stage 1: 意图识别 ───────────────────────────────
@@ -208,7 +211,7 @@ async def chat_stream(
                     state.llm_call_count += 1
                 state.success = True
                 state.stage = AgentStage.FINAL
-                state.persist = False  # 纯闲聊不入对话历史
+                # 闲聊也入库 (用户要求: 历史记录要完整留存, 含闲聊)
                 yield emit("intent", {
                     "intent": intent,
                     "reply": state.reply,
@@ -603,7 +606,7 @@ async def chat_stream(
             raise
         finally:
             # 统一持久化 + complete 事件 (单一出口, 对标 V1: 审计在管线末尾一次性)
-            # 纯闲聊 (GENERAL) 不入对话历史
+            # 闲聊也入库 (历史记录完整留存); persist 字段保留作兜底守卫
             should_persist = getattr(state, "persist", True)
             # T050: 取出 prompt 记录 (DEBUG 模式才持久化, prompt 可能含敏感 schema)
             from app.core.config import get_settings
@@ -644,6 +647,40 @@ async def chat_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+async def _persist_skeleton(user, question: str, conv_id: str, is_new: bool) -> int | None:
+    """落骨架行 — start 时先把用户问题存下, 防止中途刷新/断流丢失提问记录。
+
+    仅落问题 (sql/结果留空), pipeline 末尾 _persist 追加完整行并复用骨架的 turn 号
+    (见 _persist 的 turn 推算)。即使 pipeline 中途被 CancelledError 中断, 用户至少
+    能在历史里看到"问过这个问题"。
+
+    Returns: 骨架行的 turn 号 (供 _persist 复用), None 表示未落 (如追问已有历史无需骨架)。
+    """
+    try:
+        from app.ai.state_store import ConversationState, StateStore
+        from app.core.config import get_settings
+        store = StateStore()
+        existing = store.list_turns(user.tenant_id, conv_id)
+        # 追问场景 (非新对话) 且已有轮次 → 不落骨架 (当前轮末尾 _persist 会正常 append)
+        if not is_new and existing:
+            return None
+        turn = max((t.get("turn", 0) for t in existing), default=0) + 1
+        _max_title = get_settings().conversation_title_max_length
+        conv_state = ConversationState(
+            title=question[:_max_title].strip() or "新对话",
+            first_question=question if is_new else "",
+            question=question,
+            # 标记骨架行: 末尾 _persist 识别后复用 turn 号 (避免重复轮次)
+            result_summary={"skeleton": True},
+        )
+        store.save(user.tenant_id, conv_id, turn, conv_state)
+        logger.info("骨架行已落库: conv=%s turn=%d q=%r", conv_id, turn, question[:30])
+        return turn
+    except Exception as e:
+        logger.warning("骨架行落库失败 (不阻塞): %s", e)
+        return None
 
 
 async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
@@ -709,11 +746,29 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             error=state.error or None,
             self_heal_rounds=state.self_heal_rounds,
             heal_before_sql=state.heal_before_sql,
+            # 全量落库: 主动确认内容 (刷新后还原 Agent 的确认问题 + 候选选项)
+            ask_user={
+                "question": state.ask_user_request.question,
+                "options": getattr(state.ask_user_request, "options", None),
+                "reason": str(state.ask_user_request.reason.value)
+                    if hasattr(state.ask_user_request.reason, "value")
+                    else str(state.ask_user_request.reason),
+            } if state.ask_user_request else None,
         )
-        # turn: 从已有轮次推算 (防御: 取 max(行数, 最大turn值) + 1, 自愈历史脏数据)
+        # turn 推算: 优先复用本轮骨架行的 turn 号 (start 事件落的, 避免重复轮次);
+        # 无骨架则取 max(行数, 最大turn值) + 1 (防御自愈历史脏数据)
         existing_turns = store.list_turns(user.tenant_id, conv_id)
-        max_existing_turn = max((t.get("turn", 0) for t in existing_turns), default=0)
-        turn = max(len(existing_turns), max_existing_turn) + 1
+        turn = None
+        if existing_turns:
+            last = existing_turns[-1]
+            last_st = last.get("state", {}) or {}
+            # 骨架行特征: result_summary.skeleton=True 且 question 匹配本轮
+            if last_st.get("result_summary", {}).get("skeleton") and last_st.get("question") == state.question:
+                turn = last.get("turn")
+                logger.info("复用骨架行 turn 号: conv=%s turn=%d", conv_id, turn)
+        if turn is None:
+            max_existing_turn = max((t.get("turn", 0) for t in existing_turns), default=0)
+            turn = max(len(existing_turns), max_existing_turn) + 1
         store.save(user.tenant_id, conv_id, turn, conv_state)
 
         # 保存查询记录 (SavedQuery): 成功的 SQL 查询入库, 供看板展示 / fewshot 回流
