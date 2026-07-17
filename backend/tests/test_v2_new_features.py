@@ -6,7 +6,6 @@ V2 新增功能测试:
   - DSO-02: 数据源健康检查 ping 逻辑 (mock)
 """
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from app.core.security import create_access_token
 
@@ -25,13 +24,6 @@ def user_token():
         "user_id": "user_1", "email": "user@test.com",
         "tenant_id": "tenant_A", "role": "user",
     })
-
-
-@pytest.fixture
-async def http_client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 def _auth(token: str) -> dict:

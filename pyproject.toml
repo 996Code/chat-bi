@@ -29,6 +29,7 @@ dependencies = [
     "sentence-transformers>=5.6.0",
     "slowapi>=0.1.10",
     "apscheduler>=3.10.0",
+    "networkx>=3.0",  # SchemaGraph 图谱中间件 (显式声明, 避免 torch 移除后传递依赖丢失)
 ]
 
 [project.optional-dependencies]

@@ -17,6 +17,7 @@ from app.api.memory import router as memory_router
 from app.api.saved_queries import router as saved_queries_router
 from app.api.auth import router as auth_router
 from app.api.dashboard import router as dashboard_router
+from app.api.graph import router as graph_router
 
 router = APIRouter()
 
@@ -38,3 +39,4 @@ router.include_router(memory_router)
 router.include_router(saved_queries_router)
 router.include_router(auth_router)
 router.include_router(dashboard_router)
+router.include_router(graph_router)

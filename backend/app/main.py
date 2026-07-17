@@ -6,6 +6,7 @@ ChatBI v2 — FastAPI Application Entry Point
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -97,15 +98,19 @@ async def lifespan(app: FastAPI):
         pass
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+def create_app(lifespan_override: Any = None) -> FastAPI:
+    """Create and configure the FastAPI application.
+
+    Args:
+        lifespan_override: 可选的 lifespan 替代 (测试用, 跳过启动探测/embedder/调度器)
+    """
     settings = get_settings()
 
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
         debug=settings.debug,
-        lifespan=lifespan,
+        lifespan=lifespan_override or lifespan,
     )
 
     # CORS (对标 S5: allow_credentials=True + origins=["*"] 违反 CORS 规范)
@@ -153,4 +158,12 @@ def create_app() -> FastAPI:
 
 # 对标 M3: 模块级 create_app() 是 FastAPI 标准模式 (uvicorn app.main:app 需要模块级 app 对象)
 # 测试用 create_app() 工厂函数隔离, 生产用此模块级实例
-app = create_app()
+# CHATBI_TESTING=1 时跳过 lifespan (避免 import 时卡在启动探测/embedder/调度器)
+import os as _os
+if _os.environ.get("CHATBI_TESTING"):
+    @asynccontextmanager
+    async def _noop_lifespan(app):
+        yield
+    app = create_app(lifespan_override=_noop_lifespan)
+else:
+    app = create_app()

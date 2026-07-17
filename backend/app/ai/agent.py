@@ -84,6 +84,12 @@ class AgentState:
     # 本轮最终使用的表名列表 (含检索命中 + 继承 + 关系扩展, 持久化到 StateStore)
     # 由 run_agent 在 schema 扩展后填充, 持久化时从此字段取值
     current_tables: list[str] = field(default_factory=list)
+    # 图谱驱动: 扩展前的种子表 (供前端展示图谱扩展过程)
+    seed_tables: list[str] = field(default_factory=list)
+    # 图谱驱动: 扩展新增的表 (seed_tables → current_tables 的差集)
+    expanded_tables: list[str] = field(default_factory=list)
+    # 图谱驱动: 预计算的 JOIN 路径文本 (供前端展示)
+    join_path_section: str = ""
     # 降级标记 (对标 O8: 检索/图表降级时前端可提示用户结果可能不精确)
     degraded: bool = False
     # 错误分类: True = 内部异常 (不发给客户端), False = 业务错误 (可发)
@@ -237,23 +243,34 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
 
         # ── Stage 3: 预思考 ───────────────────────────────────
         # schema context + 白名单列从语义层取 (权威来源, 不靠检索文本正则猜)
-        from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns
+        from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns, build_join_path_section, get_schema_graph
         from app.ai.chat_utils import inherit_prev_tables
         from app.ai.intent import safe_normalized_question
         question = safe_normalized_question(state.intent_output, state.question)
         retrieved_names = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
         # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
         retrieved_names = inherit_prev_tables(state.prev_tables, retrieved_names, state.semantic_content)
+        logger.info("Stage3 预思考: 检索命中表 %s", retrieved_names)
+        # 请求级 SchemaGraph 单例: 只构建一次, 共享给 expand + join_path
+        sg = get_schema_graph(state.semantic_content)
+        # 记录图谱扩展前的种子表 (供前端展示扩展过程)
+        seed_tables = list(retrieved_names)
         # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
         # 如选中 biz_products, 沿外键补入 biz_order_items, 否则 JOIN 查询缺表
-        retrieved_names = expand_with_relationships(state.semantic_content, retrieved_names)
+        retrieved_names = expand_with_relationships(state.semantic_content, retrieved_names, graph=sg)
         # 记录本轮最终使用的表 (含继承 + 关系扩展), 供持久化到 StateStore
         state.current_tables = list(retrieved_names)
+        state.seed_tables = seed_tables
+        state.expanded_tables = sorted(set(retrieved_names) - set(seed_tables))
         schema_context = build_schema_context(state.semantic_content, retrieved_names)
         if not schema_context:
             # 语义层为空时退化用检索文本 (兜底)
             schema_context = build_schema_context_fallback(state.retrieved_models)
         state.schema_context = schema_context
+        # 图驱动的 JOIN 路径 (预计算 ON 条件, 减少 LLM 推理负担)
+        # 只对种子表+1-hop 邻居算路径, 避免社区远亲产生大量无意义路径对
+        join_path_section = build_join_path_section(state.semantic_content, retrieved_names, graph=sg, seed_names=seed_tables)
+        state.join_path_section = join_path_section
         state.thinking = await deps.think(question, schema_context, state.retrieved_models, history=state.history)
         state.llm_call_count += 1
 
@@ -283,6 +300,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             allowed_columns=allowed_columns,
             history=state.history,
             thinking_hint=thinking_hint,
+            join_path_section=join_path_section,
         )
         state.llm_call_count += 1
 

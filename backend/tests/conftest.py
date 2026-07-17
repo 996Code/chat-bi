@@ -6,19 +6,25 @@ ChatBI v2 — Test Configuration & Fixtures
 
 前置: 本地 PG 已起, chatbi_test 库已建表 (见 backend/tests/README 或 conftest 注释)。
 对标 AGENTS.md: "测试用 SQLite in-memory" → 改为真实 PG (用户要求全切真实中间件)。
+
+关键设计: 用同步 psycopg2 做 TRUNCATE + seed, 避免 asyncpg 和 pytest-asyncio
+event loop 的死锁问题。asyncpg 只用于测试内的 async db_session。
 """
 from __future__ import annotations
 
 import os
 from typing import AsyncGenerator
 
+# ── 测试环境标记 (必须在任何 app import 之前) ───────────────────
+# main.py 模块级 app = create_app() 会触发 lifespan (启动探测/embedder),
+# 测试时需跳过。此标记让 main.py 检测到测试环境, 使用 noop lifespan。
+os.environ["CHATBI_TESTING"] = "1"
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # ── 测试环境配置 (连真实 PG chatbi_test 库) ───────────────────
-# 覆盖 DATABASE_URL 指向测试库 (不污染生产 chatbi 库)
-# 通过环境变量可覆盖 (CI 用不同连接串)
 _TEST_DB_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://root:root@localhost:5432/chatbi_test",
@@ -26,36 +32,48 @@ _TEST_DB_URL = os.getenv(
 os.environ["DATABASE_URL"] = _TEST_DB_URL
 os.environ["SECRET_KEY"] = "test-secret-key-change-in-production-abcdef123456"
 os.environ["FERNET_KEY"] = "3OO-go6es96rvMajcdliCWYpXiwvZ_Sckkpe0pQKF40="
-# 真实中间件 (docker infra): Redis/Milvus 连本地容器, 测试走真实中间件 (非 mock)
-# 对标"全切真实中间件"目标; probe/milvus 索引测试需要
-# Redis 密码默认 redis_pass (docker-compose.infra.yml REDIS_PASSWORD), 可被 TEST_REDIS_URL 覆盖
 os.environ["REDIS_URL"] = os.getenv("TEST_REDIS_URL", "redis://:redis_pass@localhost:6379/0")
 os.environ["MILVUS_URL"] = os.getenv("TEST_MILVUS_URL", "http://localhost:19530")
 os.environ["MILVUS_TOKEN"] = os.getenv("TEST_MILVUS_TOKEN", "root:Milvus")
-# 向量数据隔离 (对标 PG 库隔离): 测试 collection 加 test_ 前缀,
-# 和开发/生产数据物理隔离 (Milvus 里 test_semantic_models ≠ semantic_models)。
-# 一次配置, get_vector_store 全局生效, 不依赖调用方记得带前缀。
 os.environ["VECTOR_STORE_COLLECTION_PREFIX"] = "test_"
 os.environ["LOG_LEVEL"] = "WARNING"
-os.environ["DEBUG"] = "true"  # 测试环境等同开发模式 (跳过 email_verified 强制校验)
-os.environ["ENV_FILE"] = ""  # 不加载 .env (用上面的测试配置)
-# LLM 占位符 (测试不调真实 LLM, 但 validate_settings_on_startup 检查占位符 → 填测试值)
+os.environ["DEBUG"] = "true"
+os.environ["ENV_FILE"] = ""
+os.environ["BCRYPT_ROUNDS"] = "4"
 os.environ["LLM_URL"] = os.getenv("TEST_LLM_URL", "http://localhost:11434/v1")
 os.environ["LLM_MODEL"] = os.getenv("TEST_LLM_MODEL", "test-model")
 os.environ["LLM_API_KEY"] = os.getenv("TEST_LLM_API_KEY", "test-llm-key")
 
-# Clear the lru_cache to ensure environment variables take effect
 from app.core.config import get_settings
 get_settings.cache_clear()
 
+# 同步 PG URL (psycopg2 用, TRUNCATE + seed)
+_SYNC_DB_URL = _TEST_DB_URL.replace("postgresql+asyncpg://", "postgresql://")
 
-# ── Engine & 建表 (session scope) ──────────────────────────────
-
-# session 级引擎: PG 连接池复用, 但 asyncpg 连接绑定 event loop。
-# pytest-asyncio 默认每测试一个新 loop → session engine 的连接跨 loop 失效。
-# 解决: 用 NullPool (每次从 engine 取连接时新建, 不缓存绑定旧 loop 的连接)。
 from sqlalchemy.pool import NullPool
 
+
+# ── 建表 (session scope, 同步) ──────────────────────────────────
+
+@pytest.fixture(scope="session", autouse=True)
+def _create_tables():
+    """session 开始用同步 psycopg2 建表 (幂等)。
+
+    用 psycopg2 而非 asyncpg, 避免 asyncio.run() 和 pytest-asyncio event loop 冲突。
+    """
+    import app.db.models  # noqa: F401 — 注册所有 model 到 metadata
+    from app.db.session import Base
+    import psycopg2
+    from sqlalchemy import create_engine as sync_create_engine
+
+    # 用同步引擎建表 (SQLAlchemy + psycopg2)
+    sync_engine = sync_create_engine(_SYNC_DB_URL, echo=False)
+    Base.metadata.create_all(sync_engine)
+    sync_engine.dispose()
+    yield
+
+
+# ── async engine (供 db_session / http_client 用) ──────────────
 
 @pytest.fixture(scope="session")
 def test_engine():
@@ -64,43 +82,13 @@ def test_engine():
     return engine
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _create_tables(test_engine):
-    """session 开始建表 (幂等, 已存在跳过) + 补缺失列。
-
-    不在 session 结束 drop (避免 asyncpg event loop 关闭后清理报错)。
-    表留着下次 create_all 幂等跳过; 如需重建跑前手动 drop。
-    隔离靠每测试事务回滚 (db_session fixture), 不靠 drop/recreate。
-
-    补缺失列: create_all 不 ALTER 已有表 (新列不会被自动加),
-    用 _add_missing_columns 补丁 (对标 T065 auto_create_tables 同理)。
-    """
-    import app.db.models  # noqa: F401 — 注册所有 model 到 metadata
-    from app.db.session import Base
-    from app.db.session import _add_missing_columns
-    import asyncio
-
-    async def _setup():
-        async with test_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            # 补缺失列 (PG only, SQLite 不需要)
-            await _add_missing_columns(conn)
-
-    asyncio.run(_setup())
-    yield
-
-
-# ── 事务隔离的 db_session (每个测试独立事务, 结束回滚) ─────────
+# ── 事务隔离的 db_session ─────────────────────────────────────
 
 @pytest.fixture
 async def db_session(test_engine, _create_tables) -> AsyncGenerator[AsyncSession, None]:
-    """每个测试用独立 session, 测试后 TRUNCATE 清空所有表 (PG 隔离)。
+    """每个测试用独立 async session。
 
-    PG READ COMMITTED 下, HTTP 请求和 db_session 是不同事务, 互不可见未提交数据。
-    → 测试内预置数据需 commit 才能让 HTTP 看到。
-    → 隔离靠 TRUNCATE (每个测试结束清空, 下个测试从空表开始)。
-
-    比 SQLite 的 StaticPool 共享连接更真实, 也暴露了 PG 特有约束 (外键/枚举/大小写)。
+    隔离靠 _seed_base_tenants 的 TRUNCATE (每个测试开始前清空, 保证幂等)。
     """
     async_session = async_sessionmaker(
         test_engine,
@@ -111,46 +99,83 @@ async def db_session(test_engine, _create_tables) -> AsyncGenerator[AsyncSession
     try:
         yield session
     finally:
+        try:
+            await session.rollback()
+        except Exception:
+            pass
         await session.close()
-        # TRUNCATE 清空所有业务表 (CASCADE 处理外键), 重启序列保证 id 一致
-        async with test_engine.begin() as conn:
-            await conn.execute(text(
-                "TRUNCATE TABLE audit_logs, saved_queries, dashboard_widgets, dashboards, "
-                "conversations, semantic_models, data_sources, users, tenants "
-                "RESTART IDENTITY CASCADE"
-            ))
 
+
+# ── TRUNCATE + seed (同步, autouse) ───────────────────────────
 
 @pytest.fixture(autouse=True)
-async def _seed_base_tenants(db_session):
-    """PG 强制外键约束 (SQLite 默认不强制), 测试引用的 tenant/user 必须先存在。
+async def _seed_base_tenants(db_session, _create_tables):
+    """每个 test 前自动清空 + 重建, 保证幂等。
 
-    预置测试套件中"被引用但不在测试内自建"的 tenant + user, 避免 FK 违反。
-    每个 test 前自动建 (TRUNCATE 后重建, 保证幂等)。
-
-    原则: 这里只 seed"全局测试约定"的固定 ID (token 里的 user_id、audit 的 tenant_id)。
-    测试内自建的租户 (如 test_slow_query 的 tenant_audit/bwd) 用独特 ID 自行 add,
-    不进 seed — 避免和 seed 撞 pkey。
+    用同步 psycopg2 做 (via asyncio.to_thread)。
+    用 DELETE 代替 TRUNCATE: DELETE 只需 RowExclusiveLock, 不会和 asyncpg 的
+    行锁产生 AccessExclusiveLock 死锁。TRUNCATE 需要 AccessExclusiveLock,
+    和 asyncpg 的 RowExclusiveLock 互相等待 → 死锁。
     """
-    from app.db.models import Tenant, User
+    import psycopg2
     from app.core.security import hash_password
 
-    # 测试套件引用的全部租户: tenant_A/B (主), default_tenant, t1/t2/t3 (多租户隔离测试)
-    for tid in ["tenant_A", "tenant_B", "default_tenant", "t1", "t2", "t3"]:
-        db_session.add(Tenant(id=tid, name=f"测试租户 {tid}"))
-    await db_session.flush()
-    # 测试套件引用的全部用户 (token/audit 直接引用的固定 ID), 密码随便 (测试用 token 不走登录)
-    # admin_1/user_1/ro_1 → tenant_A; admin_2 → tenant_B (跨租户隔离测试)
-    seed_users = [
-        ("admin_1", "tenant_A", "admin"), ("user_1", "tenant_A", "user"),
-        ("ro_1", "tenant_A", "read_only"), ("admin_2", "tenant_B", "admin"),
-    ]
-    for uid, tid, role in seed_users:
-        db_session.add(User(
-            id=uid, tenant_id=tid, email=f"{uid}@test.com", username=uid,
-            hashed_password=hash_password("test"), role=role, is_active=True, email_verified=True,
-        ))
-    await db_session.commit()
+    # 先释放 db_session 可能持有的行锁
+    try:
+        await db_session.rollback()
+    except Exception:
+        pass
+    try:
+        await db_session.close()
+    except Exception:
+        pass
+
+    def _do_seed():
+        conn = psycopg2.connect(_SYNC_DB_URL)
+        conn.autocommit = True
+        try:
+            cur = conn.cursor()
+            # DELETE 代替 TRUNCATE: 不需要 AccessExclusiveLock, 避免死锁
+            # 按外键依赖顺序删除 (子表先删)
+            for table in [
+                "audit_logs", "saved_queries", "dashboard_widgets", "dashboards",
+                "conversations", "semantic_models", "data_sources", "users", "tenants",
+            ]:
+                cur.execute(f"DELETE FROM {table}")
+            # 重置序列 (TRUNCATE RESTART IDENTITY 的等价操作)
+            for table in [
+                "audit_logs", "saved_queries", "dashboard_widgets", "dashboards",
+                "conversations", "semantic_models", "data_sources", "users", "tenants",
+            ]:
+                cur.execute(
+                    f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), 1, false) "
+                    f"WHERE EXISTS (SELECT 1 FROM pg_get_serial_sequence('{table}', 'id'))"
+                )
+            tenants = ["tenant_A", "tenant_B", "default_tenant", "t1", "t2", "t3"]
+            for tid in tenants:
+                cur.execute(
+                    "INSERT INTO tenants (id, name, is_active, created_at, updated_at) VALUES (%s, %s, true, now(), now()) "
+                    "ON CONFLICT (id) DO NOTHING",
+                    (tid, f"测试租户 {tid}"),
+                )
+            pw = hash_password("test")
+            seed_users = [
+                ("admin_1", "tenant_A", "admin"), ("user_1", "tenant_A", "user"),
+                ("ro_1", "tenant_A", "read_only"), ("admin_2", "tenant_B", "admin"),
+            ]
+            for uid, tid, role in seed_users:
+                cur.execute(
+                    "INSERT INTO users (id, tenant_id, email, username, hashed_password, role, is_active, email_verified, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, true, true, now(), now()) "
+                    "ON CONFLICT (id) DO NOTHING",
+                    (uid, tid, f"{uid}@test.com", uid, pw, role),
+                )
+            cur.close()
+        finally:
+            conn.close()
+
+    import asyncio
+    await asyncio.to_thread(_do_seed)
 
 
 @pytest.fixture
@@ -164,14 +189,7 @@ def settings():
 
 @pytest.fixture
 async def http_client(app):
-    """HTTP 测试客户端 (连同一 test_engine, 走真实 PG)。
-
-    关键: app 的 get_db() 走全局 session_factory, 我们指向 test_engine。
-    HTTP 请求和 db_session 各开独立事务 (PG READ COMMITTED 互不可见未提交),
-    所以"预置数据"需在 fixture 里 commit (而非依赖 db_session 的回滚隔离)。
-
-    为简化: 多数测试用 HTTP 直接造数据 + HTTP 验证 (自闭环, 不需 db_session)。
-    """
+    """HTTP 测试客户端 (走真实 PG)。"""
     from httpx import ASGITransport, AsyncClient
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -180,18 +198,22 @@ async def http_client(app):
 
 @pytest.fixture
 def app(test_engine, _create_tables):
-    """Create FastAPI test app, 全局 session_factory 指向 test_engine (连真实 PG)。"""
+    """Test app, mock lifespan 跳过启动探测/embedder/调度器。"""
     from app.db import session as session_module
     from app.main import create_app
+    from contextlib import asynccontextmanager
 
     session_module._engine = test_engine
     session_module._async_session_factory = async_sessionmaker(
         test_engine, class_=AsyncSession, expire_on_commit=False,
     )
 
-    app = create_app()
+    @asynccontextmanager
+    async def _test_lifespan(app):
+        yield
+
+    app = create_app(lifespan_override=_test_lifespan)
     yield app
 
-    # 清理全局状态
     session_module._engine = None
     session_module._async_session_factory = None

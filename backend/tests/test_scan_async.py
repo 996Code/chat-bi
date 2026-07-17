@@ -11,7 +11,6 @@ ChatBI v2 — 数据源异步扫描测试 (对标 V1 + 经验教训 #25)
 import asyncio
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.security import create_access_token
@@ -32,13 +31,6 @@ def read_only_token():
         "user_id": "ro_1", "email": "ro@test.com",
         "tenant_id": "tenant_A", "role": "read_only",
     })
-
-
-@pytest.fixture
-async def http_client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 def _auth(token: str) -> dict:

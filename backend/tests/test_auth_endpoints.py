@@ -6,14 +6,6 @@
   - 审计三态 (成功/失败/拒绝)
 """
 import pytest
-from httpx import ASGITransport, AsyncClient
-
-
-@pytest.fixture
-async def http_client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 BASE = "/chat-bi/api/v1/auth"

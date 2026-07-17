@@ -25,6 +25,8 @@
 
 📊 **交互式图表** — 支持 ECharts 多种图表类型，自然语言切换图表，看板拖拽布局
 
+🕸️ **知识图谱** — 自动从语义层构建关系图谱，驱动表扩展和 JOIN 路径预计算，减少 LLM 推理负担
+
 🏗️ **语义层** — 自动扫描数据源构建语义模型，支持版本管理和回滚
 
 🔍 **RAG 检索** — 向量检索 + LLM 精排两阶段 Schema 召回，Few-shot 示例注入
@@ -73,6 +75,39 @@
     </td>
   </tr>
 </table>
+
+### 🕸️ 知识图谱
+
+SchemaGraph 基于 G6 v5 渲染，自动从语义层构建关系图谱，支持社区聚类着色、枢纽节点光晕、悬停高亮邻居、拖拽连线建关系等交互：
+
+<table>
+  <tr>
+    <td width="50%"><b>全图概览 — 社区聚类着色 + 枢纽光晕</b></td>
+    <td width="50%"><b>悬停高亮 — 邻居高亮, 非邻居淡化</b></td>
+  </tr>
+  <tr>
+    <td><img src="doc/screenshots/graph-overview.png" alt="知识图谱全图概览" width="100%"/></td>
+    <td><img src="doc/screenshots/graph-hover-dim.png" alt="悬停高亮邻居" width="100%"/></td>
+  </tr>
+  <tr>
+    <td>按社区聚类着色，中心度高的枢纽表自动外发光。双击节点可展开 2-hop 子图，搜索框快速定位表。</td>
+    <td>鼠标悬停节点时，1-hop 邻居高亮、非邻居淡化，帮助快速理解表间关系。边按置信度着色并显示 JOIN 类型标签。</td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><b>节点详情面板 — 点击查看表元信息</b></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="doc/screenshots/graph-detail-panel.png" alt="节点详情面板" width="100%"/></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">点击节点弹出详情面板，展示表名、列数、来源、中心度、连接数、社区归属等元信息。支持移动/连线双模式切换。</td>
+  </tr>
+</table>
+
+> **🕸️ 图谱不只是可视化** — SchemaGraph 深度集成在 BI 查询主流程中：
+> - **表扩展**：检索命中 `biz_orders` 后，图谱通过 Dijkstra 最短路径自动补入 `biz_users` 等 JOIN 中间表，还支持社区补全（同业务域表大概率相关）
+> - **JOIN 路径预计算**：对扩展后的表集，预计算 `LEFT JOIN biz_users ON orders.user_id = users.id` 等 JOIN 语句，直接注入 LLM prompt，减少 LLM 推理负担
+> - **请求级单例**：每次查询只构建一次 SchemaGraph，表扩展和 JOIN 路径共享同一实例
 
 ### 💬 多轮对话演示
 
@@ -126,7 +161,7 @@ ChatBI 支持连续追问，自动继承上文查询维度，无需重复描述�
                │  │ Intent   │  │                          │  │ Thinking │  │
                │  └──────────┘  │ ①向量召回 top-20          │  └──────────┘  │
                │                │ ②LLM 精筛 → 2~5 张表     │               │
-               │                │ ③关系扩展 (2跳补JOIN表)   │               │
+               │                │ ③🕸️图谱扩展 (最短路径+社区) │               │
                │                │ ④schema_context 构建注入  │               │
                │                └──────────────────────────┘               │
                │                          │                                 │
@@ -136,11 +171,13 @@ ChatBI 支持连续追问，自动继承上文查询维度，无需重复描述�
                │  └──────────┘  └──────────┘  │ schema_context (选中表)  │  │
                │                               │ + Skills + Memory        │  │
                │                               │ + fewshot + thinking     │  │
+               │                               │ + 🕸️JOIN 路径 (图谱预算) │  │
                │                               │ → 白名单校验 → 执行 → 自愈│  │
                │                               └──────────────────────────┘  │
                │                                                             │
                │  辅助模块:  Skills 业务规则 │ Few-shot 示例 │ Memory 记忆   │
                │             上下文压缩     │ 多轮对话管理                  │
+               │             🕸️SchemaGraph (NetworkX 关系图谱)              │
                └─────────────────────────────────────────────────────────────┘
                                              │
                ┌─────────────────────────────▼─────────────────────────────┐
@@ -290,6 +327,7 @@ chat-bi/
 │   │   │   ├── sql_healer.py    # SQL 自愈
 │   │   │   ├── chart_agent.py   # 图表生成
 │   │   │   ├── compressor.py    # 上下文压缩
+│   │   │   ├── schema_utils.py  # Schema 上下文 + 🕸️图谱驱动扩展/JOIN路径
 │   │   │   ├── state_store.py   # 对话状态持久化
 │   │   │   ├── recall.py        # Agent 记忆召回
 │   │   │   └── ...
@@ -297,6 +335,7 @@ chat-bi/
 │   │   │   ├── chat.py          # 同步问答
 │   │   │   ├── chat_stream.py   # SSE 流式问答
 │   │   │   ├── data_sources.py  # 数据源管理
+│   │   │   ├── graph.py         # 🕸️知识图谱 API (可视化+图分析)
 │   │   │   ├── observability.py # 可观测性
 │   │   │   └── ...
 │   │   ├── core/                # ⚙️ 核心基础设施
@@ -310,6 +349,7 @@ chat-bi/
 │   │   ├── schemas/             # 📋 Pydantic 模型
 │   │   └── services/            # 🔧 业务服务
 │   │       ├── retriever.py     # RAG 两阶段检索
+│   │       ├── graph_service.py # 🕸️SchemaGraph (NetworkX 关系图谱+JOIN路径)
 │   │       ├── embedder.py      # Embedding 服务
 │   │       ├── semantic_scanner.py  # 语义层自动扫描
 │   │       ├── skills_loader.py # Skills 规则加载
@@ -349,6 +389,9 @@ chat-bi/
 | `SQL_EXECUTION_TIMEOUT` | `30` | SQL 执行超时 (秒) |
 | `SQL_MAX_ROWS` | `10000` | 结果最大行数 |
 | `RATE_LIMIT_QUERIES_PER_MINUTE` | `30` | 查询限流 (次/分钟) |
+| `GRAPH_MAX_JOIN_PATH_HOPS` | `4` | 🕸️JOIN 路径最大跳数 |
+| `GRAPH_COMMUNITY_ALGORITHM` | `label_propagation` | 🕸️社区发现算法 |
+| `GRAPH_JOIN_PATH_IN_PROMPT` | `true` | 🕸️是否在 SQL prompt 注入 JOIN 路径 |
 | `DEBUG` | `false` | 调试模式 (开启后持久化 Prompt) |
 | `SECRET_KEY` | `CHANGE_ME_*` | JWT 签名密钥 (生产必须修改) |
 
@@ -406,6 +449,7 @@ cp deploy/.env.example deploy/.env
 | POST | `/chat/stream` | SSE 流式问答 |
 | GET/POST | `/data-sources` | 数据源管理 |
 | GET | `/semantic-models` | 语义层查看 |
+| GET | `/graph` | 🕸️知识图谱 (全图/子图/社区/枢纽/JOIN路径) |
 | GET | `/dashboards` | 看板管理 |
 | GET | `/conversations` | 对话列表 |
 | GET | `/health/detail` | 系统状态 |

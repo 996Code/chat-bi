@@ -118,6 +118,7 @@ async def generate_sql(
     history: str | None = None,
     skills: str | None = None,
     thinking_hint: str | None = None,
+    join_path_section: str | None = None,
 ) -> GenerateResult:
     """生成 SQL (prompt 分层 + 校验集成)。
 
@@ -128,6 +129,7 @@ async def generate_sql(
         fewshot_examples: few-shot 示例文本 (Phase 3 format_fewshot_prompt)
         history: 多轮历史上下文 (Phase 5 State Store)
         thinking_hint: 预思考提示 (表选择/聚合建议/注意事项)
+        join_path_section: 图驱动的 JOIN 路径 prompt 块 (SchemaGraph 预计算)
 
     Returns:
         GenerateResult — error 非空表示生成/校验失败 (不抛, T025 决定下一步)
@@ -147,6 +149,9 @@ async def generate_sql(
     cache.set_static("system_rules", lambda: _SYSTEM_PROMPT)
     cache.set_dynamic("schema_type", lambda: _build_datatype_constraint_section(schema_context))
     cache.set_dynamic("allowed_cols", lambda: _build_allowed_columns_section(allowed_columns))
+    # 图驱动的 JOIN 路径块 (SchemaGraph 预计算, LLM 直接使用不再猜测)
+    if join_path_section:
+        cache.set_dynamic("join_path", lambda: f"【JOIN 路径】\n{join_path_section}")
     cache.set_dynamic("context", lambda: _build_dynamic_context(fewshot_examples, history, question, skills, thinking_hint))
 
     sections = cache.assemble()

@@ -92,6 +92,15 @@ def _safe_response_question(intent_output, original: str) -> str:
     return nq if nq else original
 
 
+def _build_thinking_with_graph(state) -> dict:
+    """将 ThinkingResult 序列化并合并图谱扩展信息 (供 thinking 字段持久化)。"""
+    _thinking = serialize_thinking(state.thinking) or {}
+    _thinking["seed_tables"] = state.seed_tables
+    _thinking["expanded_tables"] = state.expanded_tables
+    _thinking["join_path_section"] = state.join_path_section
+    return _thinking
+
+
 async def build_agent_deps(
     data_source_id: str,
     tenant_id: str,
@@ -371,8 +380,8 @@ async def chat(
                 columns=cols,
                 rows_sample=rows_sample,
                 chart_option=state.chart_option,
-                # 预思考 (历史对话恢复展示)
-                thinking=serialize_thinking(state.thinking),
+                # 预思考 (历史对话恢复展示) + 图谱扩展信息
+                thinking=_build_thinking_with_graph(state),
                 # T050: prompt 记录 (DEBUG 模式才持久化, dump-prompts 导出用)
                 prompts=prompt_capture.get("records", []) if get_settings().debug and prompt_capture else None,
                 # 增强字段: 意图 / token / 耗时 / 错误 / 自愈

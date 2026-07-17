@@ -144,6 +144,17 @@
                   </table>
                   <div v-if="((msg.rows?.length || 0) > 20)" class="table-more">共 {{ msg.rows?.length }} 行, 仅展示前 20 行</div>
                 </div>
+                <div class="chart-toolbar">
+                  <div class="chart-toolbar-left">
+                    <el-button text size="small" :icon="Download" @click="exportChart(idx)">导出 Excel</el-button>
+                    <el-button text size="small" :icon="Monitor" @click="openSaveToDashboard(idx)">保存到看板</el-button>
+                  </div>
+                  <el-button
+                    v-if="msg.done && msg.steps?.length"
+                    text size="small" :icon="QuestionFilled"
+                    @click="openTraceDialog(msg)"
+                  >完整流程</el-button>
+                </div>
               </div>
               <!-- 查询无结果: 有列结构但无数据行 (无论有无旧 chart option) -->
               <div v-if="msg.columns?.length && !(msg.rows?.length) && msg.done" class="result-meta" style="display:flex;align-items:center;justify-content:space-between;">
@@ -181,6 +192,16 @@
                     <div v-else-if="s.type === 'thinking' && s.thinkingData" class="thinking-detail">
                       <div v-if="s.thinkingData.tables?.length" class="thinking-section">
                         <span class="thinking-label">选表:</span> {{ s.thinkingData.tables.join(', ') }}
+                      </div>
+                      <div v-if="s.thinkingData.expandedTables?.length" class="thinking-section">
+                        <span class="thinking-label">🕸️图谱扩展:</span>
+                        {{ s.thinkingData.seedTables?.join(', ') || '-' }}
+                        →
+                        <el-tag v-for="t in s.thinkingData.expandedTables" :key="t" size="small" type="success" style="margin: 0 2px">+{{ t }}</el-tag>
+                      </div>
+                      <div v-if="s.thinkingData.joinPathSection" class="thinking-section thinking-join">
+                        <span class="thinking-label">🕸️JOIN 路径:</span>
+                        <pre class="join-path-pre">{{ s.thinkingData.joinPathSection }}</pre>
                       </div>
                       <div v-if="s.thinkingData.aggregation" class="thinking-section">
                         <span class="thinking-label">聚合:</span> {{ s.thinkingData.aggregation }}
@@ -272,6 +293,13 @@
 	                <!-- 预思考 -->
 	                <div v-else-if="row.type === 'thinking' && row.thinkingData" class="trace-thinking">
 	                  <div v-if="row.thinkingData.tables.length">选表: {{ row.thinkingData.tables.join('、') }}</div>
+	                  <div v-if="row.thinkingData.expandedTables?.length">
+	                    🕸️图谱扩展: {{ row.thinkingData.seedTables?.join('、') || '-' }} →
+	                    <el-tag v-for="t in row.thinkingData.expandedTables" :key="t" size="small" type="success" style="margin: 0 2px">+{{ t }}</el-tag>
+	                  </div>
+	                  <div v-if="row.thinkingData.joinPathSection" class="trace-join-path">
+	                    🕸️JOIN 路径:<pre class="join-path-pre">{{ row.thinkingData.joinPathSection }}</pre>
+	                  </div>
 	                  <div v-if="row.thinkingData.aggregation">聚合: {{ row.thinkingData.aggregation }}</div>
 	                  <div v-for="c in row.thinkingData.caveats" :key="c" class="trace-caveat">⚠ {{ c }}</div>
 	                </div>
@@ -383,6 +411,10 @@ interface TraceStep {
     aggregation: string
     caveats: string[]
     prevSqlReview: string
+    // 图谱驱动 (前端展示扩展过程 + JOIN 路径)
+    seedTables?: string[]         // 扩展前的种子表
+    expandedTables?: string[]    // 图谱扩展新增的表
+    joinPathSection?: string     // 预计算的 JOIN 路径文本
   }
   healData?: {                  // 自愈前后对比 (OBS-003)
     before: string
@@ -700,12 +732,15 @@ async function loadConversation(convId: string) {
               expandable: true, expanded: false,
               duration: dur.thinking ?? undefined,
               ...llmOf('thinking'),
-              thinkingData: {
-                tables: st.thinking?.tables || [],
-                aggregation: st.thinking?.aggregation || '',
-                caveats: st.thinking?.caveats || [],
-                prevSqlReview: st.thinking?.prev_sql_review || '',
-              },
+	              thinkingData: {
+	                tables: st.thinking?.tables || [],
+	                aggregation: st.thinking?.aggregation || '',
+	                caveats: st.thinking?.caveats || [],
+	                prevSqlReview: st.thinking?.prev_sql_review || '',
+	                seedTables: st.thinking?.seed_tables || [],
+	                expandedTables: st.thinking?.expanded_tables || [],
+	                joinPathSection: st.thinking?.join_path_section || '',
+	              },
             },
             {
               label: 'SQL 生成', status: 'done' as const, type: 'sql',
@@ -1052,6 +1087,10 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
           aggregation: data.aggregation || '',
           caveats: data.caveats || [],
           prevSqlReview: data.prev_sql_review || '',
+          // 图谱驱动: 扩展过程 + JOIN 路径
+          seedTables: data.seed_tables || [],
+          expandedTables: data.expanded_tables || [],
+          joinPathSection: data.join_path_section || '',
         },
       })
       // 预思考完成 → 推进到 SQL 生成
@@ -1637,6 +1676,26 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
 .thinking-label {
   color: #909399;
   font-weight: 500;
+}
+.thinking-join {
+  margin-top: 4px;
+}
+.join-path-pre {
+  display: inline-block;
+  margin: 2px 0 0;
+  padding: 4px 8px;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.trace-join-path {
+  margin-top: 4px;
 }
 .heal-compare {
   display: flex;

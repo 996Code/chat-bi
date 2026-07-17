@@ -52,6 +52,15 @@ def _chat_rate():
     return f"{get_settings().rate_limit_queries_per_minute}/minute"
 
 
+def _build_thinking_with_graph(state) -> dict:
+    """将 ThinkingResult 序列化并合并图谱扩展信息 (供 thinking 字段持久化)。"""
+    _thinking = serialize_thinking(state.thinking) or {}
+    _thinking["seed_tables"] = state.seed_tables
+    _thinking["expanded_tables"] = state.expanded_tables
+    _thinking["join_path_section"] = state.join_path_section
+    return _thinking
+
+
 def _sse(event: str, data: dict, seq: int | None = None) -> str:
     """格式化一条 SSE 事件 (标准格式 + event ID)。
 
@@ -181,6 +190,11 @@ async def chat_stream(
         # 各步骤耗时收集 (历史对话回放用)
         _step_durations: dict[str, int] = {}
         try:
+            # ── Stage 0: 首事件 — 立刻发 conversation_id ──────────
+            # 本地 LLM 慢, 完整 pipeline 要 1-2 分钟; 让前端尽早拿到 conv_id
+            # (侧边栏可提前显示对话项 + header 灰色展示 id 方便定位)
+            yield emit("start", {"conversation_id": conv_id})
+
             # ── Stage 1: 意图识别 ───────────────────────────────
             t0 = time.monotonic()
             state.intent_output = await deps.classify_intent(state.question, history=state.history)
@@ -333,18 +347,29 @@ async def chat_stream(
                 return
 
             # ── Stage 3: 预思考 + schema context ────────────────
-            from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns
+            from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns, build_join_path_section, get_schema_graph
             from app.ai.chat_utils import inherit_prev_tables
             # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
             tables = inherit_prev_tables(state.prev_tables, tables, state.semantic_content)
+            logger.info("Stage3 预思考: 检索命中表 %s", tables)
+            # 请求级 SchemaGraph 单例: 只构建一次, 共享给 expand + join_path
+            sg = get_schema_graph(state.semantic_content)
+            # 记录图谱扩展前的种子表 (供前端展示扩展过程)
+            seed_tables = list(tables)
             # 沿关系图谱扩展关联表 (对标 V1 两阶段: 选表→关联扩展→生成)
-            tables = expand_with_relationships(state.semantic_content, tables)
+            tables = expand_with_relationships(state.semantic_content, tables, graph=sg)
             # 记录本轮最终使用的表 (含继承 + 关系扩展), 供持久化到 StateStore
             state.current_tables = list(tables)
+            state.seed_tables = seed_tables
+            state.expanded_tables = sorted(set(tables) - set(seed_tables))
             schema_context = build_schema_context(state.semantic_content, tables)
             if not schema_context:
                 schema_context = build_schema_context_fallback(state.retrieved_models)
             state.schema_context = schema_context
+            # 图驱动的 JOIN 路径 (预计算 ON 条件, 减少 LLM 推理负担)
+            # 只对种子表+1-hop 邻居算路径, 避免社区远亲产生大量无意义路径对
+            join_path_section = build_join_path_section(state.semantic_content, tables, graph=sg, seed_names=seed_tables)
+            state.join_path_section = join_path_section
             # 白名单列: 取整个语义层的全部列 (语义层本身是安全边界)
             allowed_columns = extract_allowed_columns(state.semantic_content)
             if not allowed_columns:
@@ -360,12 +385,18 @@ async def chat_stream(
             # 预思考 SSE 事件 (REF-001: 推送选表理由+聚合+陷阱, 前端可展开查看)
             thinking = state.thinking
             if thinking and not getattr(thinking, "error", None):
+                # 图谱扩展: 种子表 vs 扩展后表
+                expanded_tables = sorted(set(tables) - set(seed_tables))
                 yield emit("thinking", {
                     "tables": getattr(thinking, "tables", []),
                     "aggregation": getattr(thinking, "aggregation", ""),
                     "caveats": getattr(thinking, "caveats", []),
                     "prev_sql_review": getattr(thinking, "prev_sql_review", ""),
                     "duration_ms": round((time.monotonic() - t_think) * 1000),
+                    # 图谱驱动: 扩展过程 + JOIN 路径
+                    "seed_tables": seed_tables,
+                    "expanded_tables": expanded_tables,
+                    "join_path_section": join_path_section,
                 }, node="thinking")
                 _step_durations["thinking"] = round((time.monotonic() - t_think) * 1000)
 
@@ -377,6 +408,7 @@ async def chat_stream(
                 question=norm_q, schema_context=schema_context,
                 allowed_columns=allowed_columns, history=state.history,
                 thinking_hint=thinking_hint,
+                join_path_section=join_path_section,
             )
             state.llm_call_count += 1
 
@@ -566,6 +598,9 @@ async def chat_stream(
             state.error = f"Agent 执行异常: {e}"
             state.error_is_internal = True
             yield emit("error", {"error": "服务内部错误, 请稍后重试"})
+        except BaseException as be:  # asyncio.CancelledError / GeneratorExit (客户端断开)
+            logger.warning("流式被中断: %s (stage=%s sql_len=%d)", type(be).__name__, state.stage, len(state.sql or ""))
+            raise
         finally:
             # 统一持久化 + complete 事件 (单一出口, 对标 V1: 审计在管线末尾一次性)
             # 纯闲聊 (GENERAL) 不入对话历史
@@ -583,7 +618,10 @@ async def chat_stream(
                 state._token_stats = token_stats
                 # 传递各步骤耗时 (历史对话回放用)
                 state._step_durations = _step_durations
-                await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps)
+                try:
+                    await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps)
+                except Exception as pe:
+                    logger.error("finally _persist 抛异常: %s", pe, exc_info=True)
             # 客户端安全: 内部异常不泄露详情, 业务错误保留原文
             _client_error = None
             if not state.success and state.error:
@@ -659,8 +697,8 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
             columns=cols,
             rows_sample=rows_sample,
             chart_option=state.chart_option,
-            # 预思考 (历史对话恢复展示)
-            thinking=serialize_thinking(state.thinking),
+            # 预思考 (历史对话恢复展示) + 图谱扩展信息
+            thinking=_build_thinking_with_graph(state),
             # T050: prompt 记录 (DEBUG 模式, dump-prompts 导出用)
             prompts=getattr(state, "_prompt_records", None),
             # 增强字段: 意图 / token / 耗时 / 错误 / 自愈

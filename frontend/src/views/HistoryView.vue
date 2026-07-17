@@ -154,6 +154,15 @@
                   <span class="think-key">上轮SQL审视:</span>
                   <span>{{ turn.state.thinking.prev_sql_review }}</span>
                 </div>
+                <div v-if="turn.state.thinking.expanded_tables?.length" class="think-row">
+                  <span class="think-key">🕸️图谱扩展:</span>
+                  <span>{{ turn.state.thinking.seed_tables?.join(', ') || '-' }} →</span>
+                  <el-tag v-for="t in turn.state.thinking.expanded_tables" :key="t" size="small" type="success" style="margin: 0 2px">+{{ t }}</el-tag>
+                </div>
+                <div v-if="turn.state.thinking.join_path_section" class="think-row think-join">
+                  <span class="think-key">🕸️JOIN 路径:</span>
+                  <pre class="join-path-pre">{{ turn.state.thinking.join_path_section }}</pre>
+                </div>
               </div>
             </div>
 
@@ -484,6 +493,23 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: #667eea;
   margin-right: 4px;
+}
+.think-join {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+.join-path-pre {
+  margin: 0;
+  padding: 6px 10px;
+  background: #eef0f5;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  flex: 1;
+  overflow-x: auto;
 }
 
 .token-detail {

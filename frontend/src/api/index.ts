@@ -416,4 +416,125 @@ export const dashboard = {
   },
 }
 
+// ── 知识图谱 (NetworkX + AntV G6) ────────────────────────────
+
+export interface GraphNode {
+  id: string
+  label: string
+  community: number
+  centrality: number
+  columnCount: number
+  source: string
+  degree: number
+}
+
+export interface GraphEdge {
+  source: string
+  target: string
+  on: string
+  confidence: number
+  relSource: string
+  joinType: string
+  cardinality: string
+}
+
+export interface GraphData {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
+
+export interface CommunityResult {
+  communities: string[][]
+  count: number
+}
+
+export interface HubTable {
+  table: string
+  centrality: number
+}
+
+export interface HubResult {
+  hubs: HubTable[]
+}
+
+export interface ImpactResult {
+  table: string
+  impacted_tables: string[]
+  count: number
+}
+
+export interface JoinPathItem {
+  tables: string[]
+  on_conditions: string[]
+  join_types: string[]
+  confidences: number[]
+  total_weight: number
+}
+
+/** 反向关系 (其他表引用了此表) */
+export interface ReverseRelationship {
+  source: string
+  target: string
+  on: string
+  joinType: string
+  cardinality: string
+  confidence: number
+  relSource: string
+}
+
+export interface JoinPathResult {
+  source: string
+  target: string
+  paths: JoinPathItem[]
+  found: boolean
+}
+
+export const graph = {
+  /** 获取全图数据 (G6 渲染) */
+  full(dataSourceId: string) {
+    return apiClient.get<GraphData>('/graph', { params: { data_source_id: dataSourceId } })
+  },
+  /** 获取子图 (聚焦某表) */
+  subgraph(dataSourceId: string, center: string, depth = 2) {
+    return apiClient.get<GraphData>('/graph/subgraph', { params: { data_source_id: dataSourceId, center, depth } })
+  },
+  /** 获取社区列表 */
+  communities(dataSourceId: string) {
+    return apiClient.get<CommunityResult>('/graph/communities', { params: { data_source_id: dataSourceId } })
+  },
+  /** 获取枢纽表 */
+  hubs(dataSourceId: string, topK = 10) {
+    return apiClient.get<HubResult>('/graph/hubs', { params: { data_source_id: dataSourceId, top_k: topK } })
+  },
+  /** 影响分析 */
+  impact(dataSourceId: string, table: string) {
+    return apiClient.get<ImpactResult>('/graph/impact', { params: { data_source_id: dataSourceId, table } })
+  },
+  /** 获取反向关系 (其他表引用了此表) */
+  reverseRelationships(dataSourceId: string, table: string) {
+    return apiClient.get<{ table: string; relationships: ReverseRelationship[]; count: number }>('/graph/reverse-relationships', { params: { data_source_id: dataSourceId, table } })
+  },
+  /** JOIN 路径 */
+  joinPath(dataSourceId: string, source: string, target: string) {
+    return apiClient.get<JoinPathResult>('/graph/join-path', { params: { data_source_id: dataSourceId, source, target } })
+  },
+  /** 新增关系 */
+  addRelationship(dataSourceId: string, data: {
+    from_table: string
+    name: string
+    target_model: string
+    join_type?: string
+    on: string
+    type?: string
+    source?: string
+    confidence?: number
+  }) {
+    return apiClient.post<{ success: boolean; graph: GraphData }>('/graph/relationship', data, { params: { data_source_id: dataSourceId } })
+  },
+  /** 删除关系 */
+  deleteRelationship(dataSourceId: string, from: string, target: string) {
+    return apiClient.delete<{ success: boolean }>('/graph/relationship', { params: { data_source_id: dataSourceId, from, target } })
+  },
+}
+
 export { default as apiClient } from './client'

@@ -153,7 +153,13 @@ class Settings(BaseSettings):
     rag_vector_top_k: int = 20
     rag_similarity_threshold: float = 0.35  # BGE 中文分数分布偏低, 0.5 漏召回; 可调
     rag_max_fewshot_examples: int = 3
-    rag_max_schema_tables: int = 20  # 关系扩展后总表数上限 (防 BFS 全库扩散)
+    rag_max_schema_tables: int = 10  # 关系扩展后总表数上限 (种子表+桥接表+1跳邻居, 10张足够覆盖绝大多数查询)
+
+    # ── Graph (知识图谱中间件, NetworkX) ─────────────────────
+    graph_max_join_path_hops: int = 4  # JOIN 路径最大跳数 (Dijkstra 搜索上限)
+    graph_community_algorithm: str = "label_propagation"  # 社区发现算法 (label_propagation | greedy_modularity)
+    graph_expand_use_community: bool = True  # 智能扩展是否包含社区补全
+    graph_join_path_in_prompt: bool = True  # 是否在 SQL prompt 注入【JOIN 路径】块
 
     # ── Rate Limiting ────────────────────────────────────────
     rate_limit_queries_per_minute: int = 30
@@ -281,7 +287,8 @@ class Settings(BaseSettings):
                       "memory_max_recall_count", "log_retention_days",
                       "datasource_health_check_max_failures", "metadata_auto_refresh_interval_hours",
                       "async_task_retention_hours", "scan_llm_enrichment_timeout",
-                      "agent_loop_recursion_limit", "llm_max_retries")
+                      "agent_loop_recursion_limit", "llm_max_retries",
+                      "graph_max_join_path_hops")
     @classmethod
     def _validate_positive_int(cls, v: int) -> int:
         if v < 1:

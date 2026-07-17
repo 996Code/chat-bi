@@ -5,7 +5,6 @@ Wave 1 后端能力测试:
   - T051: saved_queries 端点 (列表/详情/多租户隔离)
 """
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from app.core.security import create_access_token
 from app.core.token_tracker import (
@@ -33,13 +32,6 @@ def other_tenant_token():
         "user_id": "admin_2", "email": "admin2@test.com",
         "tenant_id": "tenant_B", "role": "admin",
     })
-
-
-@pytest.fixture
-async def http_client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 def _auth(token: str) -> dict:

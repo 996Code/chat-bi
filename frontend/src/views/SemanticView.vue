@@ -20,7 +20,7 @@
       </el-empty>
     </div>
 
-    <!-- 表列表 (左侧) + 详情 (右侧) -->
+    <!-- 表列表 (左侧) + 详情/图谱 (右侧) -->
     <div v-loading="loading" v-if="model" class="content-layout">
       <el-card class="table-list">
         <template #header>
@@ -32,20 +32,24 @@
           :key="m.name"
           class="table-item"
           :class="{ active: selected?.name === m.name }"
-          @click="selected = m"
+          @click="selected = m; schemaGraphRef?.focusNode?.(m.name)"
         >
           <div class="table-name">{{ m.display_name }}</div>
           <div class="table-meta">
             <span>{{ m.name }}</span>
             <span class="badges">
               <el-badge :value="m.columns.length" type="primary" />列
-              <el-badge :value="m.relationships.length" type="success" />关系
+              <el-badge :value="getRelationshipCount(m.name)" type="success" />关系
             </span>
           </div>
         </div>
       </el-card>
 
-      <el-card class="table-detail" v-if="selected">
+      <!-- 右侧: 详情 / 图谱 Tab 切换 -->
+      <div class="right-panel">
+        <el-tabs v-model="activeTab" class="view-tabs">
+          <el-tab-pane label="详情" name="detail">
+            <el-card v-if="selected" class="table-detail">
         <template #header>
           <div class="detail-header">
             <div>
@@ -143,7 +147,34 @@
             <template #default="{ row }"><code style="font-size: 0.85em">{{ row.on }}</code></template>
           </el-table-column>
         </el-table>
-      </el-card>
+
+        <h4 v-if="reverseRelationships.length" style="margin-top: 20px">
+          被引用 ({{ reverseRelationships.length }})
+          <el-tooltip content="其他表通过外键或推断关系引用了此表" placement="top">
+            <el-icon style="color: #909399; margin-left: 4px"><InfoFilled /></el-icon>
+          </el-tooltip>
+        </h4>
+        <el-table v-if="reverseRelationships.length" :data="reverseRelationships" size="small" border>
+          <el-table-column prop="source" label="来源表" min-width="120" />
+          <el-table-column prop="joinType" label="JOIN" width="80" />
+          <el-table-column prop="on" label="ON 条件" min-width="250">
+            <template #default="{ row }"><code style="font-size: 0.85em">{{ row.on }}</code></template>
+          </el-table-column>
+          <el-table-column label="来源" width="120">
+            <template #default="{ row }">
+              <el-tag size="small" :type="sourceTag(row.relSource)">{{ sourceLabel(row.relSource, row.confidence) }}</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+            </el-card>
+          </el-tab-pane>
+          <el-tab-pane label="图谱" name="graph">
+            <div class="graph-panel" v-show="activeTab === 'graph'">
+              <SchemaGraph v-if="dataSourceId" :data-source-id="dataSourceId" ref="schemaGraphRef" @data-changed="refreshReverseRelCount" />
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
     </div>
 
     <!-- 版本历史抽屉 (T015) -->
@@ -214,14 +245,29 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Refresh, Clock, Edit } from '@element-plus/icons-vue'
-import { semantic, datasource, type SemanticModel, type SemanticTableModel, type SemanticColumn } from '@/api'
+import { ArrowLeft, Refresh, Clock, Edit, InfoFilled } from '@element-plus/icons-vue'
+import { semantic, datasource, graph, type SemanticModel, type SemanticTableModel, type SemanticColumn, type ReverseRelationship } from '@/api'
 import { extractErrorDetail } from '@/utils/error'
+import SchemaGraph from '@/components/SchemaGraph.vue'
 
 const route = useRoute()
 const model = ref<SemanticModel | null>(null)
 const selected = ref<SemanticTableModel | null>(null)
+const reverseRelationships = ref<ReverseRelationship[]>([])
+// 反向关系计数 map: { tableName → 被引用次数 } (用于表列表显示双向关系数)
+const reverseRelCountMap = ref<Record<string, number>>({})
+
+/** 获取表的双向关系总数 (出关系 + 被引用关系) */
+function getRelationshipCount(tableName: string): number {
+  const m = model.value?.content?.models?.find(mm => mm.name === tableName)
+  const outbound = m?.relationships?.length || 0
+  const inbound = reverseRelCountMap.value[tableName] || 0
+  return outbound + inbound
+}
 const loading = ref(false)
+const activeTab = ref('detail')
+const dataSourceId = ref('')
+const schemaGraphRef = ref<InstanceType<typeof SchemaGraph> | null>(null)
 // 版本历史 + 回滚 (T015)
 const versionDrawer = ref(false)
 const versionLoading = ref(false)
@@ -262,10 +308,23 @@ async function fetchData() {
     } catch { /* ignore */ }
   }
   if (!dsId) return
+  dataSourceId.value = dsId
   loading.value = true
   try {
     const { data } = await semantic.current(dsId)
     model.value = data
+    // 从语义层计算每张表被引用的次数 (双向关系计数)
+    const revMap: Record<string, number> = {}
+    if (data?.content?.models) {
+      for (const m of data.content.models) {
+        for (const rel of m.relationships || []) {
+          if (rel.target_model) {
+            revMap[rel.target_model] = (revMap[rel.target_model] || 0) + 1
+          }
+        }
+      }
+    }
+    reverseRelCountMap.value = revMap
     if (data && data.content.models.length > 0) {
       selected.value = data.content.models[0]
     }
@@ -433,6 +492,45 @@ function semanticTag(type: string | null): any {
   return type ? map[type] || '' : 'info'
 }
 
+// 选中表变化时加载反向关系 (被引用)
+watch(selected, async (val) => {
+  reverseRelationships.value = []
+  if (!val || !dataSourceId.value) return
+  try {
+    const { data } = await graph.reverseRelationships(dataSourceId.value, val.name)
+    reverseRelationships.value = data.relationships
+  } catch {
+    // 静默失败, 不影响主功能
+  }
+})
+
+/** 图谱关系增删后刷新反向关系计数 (重新拉取语义层) */
+async function refreshReverseRelCount() {
+  if (!dataSourceId.value) return
+  try {
+    const { data } = await semantic.current(dataSourceId.value)
+    if (data?.content?.models) {
+      model.value = data
+      const revMap: Record<string, number> = {}
+      for (const m of data.content.models) {
+        for (const rel of m.relationships || []) {
+          if (rel.target_model) {
+            revMap[rel.target_model] = (revMap[rel.target_model] || 0) + 1
+          }
+        }
+      }
+      reverseRelCountMap.value = revMap
+      // 重新定位 selected 到新数据 (model.value 已替换, selected 还指向旧对象)
+      if (selected.value) {
+        const refreshed = data.content.models.find(m => m.name === selected.value!.name)
+        if (refreshed) selected.value = refreshed
+      }
+    }
+  } catch {
+    // 静默失败
+  }
+}
+
 watch(() => route.query.data_source_id, fetchData)
 onMounted(fetchData)
 </script>
@@ -447,7 +545,13 @@ onMounted(fetchData)
 .content-layout { display: flex; gap: 16px; height: calc(100vh - 140px); }
 .table-list { width: 280px; flex-shrink: 0; display: flex; flex-direction: column; }
 .table-list :deep(.el-card__body) { flex: 1; overflow-y: auto; }
-.table-detail { flex: 1; overflow-y: auto; }
+.right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.right-panel :deep(.el-tabs) { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.right-panel :deep(.el-tabs__content) { flex: 1; overflow: hidden; }
+.right-panel :deep(.el-tab-pane) { height: 100%; display: flex; flex-direction: column; }
+.table-detail { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.table-detail :deep(.el-card__body) { flex: 1; overflow-y: auto; }
+.graph-panel { height: calc(100vh - 200px); min-height: 400px; }
 .table-item {
   padding: 10px 12px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
   border: 1px solid transparent;

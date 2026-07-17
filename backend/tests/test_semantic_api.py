@@ -11,7 +11,6 @@ T014: 语义层 CRUD + 版本管理 — 全 HTTP 集成测试
   - v1 #38: 密码加密
 """
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.security import create_access_token
@@ -51,13 +50,6 @@ def read_only_token():
         "user_id": "ro_1", "email": "ro@test.com",
         "tenant_id": "tenant_A", "role": "read_only",
     })
-
-
-@pytest.fixture
-async def http_client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 def _auth(token: str) -> dict:

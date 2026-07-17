@@ -20,14 +20,6 @@ from app.core.security import create_access_token
 from app.db.models import User
 
 
-@pytest.fixture
-async def http_client(app):
-    """真实 HTTP 客户端，走 ASGI transport，不 mock app。"""
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
-
-
 class TestHealthAndPing:
     """冒烟测试：app 能启动并响应（对标 v1 #9: 前端全 500 排查第一项）。"""
 

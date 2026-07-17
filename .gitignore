@@ -49,6 +49,7 @@ Thumbs.db
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+.vite/
 frontend/*.tsbuildinfo
 
 # Logs

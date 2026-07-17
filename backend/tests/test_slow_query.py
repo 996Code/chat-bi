@@ -5,7 +5,6 @@
   - GET /slow-queries 端点
 """
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from app.core.security import create_access_token
 from app.db.models import AuditLog
@@ -25,13 +24,6 @@ def user_token():
         "user_id": "user_1", "email": "user@test.com",
         "tenant_id": "tenant_A", "role": "user",
     })
-
-
-@pytest.fixture
-async def http_client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 def _auth(token: str) -> dict:
