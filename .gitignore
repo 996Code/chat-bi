@@ -68,3 +68,6 @@ data/states/
 # Runtime data (agent memory / vector cache — 运行时生成, 不入库)
 memory/
 data/
+
+# AI agent 工具草稿/规划 (本地生成, 不入库)
+.zcode/
