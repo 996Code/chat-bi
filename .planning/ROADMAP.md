@@ -17,3 +17,22 @@
 - **已完成任务**: 15 / 54（Phase 1 全部 + Phase 2 T012-T014 + T018）
 - **测试**: 108 passed，覆盖率 88%（门禁 75%，`pytest --cov`）
 - **当前焦点**: Phase 2 执行中 — 下一步 T016（知识图谱推断）+ T017（演化）
+
+> 注：里程碑 1 的 7 个 Phase 已全部完成（详见 STATE.md），上方表格为历史规划快照。
+
+---
+
+## 里程碑 2：ChatBI v2 演进规划（核心交付后）
+
+基于 `doc/chatbi-v2/EVOLUTION-ROADMAP.md` 的 13 个演进方向，严格单点推进。
+
+| 阶段 | 名称 | 状态 | 描述 |
+|------|------|------|------|
+| E1 | graph-feedback-loop | 🔄 规格已定义 | 成功查询反哺知识图谱 confidence（隐式信号闭环） |
+| E2 | (待选) | 待规划 | 从 EVOLUTION-ROADMAP.md Wave 1/2 中选下一个 |
+
+### 当前活动：E1 graph-feedback-loop
+
+- **OpenSpec change**: `openspec/changes/graph-feedback-loop/`
+- **规格文件**: proposal.md ✓ / design.md ✓ / specs ✓ / tasks.md ✓
+- **下一步**: 运行 `/ai:plan graph-feedback-loop` 将规格转为执行计划

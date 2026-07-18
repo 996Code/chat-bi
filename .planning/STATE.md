@@ -1,8 +1,16 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: chatbi-v2 / Phase 10 完成（B3+C5+C6+C8 技术债清理）
-- **状态**: Phase 10 技术债清理全部交付，516 tests passed
+- **阶段**: 演进规划 E1 / graph-feedback-loop（规格已定义，待规划）
+- **状态**: v2 核心交付完成（68 任务，538 tests passed）；进入演进规划阶段，当前推进方向1「查询反哺知识图谱」
+- **前序**: chatbi-v2 Phase 1-10 全部完成（B3+C5+C6+C8 技术债清理收尾）
+
+## OpenSpec 关联
+- **活动 change**: `openspec/changes/graph-feedback-loop/`
+- **规格状态**: 4/4 artifacts complete（proposal/design/specs/tasks）
+- **下一步**: 运行 `/ai:plan graph-feedback-loop` 转执行计划
+- **演进路线图**: `doc/chatbi-v2/EVOLUTION-ROADMAP.md`（13 个方向）
+
 
 ## Phase 进度
 
