@@ -65,12 +65,16 @@
   - 新增 `VersionConflictError` 异常类
 
 ### Task 3.2 — linkage_memories_to_cooccurrence + sync_linkage_to_graph（type: tdd）
-- **read_first**: `knowledge_graph.py:315-370`（mine_implicit_relationships）/ Task 1.1 helper
-- **acceptance**: 从 linkage 记忆读 co_occurrence 轻聚合；达阈值表对算 boost；新表对发现（≥new_pair_threshold 且不在 relationships）；冲突抛 VersionConflictError 不吞错
+- **read_first**: `knowledge_graph.py:315-370`（mine_implicit_relationships）/ Task 1.1 helper / `test_knowledge_graph_evolution.py`（13 个现有单测）
+- **acceptance**: 从 linkage 记忆读 co_occurrence 轻聚合；达阈值表对算 boost；新表对发现（≥new_pair_threshold 且不在 relationships）；冲突抛 VersionConflictError 不吞错；现有 13 个 mine 单测不回归
 - **actions**:
-  - Red: 测试——mock linkage 记忆，断言 boost 计算 + 新表对发现 + 冲突抛错
-  - Green: 实现 `linkage_memories_to_cooccurrence` + `sync_linkage_to_graph`
-  - Refactor: 复用 mine_implicit_relationships 的算法核心
+  - Red: 测试——mock linkage 记忆，断言 boost 计算 + 新表对发现 + 冲突抛 VersionConflictError
+  - Green:
+    1. 实现 `linkage_memories_to_cooccurrence(mem_store) -> dict[tuple,str,int]`：从 frontmatter 读 co_occurrence（轻聚合，不解析 SQL）
+    2. **mine_implicit_relationships 改造**（D4）：新增 `linkage_memories` 可选入参，优先从记忆读共现；**保留原 query_history 入参向后兼容**（13 个单测不改）；内部抽公共算法核心 `_compute_boost(co_occurrence_map, existing_rels)`
+    3. 实现 `sync_linkage_to_graph(...)`：调上述函数算 boost + 新表对发现 → apply_confidence_updates
+  - Refactor: 确认 mine 改造后原 13 个单测仍 pass（向后兼容验证）；新增的单测覆盖记忆入参路径
+- **风险**：mine 签名改动可能影响现有调用方——确认除测试外无生产调用（已是死代码，安全）
 
 ### Task 3.3 — /memory/consolidate 接入 + 409 冲突响应（type: implement）
 - **read_first**: `backend/app/api/memory.py:126`（consolidate 端点）

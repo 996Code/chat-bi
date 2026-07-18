@@ -136,5 +136,7 @@ SELECT ... FROM biz_orders JOIN biz_users ON ...
 
 ## Open Questions
 
-- linkage 记忆召回时，是注入 prompt（给 LLM 看表共现提示）还是只用于图谱？倾向**两者都**——content 部分注入 prompt 有助于 SQL 生成，co_occurrence 用于图谱。
-- 新表对发现（共现但图谱无该关系）：是否在整理时一并推断加入？倾向是，但用保守阈值 + 低初始 confidence（0.5）。
+> 以下问题已在 spec.md 中作出倾向性决定，执行时按 spec 走；如遇新证据可重新评估。
+
+- ~~linkage 记忆召回时，是注入 prompt 还是只用于图谱？~~ **已在 spec 决定（双路召回 Requirement）**：两者都——content 注入 prompt 辅助 SQL 生成，co_occurrence 经图谱影响路径计算。
+- ~~新表对发现是否在整理时一并推断加入？初始 confidence？~~ **已在 spec 决定（新表对保守发现 Scenario）**：是，整理时发现，保守阈值 5，初始 confidence 0.5，source="implicit_mining"，可通过 `graph_feedback_discover_new_pairs` 关闭。
