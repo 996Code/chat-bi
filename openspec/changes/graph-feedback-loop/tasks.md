@@ -1,53 +1,56 @@
-## 1. 数据模型 + 配置
+## 1. 记忆基建扩展（支持 linkage 类型）
 
-- [ ] 1.1 新增 `RelationshipFeedback` 模型（`backend/app/db/models.py`）：字段 tenant_id/data_source_id/from_table/to_table/co_occurrence_count/last_seen_at/merged_at，UNIQUE(tenant_id, data_source_id, from_table, to_table)，继承 TenantMixin
-- [ ] 1.2 `auto_create_tables` 验证能自动建表（启动时）；补 models 的 `__table_args__` 索引（tenant_id + data_source_id 查询用）
-- [ ] 1.3 新增 config 项（`backend/app/core/config.py`，全走环境变量）：
-  - `graph_feedback_enabled: bool = True`
-  - `graph_feedback_co_occurrence_threshold: int = 3`
-  - `graph_feedback_new_pair_threshold: int = 5`
-  - `graph_feedback_merge_threshold: int = 10`
-  - `graph_feedback_confidence_boost: float = 0.1`
+- [ ] 1.1 确认 `AgentMemoryStore.save_memory` 已支持任意 `memory_type` 字符串（含 "linkage"），无需 schema 迁移；验证 frontmatter 的 metadata 字段能存 co_occurrence/tables
+- [ ] 1.2 新增 linkage 记忆文件名约定：`linkage-{tableA}-{tableB}.md`（表名字典序保证对唯一），在 `_get_ds_store` / `_validate_memory_name` 确认能正确处理
+- [ ] 1.3 新增 helper `get_linkage_memory(mem_store, table_a, table_b) -> dict | None`：按表对查现有 linkage 记忆（文件名约定定位）
+- [ ] 1.4 单测：linkage 记忆的创建/更新/frontmatter 读写（`test_agent_memory.py` 或新建 `test_recall.py`）
+
+## 2. 链路经验查询时结构化沉淀（复用 state，零额外计算）
+
+- [ ] 2.1 新增 `persist_linkage_memory(mem_store, state)` 函数（在 `recall.py` 或新模块）：直接用 `state.current_tables` 两两组合（或从 `state.join_path_section` 解析表对），不重新扫 SQL
+- [ ] 2.2 已存在的表对：`co_occurrence += 1`，若 JOIN 路径/场景新颖则追加；走 `save_memory(mem_id=existing)` 更新
+- [ ] 2.3 新表对：创建 linkage 记忆，写入表对 + JOIN 路径（from join_path_section）+ 典型 SQL（截断）+ 场景（from thinking）+ co_occurrence=1
+- [ ] 2.4 在 `_persist`（`chat_stream.py:819` 记忆提炼附近）插入链路沉淀块：条件 `state.success and state.sql and len(state.current_tables) >= 2 and memory_linkage_capture_enabled`，try/except 失败仅 WARNING 不阻塞
+- [ ] 2.5 单测：多表成功查询 → linkage 记忆正确创建/更新；单表查询跳过；失败不阻塞其他反哺
+
+## 3. 配置项（config.py，走环境变量）
+
+- [ ] 3.1 新增 config 项：
+  - `memory_linkage_capture_enabled: bool = True`
+  - `graph_sync_on_consolidate_enabled: bool = True`
+  - `graph_linkage_co_occurrence_threshold: int = 3`
+  - `graph_linkage_new_pair_threshold: int = 5`
+  - `graph_linkage_confidence_boost: float = 0.1`
   - `graph_feedback_discover_new_pairs: bool = True`
-  - 加进 `_validate_positive_int` 校验白名单（如适用）
+- [ ] 3.2 加入 `_validate_positive_int` 校验白名单（如适用）；补 `.env.example` 说明
 
-## 2. 算法扩展（knowledge_graph.py）
+## 4. 整理时轻聚合 + 图谱更新
 
-- [ ] 2.1 扩展 `mine_implicit_relationships` 支持新表对发现：共现 ≥ `new_pair_threshold` 且不在 known_pairs 时，调单对推断返回新关系建议（标记 source）
-- [ ] 2.2 新增 `apply_confidence_updates(content, updates: dict[tuple[str,str], float])`：遍历 content.relationships 改 confidence，返回新 content（不就地改）
-- [ ] 2.3 抽取共现统计为独立函数 `count_co_occurrences(sql: str) -> Counter[tuple[str,str]]`，复用现有 `table_re` 正则（`knowledge_graph.py:351`），供管线调用
-- [ ] 2.4 单测：扩展 `test_knowledge_graph_evolution.py` 覆盖新表对发现（阈值边界 / discover_new_pairs=false 跳过 / 新关系 source 标记）
+- [ ] 4.1 新增 `apply_confidence_updates(content, updates: dict[tuple[str,str], float])`（在 `knowledge_graph.py`）：遍历 content.relationships 改 confidence，返回新 content（不就地改）
+- [ ] 4.2 新增 `linkage_memories_to_cooccurrence(mem_store) -> dict[tuple[str,str], int]`：从 linkage 记忆 frontmatter 读 co_occurrence（轻聚合，不解析 SQL）
+- [ ] 4.3 新增 `sync_linkage_to_graph(db, tenant_id, data_source_id)`：读 linkage → 筛达阈值表对 → 算 boost（+新表对发现）→ `apply_confidence_updates` → 写新 SemanticModel 版本
+- [ ] 4.4 新表对发现：共现 ≥ `new_pair_threshold` 且不在 relationships 时，调单对推断加入，初始 confidence 0.5，source="implicit_mining"
+- [ ] 4.5 在 `/memory/consolidate`（`memory.py` 整理动作末尾）追加调用 `sync_linkage_to_graph`，try/except 失败不影响整理本身
+- [ ] 4.6 并发保护：图谱更新走单事务，SemanticModel 乐观锁 version 校验或 SELECT FOR UPDATE，冲突跳过
+- [ ] 4.7 单测：已知关系 boost / 新关系加入 / version 递增 / 冲突跳过 / 图谱失败不影响整理
 
-## 3. 主管线接入（chat_stream.py）
+## 5. 链路经验参与记忆整合 + 双路召回
 
-- [ ] 3.1 新增 `_persist_graph_feedback(db, user, state, conv_id, data_source_id)` 函数：从 state.sql 抽共现 → 写/更新 relationship_feedback 表（UPSERT 累加 count）
-- [ ] 3.2 在 `_persist`（`chat_stream.py:842` 后，记忆提炼之后）插入反哺块：条件 `state.success and state.sql and len(state.current_tables) >= 2 and graph_feedback_enabled`，try/except 失败仅 WARNING 不阻塞
-- [ ] 3.3 阈值触发即时合并：累积后检查是否达 `merge_threshold`，达则调合并逻辑（可选，主要靠定时任务）
-- [ ] 3.4 单测：`test_chat_stream.py` 补一个反哺接入测试（mock 多表成功查询，断言 feedback 表有记录 + 失败时不阻塞）
-
-## 4. 合并写回 SemanticModel
-
-- [ ] 4.1 新增 `merge_feedback_to_semantic_model(db, tenant_id, data_source_id)`：查待合并 feedback（co_occurrence ≥ threshold 且 merged_at is null）→ 调 mine_implicit_relationships + apply_confidence_updates → 写新 SemanticModel 版本
-- [ ] 4.2 并发保护：合并走单事务，`SELECT SemanticModel FOR UPDATE` 或乐观锁 version 校验，冲突时跳过本次（下次重试）
-- [ ] 4.3 合并成功后更新 feedback.merged_at；新发现的关系标记 source="implicit_mining"
-- [ ] 4.4 单测：合并逻辑测试（已知关系 boost / 新关系加入 / version 递增 / 冲突跳过）
-
-## 5. 定时任务（scheduler.py）
-
-- [ ] 5.1 注册定时任务"图谱反哺批量合并"（每小时），遍历有待合并 feedback 的 (tenant, ds) 调 `merge_feedback_to_semantic_model`
-- [ ] 5.2 任务失败不阻塞调度器（复用现有 try/except 模式），记录日志
-- [ ] 5.3 config 控制任务间隔（`graph_feedback_merge_interval_minutes: int = 60`）
+- [ ] 5.1 确认 `consolidate_memories` 能处理 linkage 类记忆（LLM 整理时合并低频表对）；验证 MEMORY.md 索引截断保护覆盖 linkage
+- [ ] 5.2 确认 `recall_memories` 召回时能命中 linkage 记忆（content 注入 prompt 辅助 SQL 生成）；必要时调整召回逻辑不过滤 linkage 类型
+- [ ] 5.3 单测：整理合并碎片化 linkage；召回命中 linkage 注入 prompt
 
 ## 6. 验收测试
 
-- [ ] 6.1 端到端：模拟 3 次同表对成功查询 → feedback 累积 → 触发合并 → 断言 SemanticModel 新版本 confidence 提升
-- [ ] 6.2 端到端：模拟 5 次未知表对共现 → 触发新关系发现 → 断言新 Relationship 加入（source=implicit_mining, confidence=0.5）
-- [ ] 6.3 关闭开关：`graph_feedback_enabled=false` → 成功查询不产生 feedback 记录
-- [ ] 6.4 失败不阻塞：mock feedback 表写入抛异常 → 查询仍正常返回，其他反哺点（fewshot/记忆）仍执行
-- [ ] 6.5 全量测试通过：`.venv/bin/python -m pytest backend/tests/ -q`（当前 538 passed 基线不回归）
+- [ ] 6.1 端到端：3 次同表对成功查询 → linkage 记忆 co_occurrence=3 → 整理触发 → SemanticModel 新版本 confidence 提升
+- [ ] 6.2 端到端：5 次未知表对共现 → 整理触发新关系发现 → 新 Relationship 加入（source=implicit_mining, confidence=0.5）
+- [ ] 6.3 关闭开关：`memory_linkage_capture_enabled=false` → 成功查询不产生 linkage；`graph_sync_on_consolidate_enabled=false` → 整理不更新图谱
+- [ ] 6.4 失败隔离：linkage 沉淀抛异常 → 查询正常返回 + 其他反哺仍执行；图谱更新抛异常 → 整理仍成功
+- [ ] 6.5 零额外计算验证：mock 查询，断言沉淀过程不调用 SQL 正则/JOIN 重算（只读 state 字段）
+- [ ] 6.6 全量测试通过：`.venv/bin/python -m pytest backend/tests/ -q`（538 passed 基线不回归）
 
 ## 7. 文档
 
-- [ ] 7.1 更新 `doc/chatbi-v2/EVOLUTION-ROADMAP.md`：方向1 状态改为"进行中/已完成"，归档要点写进 ROADMAP.md
-- [ ] 7.2 `backend/.env.example` 补 graph_feedback_* 配置项说明
-- [ ] 7.3 CHANGELOG.md 新增"图谱反哺闭环"条目
+- [ ] 7.1 更新 `doc/chatbi-v2/EVOLUTION-ROADMAP.md`：方向1 状态改为"已完成"，记录"复用记忆基建"的最终设计决策
+- [ ] 7.2 `backend/.env.example` 补 memory_linkage_* / graph_linkage_* / graph_sync_* 配置项
+- [ ] 7.3 CHANGELOG.md 新增"记忆与图谱集成闭环"条目

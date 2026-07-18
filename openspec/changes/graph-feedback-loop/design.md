@@ -1,90 +1,129 @@
 ## Context
 
-知识图谱的关系 confidence 是 SchemaGraph 路径计算的核心权重（`graph_service.py:113` `weight = 1 - confidence`，Dijkstra 走高 confidence 路径）。当前 confidence 来源只有扫描期三处（外键/name_pattern/LLM 推断），写完即冻住。
+系统有两个独立经验机制：
+- **记忆**（`recall.py` / `agent_memory.py` / `api/memory.py`）：markdown 文件存储，有完整闭环。`extract_memory_from_turn`（`recall.py:138`）从查询提炼自然语言经验；`consolidate_memories`（`recall.py:244`）LLM 合并去重碎片；`/memory/consolidate` API（`memory.py:126`）手动触发整理；`recall_memories`（`recall.py:27`）关键词召回注入 prompt。记忆有 `memory_type`（user/feedback/project/reference）和 `consolidated` 标记。
+- **图谱 confidence**：扫描期写入后冻结。`mine_implicit_relationships`（`knowledge_graph.py:315`）+ `apply_feedback_signals`（`knowledge_graph.py:373`）算法就绪但是死代码。
 
-反哺算法 `mine_implicit_relationships`（`knowledge_graph.py:315-370`）已实现：正则抽 SQL 表名 → 统计已知关系表对共现 → 共现 ≥3 次（`FREQUENT_JOIN_THRESHOLD=50`）每次 boost +0.1 封顶 0.95。有 5 个单测覆盖。但零生产调用方。
-
-主管线 `_persist`（`chat_stream.py:686-845`）在 `if state.success and state.sql:` 块里已有三个并列反哺点（SavedQuery line 774 / fewshot line 806 / 记忆提炼 line 819），全部 try/except 失败不阻塞。本反哺应同模式插入。
-
-**关键约束**：SemanticModel 是 append-only 版本化（`models.py:135-153` UniqueConstraint tenant+ds+version），每次编辑 confidence 都升 version。1000 次成功查询 = 1000 个版本，不可接受。
+**本设计的核心洞察**：两者都是"成功查询→经验沉淀→整合→影响下次生成"，重复造了存储+整合轮子。集成后，记忆承载完整经验（含链路），整理时汇总更新图谱——一套基建，两个出口（prompt + 图谱路径）。
 
 ## Goals / Non-Goals
 
 **Goals:**
-- 成功查询的表共现信号能反哺到 Relationship.confidence
-- 不导致 SemanticModel 版本爆炸
-- 失败不阻塞主管线（复用现有 try/except 模式）
-- 复用已实现 + 已测试的 `mine_implicit_relationships` 算法
+- 记忆承载执行链路经验（表共现/JOIN 路径/SQL 模式），不止自然语言
+- 手动整理（`/memory/consolidate`）时，自动汇总链路经验更新图谱 confidence
+- 复用已有记忆基建（存储/整合/召回），不新建表、不写定时任务
+- 图谱 confidence 能随使用演化（受整理频率控制，不爆炸）
 
 **Non-Goals:**
-- 不做显式用户纠错（详见 proposal 非目标）
-- 不做 confidence 衰减
-- 不改 SchemaGraph 运行时构建逻辑
-- 不做实时性保证（反哺是最终一致，节流批量合并）
+- 实时图谱同步（整理时才更新，最终一致）
+- confidence 衰减
+- 自动定时整理（保持手动/半手动触发）
+- 显式纠错按钮
 
 ## Decisions
 
-### D1: 节流策略——独立 feedback 表累计 + 阈值触发批量合并
+### D1: 链路经验作为独立 memory_type="linkage" 存储
 
-**选择**：新增 `RelationshipFeedback` 表累计共现计数，达阈值（如单表对累计 10 次）或定时任务（每小时）批量合并回 SemanticModel 升一个版本。
+**选择**：扩展记忆，新增 `memory_type="linkage"`，专门存执行链路经验。与自然语言经验（type=project/feedback）分开，便于整理时定向汇总。
 
-**备选 A（每次查询直接升版本）**：❌ 版本爆炸，1000 查询 = 1000 版本。
-**备选 B（内存累积，进程重启丢失）**：❌ 多 worker 不共享，信号不可靠。
-**备选 C（Redis 累积）**：可，但引入 Redis 依赖做持久化；DB 表更简单且可审计。
+**链路记忆文件格式**（markdown + frontmatter）：
+```markdown
+---
+name: linkage-biz-orders-biz-users
+description: 表共现经验 biz_orders↔biz_users
+metadata:
+  type: linkage
+  co_occurrence: 12
+  tables: [biz_orders, biz_users]
+---
 
-**feedback 表结构**：
+## 典型场景
+订单 + 用户信息关联查询
+
+## JOIN 路径
+biz_orders.user_id = biz_users.id
+
+## 典型 SQL 模式
+SELECT ... FROM biz_orders JOIN biz_users ON ...
 ```
-relationship_feedback
-- tenant_id, data_source_id
-- from_table, to_table      -- 表对
-- co_occurrence_count       -- 共现次数 (累加)
-- last_seen_at              -- 最近一次共现时间
-- merged_at                 -- 最近一次合并回 SemanticModel 的时间 (null=待合并)
-UNIQUE(tenant_id, data_source_id, from_table, to_table)
-```
 
-### D2: 新表对发现——保守策略，共现超阈值才推断
+**为什么用 markdown 不用 JSON**：人可读、可编辑修正（运维能直接改）、和现有记忆格式一致、能被 `recall_memories` 召回注入 prompt。
 
-**选择**：扩展 `mine_implicit_relationships`，当未知表对共现 ≥ `NEW_PAIR_DISCOVERY_THRESHOLD`（默认 5，比已知关系 boost 阈值 3 更严格）时，调 `infer_knowledge_graph` 单对推断后返回。
+**备选（JSON 结构化）**：❌ 与现有记忆格式不一致，召回逻辑要分叉；人不可读。
 
-**备选（共现就加）**：❌ 一次偶然的错查询就永久污染关系。保守阈值降低噪声。
-**风险**：阈值高了发现慢，低了易污染——做成 config 可调。
+### D2: 链路经验在查询时就结构化沉淀（复用 state 现成数据，零额外计算）
 
-### D3: 合并写回——复用 `_apply_inferred_relationships` 模式但只改数值
+**核心优化**：查询过程中 `AgentState` **已经算好了全套链路数据**（图谱扩展/JOIN 路径是管线固定步骤），直接复用，不查询后再去 SQL 里正则扫表名（避免重复计算）。
 
-**选择**：新增 `apply_confidence_updates(content, updates: dict[tuple[str,str], float])`，遍历 content.relationships，对在 updates 里的表对 `rel.confidence = new_val`，整体升一个 version 写回。
+**可复用的 state 字段**（查询时必然产生，`chat_stream.py`）：
+- `state.current_tables`（用到的所有表，含扩展后，line 365）
+- `state.seed_tables`（检索命中的种子表，line 366）
+- `state.expanded_tables`（图谱扩展新增的表，line 367）
+- `state.join_path_section`（**预计算的 JOIN 路径**，line 375）
+- `state.sql`（最终 SQL）
+- `state.thinking`（预思考：聚合方式/陷阱）
 
-**不复用 `_apply_inferred_relationships`**：那个是追加新 Relationship，本场景是改已存在的 confidence 数值，语义不同。
+**沉淀时机**：在 `_persist`（`chat_stream.py:819` 现有记忆提炼附近）追加一步，对每对共现表（从 `current_tables` 两两组合，或直接用 `join_path_section` 解析出的表对）：
+- 若该表对的 linkage 记忆已存在 → `co_occurrence += 1`，必要时追加场景/SQL（若新颖）
+- 若不存在 → 新建 linkage 记忆，`co_occurrence = 1`，写入 JOIN 路径 + 场景
 
-### D4: 触发点——_persist 内，单表查询跳过
+**记忆文件名**：`linkage-{tableA}-{tableB}.md`（表名字典序，保证对唯一）。
 
-**选择**：插入 `chat_stream.py:842` 后（现有反哺之后），条件 `state.success and state.sql and len(state.current_tables) >= 2`。单表查询无 JOIN 信号，跳过省开销。
+**复用点**：走 `AgentMemoryStore.save_memory(mem_id=existing)` 更新（`agent_memory.py:121` 已支持 mem_id 更新）。
 
-### D5: 配置项（进 config.py，走环境变量）
+**为什么查询时就沉淀而非暂存**：
+- state 数据现成，写入是纯数据搬运，几乎零成本
+- 整理时（D3）只需聚合已结构化的 co_occurrence，从"重计算"降级为"轻聚合"
+- 失败不阻塞（复用 _persist 的 try/except 模式）
 
-- `graph_feedback_enabled`（默认 true，总开关）
-- `graph_feedback_co_occurrence_threshold`（已知关系 boost 阈值，复用 `FREQUENT_JOIN_THRESHOLD`，默认 3）
-- `graph_feedback_new_pair_threshold`（新表对发现阈值，默认 5）
-- `graph_feedback_merge_threshold`（触发合并的累计次数，默认 10）
-- `graph_feedback_confidence_boost`（每次 boost 幅度，默认 0.1）
+**节流保护**：单表查询（`len(current_tables) < 2`）跳过；`memory_linkage_capture_enabled=false` 可关闭。
+
+### D3: 整理时只做轻聚合 + 更新图谱（查询时已结构化，整理压力小）
+
+**选择**：现有 `/memory/consolidate`（`memory.py:126`）整理完后，追加 `sync_linkage_to_graph(tenant_id, ds_id)`：
+1. 遍历该 ds 下所有 `type=linkage` 记忆
+2. 读 frontmatter 的 `co_occurrence` + `tables`（**已结构化，无需解析 SQL**）
+3. 按 `co_occurrence ≥ threshold` 筛选，算 boost 值
+4. 调新增 `apply_confidence_updates(content, updates)` → 写新 SemanticModel 版本
+
+**为什么整理压力小**：因为 D2 在查询时就把链路结构化好了（表对/JOIN/co_occurrence 都现成），整理只做"读字段→算 boost→写版本"，不再扫 SQL、不再算 JOIN 路径。
+
+**为什么在整理时做而非每次查询**：
+- 避免版本爆炸（整理是低频手动动作）
+- 整理本身就是"经验沉淀到结构化"的语义时机
+- 复用整理的并发保护（单请求触发）
+
+### D4: mine_implicit_relationships 改造——从记忆读取
+
+**选择**：原算法入参是 `(query_history: list[str], existing_relationships)`。改造为也能接受 `(linkage_memories: list[dict], existing_relationships)`——从记忆的 co_occurrence 字段读共现次数，而非正则扫 SQL。
+
+**保留原入参签名**：向后兼容已有单测（13 个）。新增一个适配函数 `linkage_memories_to_cooccurrence()` 转换。
+
+### D5: 配置项（进 config.py）
+
+- `memory_linkage_capture_enabled: bool = True`（是否沉淀链路经验）
+- `graph_sync_on_consolidate_enabled: bool = True`（整理时是否同步图谱）
+- `graph_linkage_co_occurrence_threshold: int = 3`（boost 阈值，复用 FREQUENT_JOIN_THRESHOLD 语义）
+- `graph_linkage_confidence_boost: float = 0.1`
 
 ## Risks / Trade-offs
 
-- **[版本数仍会增长]** → 阈值合并 + 定时任务；监控版本增长率，异常告警
-- **[错误查询污染（能跑通但表选错）]** → 共现多次才 boost（统计意义过滤偶发错误）；confidence 只升不崩，最坏是某关系略偏高，不会致命；未来方向5/P0-7 补评估和纠错
-- **[新表对推断错误]** → 保守阈值 5 + confidence 初始值低（0.5）；可配置关闭 `graph_feedback_discover_new_pairs`
-- **[多 worker 并发合并同一 SemanticModel]** → 合并走单事务 `SELECT ... FOR UPDATE` 或乐观锁（version 校验），失败重试
-- **[feedback 表膨胀]** → merged_at + 定期清理已合并且旧的记录
+- **[linkage 记忆膨胀]** → 整理时 `consolidate_memories` 合并低频表对；co_occurrence 低的可标记 consolidated 隐藏；MEMORY.md 索引有 200 行/25KB 截断保护（`agent_memory.py`）
+- **[从 markdown 解析 co_occurrence 有成本]** → 格式约定固定（frontmatter 字段），解析简单；且整理时才解析（低频），非每次查询
+- **[整理触发图谱更新失败]** → 图谱更新 try/except 包裹，失败不影响整理本身；记忆仍整合成功；图谱下次整理再试
+- **[linkage 记忆和自然语言记忆召回干扰]** → `recall_memories` 可按 type 过滤；或召回时 linkage 的 content 也注入（表共现信息对 SQL 生成有用）
+- **[错误查询污染 linkage]** → 多次共现才 boost（统计过滤）；人可编辑 linkage 文件修正；未来方向5/P0-7 补评估
 
 ## Migration Plan
 
-1. 新增 `RelationshipFeedback` 表（`auto_create_tables` 会自动建）
-2. 新增 config 项（带默认值，无需改 .env）
-3. 部署后自动生效（首次成功查询即开始累计）
-4. **回滚**：设 `graph_feedback_enabled=false` 即停；feedback 表可保留不删（不影响查询）
-5. 无数据迁移（现有 SemanticModel 不动，只增量更新）
+1. 新增 `memory_type="linkage"` 支持（agent_memory 已支持任意 type 字符串，无需 schema 迁移）
+2. 扩展 `extract_memory_from_turn` 抽取链路
+3. `/memory/consolidate` 追加图谱同步步骤
+4. 新增 config 项（带默认值）
+5. **回滚**：`memory_linkage_capture_enabled=false` 停止沉淀；`graph_sync_on_consolidate_enabled=false` 停止图谱同步；已有 linkage 记忆可保留（不影响）
+6. 无数据迁移（现有记忆/图谱不动）
 
 ## Open Questions
 
-- 定时合并任务用 APScheduler（已有调度器 `scheduler.py`）还是只在阈值触发时同步合并？倾向 APScheduler 每小时跑，阈值触发只标记"待合并"。
-- confidence 初始值：新表对发现后初始 confidence 设多少？0.5（保守，需多次才到可用区间）还是 0.6（对齐 name_pattern）？倾向 0.5。
+- linkage 记忆召回时，是注入 prompt（给 LLM 看表共现提示）还是只用于图谱？倾向**两者都**——content 部分注入 prompt 有助于 SQL 生成，co_occurrence 用于图谱。
+- 新表对发现（共现但图谱无该关系）：是否在整理时一并推断加入？倾向是，但用保守阈值 + 低初始 confidence（0.5）。
