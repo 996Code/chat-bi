@@ -26,15 +26,17 @@
 
 **选择**：扩展记忆，新增 `memory_type="linkage"`，专门存执行链路经验。与自然语言经验（type=project/feedback）分开，便于整理时定向汇总。
 
-**链路记忆文件格式**（markdown + frontmatter）：
+**链路记忆文件格式**（markdown + frontmatter，文件名仍是 UUID 遵守现有约定）：
 ```markdown
 ---
-name: linkage-biz-orders-biz-users
-description: 表共现经验 biz_orders↔biz_users
+id: {uuid}                        ← 遵守现有约定 (filename = immutable id)
+name: 表共现 biz_orders↔biz_users  ← 可编辑标题
+description: 表共现经验
 metadata:
   type: linkage
-  co_occurrence: 12
-  tables: [biz_orders, biz_users]
+  consolidated: false
+  co_occurrence: 12               ← 结构化字段, 整理时读
+  tables: [biz_orders, biz_users] ← 表对 (字典序), 定位用
 ---
 
 ## 典型场景
@@ -47,7 +49,11 @@ biz_orders.user_id = biz_users.id
 SELECT ... FROM biz_orders JOIN biz_users ON ...
 ```
 
+**按表对查询（`get_linkage_memory`）**：文件名是 UUID 不含表对信息，通过遍历 `type=linkage` 记忆、匹配 `metadata.tables` 定位。linkage 记忆数量有限（受表对组合数限制），遍历可接受。
+
 **为什么用 markdown 不用 JSON**：人可读、可编辑修正（运维能直接改）、和现有记忆格式一致、能被 `recall_memories` 召回注入 prompt。
+
+**备选（linkage 破例用确定性文件名 `linkage-{tableA}-{tableB}.md`）**：❌ 破坏"filename=immutable UUID"的统一约定（`agent_memory.py:149`），与其他记忆类型不一致。
 
 **备选（JSON 结构化）**：❌ 与现有记忆格式不一致，召回逻辑要分叉；人不可读。
 
@@ -67,7 +73,7 @@ SELECT ... FROM biz_orders JOIN biz_users ON ...
 - 若该表对的 linkage 记忆已存在 → `co_occurrence += 1`，必要时追加场景/SQL（若新颖）
 - 若不存在 → 新建 linkage 记忆，`co_occurrence = 1`，写入 JOIN 路径 + 场景
 
-**记忆文件名**：`linkage-{tableA}-{tableB}.md`（表名字典序，保证对唯一）。
+**记忆定位**：文件名用 UUID（遵守现有约定），通过 `metadata.tables`（表名字典序）唯一标识表对；`get_linkage_memory` 遍历 linkage 记忆按 metadata 匹配。
 
 **复用点**：走 `AgentMemoryStore.save_memory(mem_id=existing)` 更新（`agent_memory.py:121` 已支持 mem_id 更新）。
 

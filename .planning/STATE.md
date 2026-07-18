@@ -1,15 +1,20 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: 演进规划 E1 / graph-feedback-loop（规格已定义，待规划）
-- **状态**: v2 核心交付完成（68 任务，538 tests passed）；进入演进规划阶段，当前推进方向1「查询反哺知识图谱」
+- **阶段**: 演进规划 E1 / graph-feedback-loop（Wave 1 完成，Wave 2 待执行）
+- **状态**: v2 核心交付完成（68 任务，552 tests passed）；演进 E1 进行中
 - **前序**: chatbi-v2 Phase 1-10 全部完成（B3+C5+C6+C8 技术债清理收尾）
 
 ## OpenSpec 关联
 - **活动 change**: `openspec/changes/graph-feedback-loop/`
 - **规格状态**: 4/4 artifacts complete（proposal/design/specs/tasks）
 - **计划状态**: E1-CONTEXT.md + E1-PLAN.md 已生成（5 Wave / 14 Task）
-- **下一步**: 运行 `/ai:do` 开始执行 Wave 1
+- **执行进度**:
+  - ✅ Wave 1: Task 1.1（linkage 记忆基建 + helper）+ Task 1.2（config 配置项）
+  - ✅ Task 2.1: persist_linkage_memory 函数 + 测试
+  - ⏳ Wave 2 剩余: Task 2.2-2.4（persist_warning SSE + 前端 toast）
+  - ❌ Wave 3-5: 图谱更新/冲突弹框/验收
+- **下一步**: 执行 Wave 2 Task 2.2（SSE persist_warning 事件协议）
 - **演进路线图**: `doc/chatbi-v2/EVOLUTION-ROADMAP.md`（13 个方向）
 
 

@@ -104,9 +104,29 @@
 
 ### 🧪 测试
 
-- 538 测试通过（含流式自愈测试 3 项）
+- 552 测试通过（含流式自愈测试 3 项 + 链路经验沉淀测试 12 项）
 - 11 个能力规格文档 (specs)
 - 68 个任务 (T001-T068) 全部完成
+
+---
+
+## v2.1.0 (2026-07) - 演进规划 E1 进行中
+
+> 基于 `doc/chatbi-v2/EVOLUTION-ROADMAP.md` 的 13 个演进方向，严格单点推进。
+
+### 🔗 记忆与图谱集成 (graph-feedback-loop, E1 Wave 1)
+
+- **linkage 记忆类型**：扩展 AgentMemoryStore 支持 `memory_type="linkage"`，新增 `extra_metadata` 参数（co_occurrence/tables 结构化字段）
+- **按表对查询**：`get_linkage_memory(table_a, table_b)` 遍历 metadata.tables 匹配（遵守 UUID 文件名约定）
+- **链路经验沉淀**：`persist_linkage_memory` 查询时直接复用 AgentState 现成字段（current_tables/join_path_section/thinking），零额外计算；更新时追加新场景（去重）；三表间接关联标注"经由 XXX"
+- **frontmatter 健壮性**：修复长 description 截断（读 frontmatter 段不截断）、schema 前缀表名（引号包裹）、extra_metadata key 校验
+- **配置项**：graph_linkage_co_occurrence_threshold / new_pair_threshold / confidence_boost / discover_new_pairs
+
+### 📋 规格与规划
+
+- 新增 `doc/chatbi-v2/EVOLUTION-ROADMAP.md`：13 个演进方向全量路线图（5 主方向 + 8 补充 + Wave 落地 + 已否决方向）
+- 新增 OpenSpec change `graph-feedback-loop`：proposal/design/specs/tasks（4/4 complete）
+- 新增 E1 执行计划：CONTEXT.md + PLAN.md（5 Wave / 14 Task）
 
 ---
 

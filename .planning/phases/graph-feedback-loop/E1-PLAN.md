@@ -5,13 +5,13 @@
 
 ## Wave 1：基建（记忆扩展 + 配置，无外部依赖）
 
-### Task 1.1 — linkage 记忆文件约定 + helper（type: tdd）
-- **read_first**: `backend/app/core/agent_memory.py:121`（save_memory）/ `backend/app/api/memory.py:81`（_ensure_seed_memories）
-- **acceptance**: 能创建 `linkage-{tableA}-{tableB}.md`，frontmatter 含 `type: linkage` / `co_occurrence` / `tables`；`get_linkage_memory(table_a, table_b)` 按文件名查回
+### Task 1.1 — linkage 记忆 metadata 约定 + helper（type: tdd）
+- **read_first**: `backend/app/core/agent_memory.py:121`（save_memory）/ `agent_memory.py:149`（文件名=UUID 约定）/ `backend/app/api/memory.py:81`（_ensure_seed_memories）
+- **acceptance**: linkage 记忆文件名用 UUID（遵守约定），frontmatter metadata 含 `type: linkage` / `co_occurrence` / `tables`（字典序）；`get_linkage_memory(table_a, table_b)` 遍历 linkage 记忆按 metadata.tables 查回
 - **actions**:
-  - Red: 写测试——创建 linkage 记忆、读回 frontmatter、按表对查询
-  - Green: 实现 `get_linkage_memory` helper + 文件名约定（表名字典序）
-  - Refactor: 确认 `_validate_memory_name` 不拒绝 linkage 前缀
+  - Red: 写测试——save linkage 记忆（带 co_occurrence/tables）、读回 frontmatter、按表对查询命中
+  - Green: 实现 `get_linkage_memory` helper（遍历 type=linkage 匹配 metadata.tables）
+  - Refactor: 确认 save_memory 能写入 metadata 额外字段（co_occurrence/tables），必要时扩展 frontmatter 写入
 
 ### Task 1.2 — 配置项（type: setup）
 - **read_first**: `backend/app/core/config.py`（_validate_positive_int 白名单）

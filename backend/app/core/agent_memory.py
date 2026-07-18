@@ -125,6 +125,7 @@ class AgentMemoryStore:
         content: str,
         memory_type: str = "project",
         mem_id: str | None = None,
+        extra_metadata: dict | None = None,
     ) -> Path:
         """Save a memory file and update the index.
 
@@ -132,8 +133,9 @@ class AgentMemoryStore:
             name: Human-readable title (editable)
             description: One-line summary for the index and recall
             content: The memory content (markdown body)
-            memory_type: user | feedback | project | reference
+            memory_type: user | feedback | project | reference | linkage
             mem_id: Existing UUID to update (None = create new)
+            extra_metadata: 额外 metadata 字段 (E1: linkage 用 co_occurrence/tables)
 
         Returns:
             Path to the created memory file.
@@ -150,14 +152,27 @@ class AgentMemoryStore:
             file_name = f"{mem_id}.md"
         file_path = self.base_dir / file_name
 
+        # metadata 段: 基础 (type/consolidated) + 额外 (co_occurrence/tables 等)
+        meta_lines = ["metadata:", f"  type: {memory_type}", "  consolidated: false"]
+        if extra_metadata:
+            for k, v in extra_metadata.items():
+                # key 必须是合法 YAML 标识符 (防御: 避免特殊字符破坏 frontmatter)
+                if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", str(k)):
+                    raise ValueError(f"Invalid extra_metadata key: {k!r}")
+                # list: 每个元素用双引号包裹 (兼容含逗号/空格/schema前缀的表名)
+                if isinstance(v, list):
+                    quoted = ", ".join(f'"{str(i)}"' for i in v)
+                    meta_lines.append(f"  {k}: [{quoted}]")
+                elif isinstance(v, bool):
+                    meta_lines.append(f"  {k}: {'true' if v else 'false'}")
+                else:
+                    meta_lines.append(f"  {k}: {v}")
         frontmatter = (
             f"---\n"
             f"id: {mem_id}\n"
             f"name: {name}\n"
             f"description: {description}\n"
-            f"metadata:\n"
-            f"  type: {memory_type}\n"
-            f"  consolidated: false\n"
+            + "\n".join(meta_lines) + "\n"
             f"---\n\n"
             f"{content}\n"
         )
@@ -223,19 +238,26 @@ class AgentMemoryStore:
             if file_path.name == "MEMORY.md":
                 continue
 
-            # Read only the frontmatter (first 500 chars) for fast scanning
-            head = file_path.read_text(encoding="utf-8")[:500]
+            # Read only the frontmatter (从开头到第二个 ---) for fast scanning
+            # 不用固定 [:500]: linkage 记忆的 co_occurrence/tables 可能在 500 字符外 (长 description)
+            full_text = file_path.read_text(encoding="utf-8")
+            # frontmatter = 首个 --- 到第二个 --- 之间; 无 frontmatter 则取前 500 兜底
+            parts = full_text.split("---", 2)
+            head = parts[1] if len(parts) >= 3 and full_text.startswith("---") else full_text[:500]
 
             id_match = re.search(r"^id:\s*(.+)$", head, re.MULTILINE)
             name_match = re.search(r"^name:\s*(.+)$", head, re.MULTILINE)
             desc_match = re.search(r"^description:\s*(.+)$", head, re.MULTILINE)
             type_match = re.search(r"^\s*type:\s*(.+)$", head, re.MULTILINE)
             consolidated_match = re.search(r"^\s*consolidated:\s*(true|false)", head, re.MULTILINE)
+            co_match = re.search(r"^\s*co_occurrence:\s*(\d+)", head, re.MULTILINE)
+            # tables: 支持引号包裹格式 ["a", "b"] (兼容含逗号/空格的表名) 和无引号 [a, b]
+            tables_match = re.search(r"^\s*tables:\s*\[([^\]]*)\]", head, re.MULTILINE)
 
             # id: 优先 frontmatter, 回退 filename (兼容旧格式无 id 的种子文件)
             mem_id = id_match.group(1).strip() if id_match else file_path.stem
 
-            memories.append({
+            entry: dict = {
                 "id": mem_id,
                 "name": name_match.group(1).strip() if name_match else file_path.stem,
                 "file": file_path.name,
@@ -243,9 +265,37 @@ class AgentMemoryStore:
                 "type": type_match.group(1).strip() if type_match else "project",
                 "consolidated": consolidated_match.group(1).strip().lower() == "true" if consolidated_match else False,
                 "path": str(file_path.absolute()),
-            })
+            }
+            # E1: linkage 记忆的额外字段 (其他类型无此字段, 不污染 entry)
+            if co_match:
+                entry["co_occurrence"] = int(co_match.group(1))
+            if tables_match:
+                # 优先提取引号内值 (兼容含逗号/空格的表名), 无引号则 split 逗号
+                quoted = re.findall(r'"([^"]*)"', tables_match.group(1))
+                if quoted:
+                    entry["tables"] = quoted
+                else:
+                    entry["tables"] = [t.strip() for t in tables_match.group(1).split(",") if t.strip()]
+            memories.append(entry)
 
         return memories
+
+    def get_linkage_memory(self, table_a: str, table_b: str) -> dict | None:
+        """按表对查询 linkage 记忆 (文件名是 UUID, 不能按名查; 遍历 metadata.tables 匹配)。
+
+        E1 Task 1.1: 表对按字典序规范化后匹配, 支持 caller 乱序传入。
+
+        Returns:
+            匹配的记忆 entry (含 id/co_occurrence/tables 等), 无匹配返回 None。
+        """
+        pair = sorted([table_a, table_b])
+        for m in self.list_memories():
+            if m.get("type") != "linkage":
+                continue
+            tables = m.get("tables")
+            if tables and sorted(tables) == pair:
+                return m
+        return None
 
     def mark_consolidated(self, mem_id: str) -> bool:
         """标记记忆为已整理 (在 frontmatter 加 consolidated: true)。

@@ -160,6 +160,11 @@ class Settings(BaseSettings):
     graph_community_algorithm: str = "label_propagation"  # 社区发现算法 (label_propagation | greedy_modularity)
     graph_expand_use_community: bool = True  # 智能扩展是否包含社区补全
     graph_join_path_in_prompt: bool = True  # 是否在 SQL prompt 注入【JOIN 路径】块
+    # E1 graph-feedback-loop: 链路经验沉淀 + 图谱反哺参数 (无开关, 仅阈值)
+    graph_linkage_co_occurrence_threshold: int = 3  # 表共现达此次数才 boost confidence
+    graph_linkage_new_pair_threshold: int = 5  # 未知表对达此次数才保守发现新关系 (比 boost 更严)
+    graph_linkage_confidence_boost: float = 0.1  # 每次 boost 的 confidence 增量
+    graph_feedback_discover_new_pairs: bool = True  # 仅新表对发现开关 (链路沉淀/图谱同步本身无开关)
 
     # ── Rate Limiting ────────────────────────────────────────
     rate_limit_queries_per_minute: int = 30
@@ -288,7 +293,8 @@ class Settings(BaseSettings):
                       "datasource_health_check_max_failures", "metadata_auto_refresh_interval_hours",
                       "async_task_retention_hours", "scan_llm_enrichment_timeout",
                       "agent_loop_recursion_limit", "llm_max_retries",
-                      "graph_max_join_path_hops")
+                      "graph_max_join_path_hops",
+                      "graph_linkage_co_occurrence_threshold", "graph_linkage_new_pair_threshold")
     @classmethod
     def _validate_positive_int(cls, v: int) -> int:
         if v < 1:

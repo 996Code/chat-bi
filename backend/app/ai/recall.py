@@ -421,3 +421,162 @@ def _ensure_seed_memories(mem_path: Path) -> None:
         logger.info("种子 Memory 已初始化到 %s (recall 侧)", mem_path)
     except Exception as e:
         logger.warning("种子 Memory 初始化失败 (不阻塞): %s", e)
+
+
+def _extract_join_pairs(join_path_section: str) -> set[tuple[str, str]]:
+    """从 join_path_section 提取直接 JOIN 的表对（字典序）。
+
+    用于判断某个表对是否有直接 JOIN 路径（W2: 非直接关联标注）。
+    join_path_section 格式类似: "biz_orders.user_id = biz_users.id\n..."
+    """
+    if not join_path_section:
+        return set()
+    pairs: set[tuple[str, str]] = set()
+    # 匹配 table.column = table.column 模式
+    for m in re.finditer(r"([a-zA-Z_][\w]*)\.[a-zA-Z_][\w]*\s*=\s*([a-zA-Z_][\w]*)\.[a-zA-Z_][\w]*", join_path_section):
+        pairs.add(tuple(sorted([m.group(1), m.group(2)])))
+    return pairs
+
+
+def _build_linkage_content(
+    table_a: str,
+    table_b: str,
+    state,
+    direct_join_pairs: set[tuple[str, str]],
+    existing_scenes: list[str] | None = None,
+) -> str:
+    """构建 linkage 记忆的 content。
+
+    Args:
+        direct_join_pairs: 本轮查询中有直接 JOIN 的表对集合（判断间接关联）
+        existing_scenes: 已记录的场景列表（更新时追加新场景，去重）
+    """
+    content_parts = []
+    pair = tuple(sorted([table_a, table_b]))
+    is_direct = pair in direct_join_pairs
+
+    # JOIN 路径
+    if is_direct and state.join_path_section:
+        # 直接关联：提取该表对的 JOIN 行（而非整段）
+        join_lines = []
+        for line in state.join_path_section.split("\n"):
+            if table_a in line and table_b in line:
+                join_lines.append(line.strip())
+        if join_lines:
+            content_parts.append(f"## JOIN 路径\n" + "\n".join(join_lines) + "\n")
+    elif not is_direct:
+        # 间接关联：标注经由哪些表
+        # 找到连接 table_a 和 table_b 的中间表
+        intermediaries = []
+        for t in state.current_tables:
+            if t in (table_a, table_b):
+                continue
+            if tuple(sorted([table_a, t])) in direct_join_pairs and tuple(sorted([table_b, t])) in direct_join_pairs:
+                intermediaries.append(t)
+        via = "、".join(intermediaries) if intermediaries else "其他表"
+        content_parts.append(f"## 关联方式\n间接关联（经由 {via}）\n")
+
+    # 典型场景（追加模式：去重）
+    scenes = list(existing_scenes) if existing_scenes else []
+    if state.question and state.question not in scenes:
+        scenes.append(state.question)
+    if scenes:
+        content_parts.append("## 典型场景\n" + "\n".join(f"- {s}" for s in scenes) + "\n")
+
+    # 聚合方式
+    if hasattr(state, "thinking") and state.thinking and hasattr(state.thinking, "aggregation"):
+        content_parts.append(f"## 聚合方式\n{state.thinking.aggregation}\n")
+
+    # SQL 示例（截断）
+    if state.sql:
+        content_parts.append(f"## SQL 示例\n```sql\n{state.sql[:200]}\n```\n")
+
+    return "\n".join(content_parts)
+
+
+def _extract_existing_scenes(content: str) -> list[str]:
+    """从已有 linkage content 提取已记录的场景列表（去重用）。"""
+    if not content:
+        return []
+    scenes: list[str] = []
+    in_scenes = False
+    for line in content.split("\n"):
+        if line.startswith("## 典型场景"):
+            in_scenes = True
+            continue
+        if line.startswith("## "):
+            in_scenes = False
+            continue
+        if in_scenes and line.strip().startswith("- "):
+            scenes.append(line.strip()[2:])
+    return scenes
+
+
+def persist_linkage_memory(mem_store, state) -> None:
+    """沉淀链路经验到 linkage 记忆 (E1 Task 2.1)。
+
+    从 state 直接读取表对（不解析 SQL），对每对表创建或更新 linkage 记忆。
+    单表查询跳过（无 JOIN 信号）。
+
+    Args:
+        mem_store: AgentMemoryStore 实例
+        state: AgentState 实例，需包含 current_tables/join_path_section/thinking/question/sql
+    """
+    from itertools import combinations
+
+    # 单表查询跳过
+    if len(state.current_tables) < 2:
+        return
+
+    # 预计算直接 JOIN 表对集合（W2: 判断间接关联）
+    direct_join_pairs = _extract_join_pairs(state.join_path_section)
+
+    # 生成所有表对组合
+    table_pairs = list(combinations(sorted(state.current_tables), 2))
+
+    for table_a, table_b in table_pairs:
+        # 检查是否已有该表对的 linkage 记忆
+        existing = mem_store.get_linkage_memory(table_a, table_b)
+
+        if existing:
+            # 已存在：co_occurrence + 1，追加新场景（W1: 若 question 新颖）
+            new_co = existing["co_occurrence"] + 1
+
+            # 读取原内容（list_memories 不返回 content，需要 read_memory）
+            original_content = mem_store.read_memory(existing["id"]) or ""
+
+            # 提取已记录的场景（去重用）
+            existing_scenes = _extract_existing_scenes(original_content)
+
+            # 重建 content（含追加新场景 + 保留 JOIN 路径等）
+            new_content = _build_linkage_content(
+                table_a, table_b, state, direct_join_pairs, existing_scenes
+            )
+
+            mem_store.save_memory(
+                name=f"linkage-{table_a}-{table_b}",
+                description=f"表 {table_a} 和 {table_b} 的共现经验",
+                content=new_content,
+                memory_type="linkage",
+                mem_id=existing["id"],
+                extra_metadata={
+                    "co_occurrence": new_co,
+                    "tables": [table_a, table_b]
+                }
+            )
+            logger.info(f"更新 linkage 记忆 {table_a}-{table_b}: co_occurrence={new_co}")
+        else:
+            # 新表对：创建 linkage 记忆
+            content = _build_linkage_content(table_a, table_b, state, direct_join_pairs)
+
+            mem_store.save_memory(
+                name=f"linkage-{table_a}-{table_b}",
+                description=f"表 {table_a} 和 {table_b} 的共现经验",
+                content=content,
+                memory_type="linkage",
+                extra_metadata={
+                    "co_occurrence": 1,
+                    "tables": [table_a, table_b]
+                }
+            )
+            logger.info(f"创建 linkage 记忆 {table_a}-{table_b}")

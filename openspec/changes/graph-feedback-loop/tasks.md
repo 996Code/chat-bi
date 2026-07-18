@@ -1,8 +1,8 @@
 ## 1. 记忆基建扩展（支持 linkage 类型）
 
 - [ ] 1.1 确认 `AgentMemoryStore.save_memory` 已支持任意 `memory_type` 字符串（含 "linkage"），无需 schema 迁移；验证 frontmatter 的 metadata 字段能存 co_occurrence/tables
-- [ ] 1.2 新增 linkage 记忆文件名约定：`linkage-{tableA}-{tableB}.md`（表名字典序保证对唯一），在 `_get_ds_store` / `_validate_memory_name` 确认能正确处理
-- [ ] 1.3 新增 helper `get_linkage_memory(mem_store, table_a, table_b) -> dict | None`：按表对查现有 linkage 记忆（文件名约定定位）
+- [ ] 1.2 linkage 记忆文件名遵守现有 UUID 约定（不破例），表对信息存 `metadata.tables`（字典序）；确认 `save_memory` 能正确写入 metadata 的 co_occurrence/tables 额外字段
+- [ ] 1.3 新增 helper `get_linkage_memory(mem_store, table_a, table_b) -> dict | None`：遍历 `type=linkage` 记忆，按 `metadata.tables` 匹配表对定位
 - [ ] 1.4 单测：linkage 记忆的创建/更新/frontmatter 读写（`test_agent_memory.py` 或新建 `test_recall.py`）
 
 ## 2. 链路经验查询时结构化沉淀（复用 state，零额外计算）

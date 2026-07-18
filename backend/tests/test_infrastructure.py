@@ -155,6 +155,114 @@ class TestAgentMemory:
         lines = index.split("\n")
         assert len(lines) <= 200
 
+    def test_save_linkage_memory_with_extra_metadata(self, tmp_path):
+        """E1 Task 1.1: linkage 记忆能写入 extra_metadata (co_occurrence/tables)。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        store.save_memory(
+            "表共现 biz_orders↔biz_users", "表共现经验",
+            "## JOIN 路径\nbiz_orders.user_id = biz_users.id\n",
+            memory_type="linkage",
+            extra_metadata={"co_occurrence": 3, "tables": ["biz_orders", "biz_users"]},
+        )
+
+        memories = store.list_memories()
+        linkage = [m for m in memories if m["type"] == "linkage"]
+        assert len(linkage) == 1
+        assert linkage[0]["co_occurrence"] == 3
+        assert linkage[0]["tables"] == ["biz_orders", "biz_users"]
+
+    def test_get_linkage_memory_by_tables(self, tmp_path):
+        """E1 Task 1.1: 按 metadata.tables 查询 linkage 记忆 (文件名是 UUID, 不能按名查)。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        # 创建两条 linkage 记忆 + 一条普通记忆
+        store.save_memory("共现A↔B", "desc", "body", memory_type="linkage",
+                          extra_metadata={"co_occurrence": 2, "tables": ["tableA", "tableB"]})
+        store.save_memory("共现A↔C", "desc", "body", memory_type="linkage",
+                          extra_metadata={"co_occurrence": 1, "tables": ["tableA", "tableC"]})
+        store.save_memory("普通记忆", "desc", "body", memory_type="project")
+
+        # 按表对查询 (字典序无关, helper 内部排序)
+        found = store.get_linkage_memory("tableB", "tableA")  # 乱序传入
+        assert found is not None
+        assert found["tables"] == ["tableA", "tableB"]
+        assert found["co_occurrence"] == 2
+
+        # 不存在的表对
+        assert store.get_linkage_memory("tableX", "tableY") is None
+
+    def test_update_linkage_memory_co_occurrence(self, tmp_path):
+        """E1 Task 1.1: 已存在的表对记忆, 更新时 co_occurrence 递增。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        store.save_memory("共现A↔B", "desc", "body", memory_type="linkage",
+                          extra_metadata={"co_occurrence": 1, "tables": ["tableA", "tableB"]})
+
+        # 更新 (带 mem_id)
+        existing = store.get_linkage_memory("tableA", "tableB")
+        store.save_memory("共现A↔B", "desc", "body updated", memory_type="linkage",
+                          mem_id=existing["id"],
+                          extra_metadata={"co_occurrence": 2, "tables": ["tableA", "tableB"]})
+
+        updated = store.get_linkage_memory("tableA", "tableB")
+        assert updated["co_occurrence"] == 2
+        # 不应产生重复记录
+        linkage_count = len([m for m in store.list_memories() if m["type"] == "linkage"])
+        assert linkage_count == 1
+
+    def test_linkage_memory_long_description_not_truncated(self, tmp_path):
+        """W1 修复: 长 description (frontmatter >500 字符) 时 co_occurrence/tables 仍可读。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        long_desc = "x" * 600  # 超过旧的 [:500] 截断阈值
+        store.save_memory("共现长描述", long_desc, "body", memory_type="linkage",
+                          extra_metadata={"co_occurrence": 7, "tables": ["tA", "tB"]})
+
+        found = store.get_linkage_memory("tA", "tB")
+        assert found is not None, "长 description 导致 co_occurrence/tables 解析失败 (W1)"
+        assert found["co_occurrence"] == 7
+        assert found["tables"] == ["tA", "tB"]
+
+    def test_linkage_memory_table_name_with_schema_prefix(self, tmp_path):
+        """W2 修复: 表名含 schema 前缀 (public.orders) 或特殊字符不破坏 YAML。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        store.save_memory("共现schema", "desc", "body", memory_type="linkage",
+                          extra_metadata={"co_occurrence": 1,
+                                          "tables": ["public.orders", "public.users"]})
+
+        found = store.get_linkage_memory("public.orders", "public.users")
+        assert found is not None, "schema 前缀表名解析失败 (W2)"
+        assert found["tables"] == ["public.orders", "public.users"]
+
+    def test_linkage_memory_invalid_extra_metadata_key_rejected(self, tmp_path):
+        """W3 修复: extra_metadata key 含特殊字符拒绝 (防御 frontmatter 注入)。"""
+        from app.core.agent_memory import AgentMemoryStore
+        import pytest
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        with pytest.raises(ValueError, match="Invalid extra_metadata key"):
+            store.save_memory("bad", "desc", "body", memory_type="linkage",
+                              extra_metadata={"bad:key": 1})  # 含冒号
+
+    def test_linkage_memory_co_occurrence_zero_and_large(self, tmp_path):
+        """co_occurrence 边界值: 0 和大值都能正确存取。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        for co in [0, 99999]:
+            store.save_memory(f"共现{co}", "desc", "body", memory_type="linkage",
+                              extra_metadata={"co_occurrence": co, "tables": [f"t{co}_a", f"t{co}_b"]})
+            found = store.get_linkage_memory(f"t{co}_a", f"t{co}_b")
+            assert found["co_occurrence"] == co
+
+
 
 class TestPromptCache:
     """T011: Prompt layered cache — static/dynamic boundary."""
