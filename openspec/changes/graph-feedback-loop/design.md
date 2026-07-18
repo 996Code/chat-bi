@@ -113,14 +113,15 @@ SELECT ... FROM biz_orders JOIN biz_users ON ...
 - `graph_linkage_confidence_boost: float = 0.1`
 - `graph_feedback_discover_new_pairs: bool = True`（新表对发现总开关，保守起见保留）
 
-> 注：链路沉淀（memory_linkage_capture）和图谱同步（graph_sync_on_consolidate）是默认行为，**不做开关**。失败按 Fail-Closed 处理（SSE 告知 / 冲突弹框），不通过开关回避。
+> 注：链路沉淀（memory_linkage_capture）和图谱同步（graph_sync_on_consolidate）是默认行为，**不做开关**。失败按 Fail-Closed 处理（`persist_warning` SSE 告知**所有反哺失败** / 冲突弹框），不通过开关回避。
 
 ## Risks / Trade-offs
 
 - **[linkage 记忆膨胀]** → 整理时 `consolidate_memories` 合并低频表对；co_occurrence 低的可标记 consolidated 隐藏；MEMORY.md 索引有 200 行/25KB 截断保护（`agent_memory.py`）
 - **[从 markdown 解析 co_occurrence 有成本]** → 格式约定固定（frontmatter 字段），解析简单；且整理时才解析（低频），非每次查询
-- **[链路沉淀失败]** → 不静默吞错，通过 `persist_warning` SSE 事件告知前端（Fail-Closed），但 complete 正常发送不阻塞主流程
+- **[_persist 反哺失败]** → **所有反哺点**（SavedQuery/fewshot/记忆提炼/链路沉淀）失败都不静默吞错，统一发 `persist_warning` SSE 事件告知前端（含 stage/error/question），complete 照常 success=true 不阻塞主流程；前端非阻塞 toast
 - **[整理时图谱版本冲突]** → 一致性优先，不静默跳过；返回 409 + 详情，前端弹框让用户处理（重试/仅保留记忆/取消）；提供 retry 端点
+- **[persist_warning 淹没用户]** → toast 非阻塞可叠加；多个失败合并带计数展示；文案含 question 片段定位是哪轮查询；不弹模态不强制操作
 - **[linkage 记忆和自然语言记忆召回干扰]** → `recall_memories` 可按 type 过滤；或召回时 linkage 的 content 也注入（表共现信息对 SQL 生成有用）
 - **[错误查询污染 linkage]** → 多次共现才 boost（统计过滤）；人可编辑 linkage 文件修正；未来方向5/P0-7 补评估
 

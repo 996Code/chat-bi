@@ -18,7 +18,7 @@
 #### Scenario: 链路沉淀失败不阻塞主流程但告知前端
 - **WHEN** 链路记忆写入抛出任何异常
 - **THEN** 不影响查询结果返回、不影响其他反哺点（SavedQuery/fewshot/自然语言记忆）、complete 事件正常发送
-- **AND** 通过新增的 SSE 事件（如 `persist_warning`）携带错误信息告知前端，前端非阻塞展示警告（toast）
+- **AND** 通过 `persist_warning` SSE 事件携带错误信息告知前端（详见"持久化异常前端告知通道" Requirement）
 - **AND** Fail-Closed：不静默吞掉错误（符合项目设计法则：出问题显式失败/提示）
 
 #### Scenario: 链路沉淀默认开启
@@ -30,7 +30,7 @@
 当用户手动触发记忆整理（`/memory/consolidate`）时，系统应在整理完成后，从已结构化的 linkage 记忆里聚合表共现统计，更新 SemanticModel 的 Relationship.confidence，让图谱随使用演化。
 
 #### Scenario: 整理触发图谱 confidence 更新
-- **WHEN** `/memory/consolidate` 完成，且配置 `graph_sync_on_consolidate_enabled = true`
+- **WHEN** `/memory/consolidate` 完成（图谱同步默认开启，无开关）
 - **THEN** 系统遍历该数据源的所有 `type=linkage` 记忆，读 frontmatter 的 `co_occurrence` + `tables`（已结构化，无需解析 SQL）
 - **AND** 对 `co_occurrence ≥ graph_linkage_co_occurrence_threshold`（默认 3）的表对，将其 Relationship 的 confidence 提升 `graph_linkage_confidence_boost`（默认 +0.1），封顶 MAX_CONFIDENCE
 - **AND** 合并写入新 SemanticModel 版本（单次整理只升一个版本，聚合所有达阈值表对）
@@ -78,3 +78,32 @@ linkage 类记忆应纳入现有 `consolidate_memories` 的整合流程，避免
 - **THEN** linkage 类记忆也参与 LLM 合并去重（复用现有 consolidate_memories 逻辑）
 - **AND** 低 co_occurrence 的 linkage 记忆可被合并/标记 consolidated 隐藏
 - **AND** MEMORY.md 索引的 200 行/25KB 截断保护覆盖 linkage 记忆
+
+### Requirement: 持久化异常的前端告知通道（persist_warning SSE 事件）
+
+`_persist` 阶段的所有反哺动作（SavedQuery 写入 / fewshot 回流 / 记忆提炼 / 链路沉淀）发生异常时，都应通过统一的 `persist_warning` SSE 事件告知前端，不静默吞错（Fail-Closed）。
+
+#### Scenario: 所有反哺失败都发 persist_warning
+- **WHEN** `_persist` 中任一反哺动作（SavedQuery / fewshot / 记忆提炼 / 链路沉淀）抛出异常
+- **THEN** 发送 `persist_warning` SSE 事件，携带 `{stage, error, conversation_id, question}`
+  - `stage`：失败的反哺名（`saved_query` / `fewshot` / `memory_extract` / `linkage`）
+  - `error`：错误信息（脱敏后，不泄露内部细节，对标 complete 事件的 error 处理）
+  - `conversation_id` + `question`：让用户知道是哪轮查询的警告
+- **AND** 该反哺失败不影响其他反哺、不影响 complete 事件（complete 照常发，success 仍 true，因为查询本身成功）
+
+#### Scenario: persist_warning 事件协议契约
+- **WHEN** 发送 persist_warning 事件
+- **THEN** 事件格式遵循标准 SSE：`event: persist_warning\ndata: {json}\n\n`
+- **AND** 必须在 complete 事件**之前**发送（complete 是流末标记）
+- **AND** 一次查询可发多个 persist_warning（多个反哺都失败时），顺序为反哺执行顺序
+
+#### Scenario: 前端非阻塞展示 + 上下文
+- **WHEN** 前端收到 persist_warning 事件
+- **THEN** 非阻塞展示 ElMessage warning toast，文案含 question 片段（如"查询『本月销售』的后台保存失败，不影响结果"）
+- **AND** 不中断对话流、不弹模态框、不需用户操作（仅提示）
+- **AND** 多个 persist_warning 可叠加展示（或合并为一条带计数的 toast）
+
+#### Scenario: persist_warning 不与 complete 的 error 混淆
+- **WHEN** 查询本身成功但反哺失败
+- **THEN** complete 事件 `success=true`、`error=null`（查询结果正常）
+- **AND** persist_warning 单独标识"后台反哺失败"（语义与查询失败完全不同）

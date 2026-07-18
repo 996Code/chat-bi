@@ -13,12 +13,15 @@
 - [ ] 2.4 在 `_persist`（`chat_stream.py:819` 记忆提炼附近）插入链路沉淀块：条件 `state.success and state.sql and len(state.current_tables) >= 2`，**失败时发 `persist_warning` SSE 事件告知前端**（不静默吞错，Fail-Closed）
 - [ ] 2.5 单测：多表成功查询 → linkage 记忆正确创建/更新；单表查询跳过；失败发 persist_warning 事件不阻塞主流程
 
-## 3. SSE 持久化警告事件（前端告知通道）
+## 3. SSE 持久化警告事件（所有反哺失败的前端告知通道）
 
-- [ ] 3.1 后端新增 SSE 事件类型 `persist_warning`（`chat_stream.py` emit 机制）：携带 `{stage: "linkage", error: "..."}`，在链路沉淀失败时发送
-- [ ] 3.2 `persist_warning` 在 complete 事件之前发送，complete 照常发（不阻塞主流程）
-- [ ] 3.3 前端 `ChatView.vue` handleSSEEvent 新增 `case 'persist_warning'`：非阻塞展示 ElMessage warning toast（"链路经验沉淀失败，不影响查询结果"）
-- [ ] 3.4 单测：mock 链路沉淀抛异常 → SSE 流含 persist_warning 事件 + complete 正常 success=true
+- [ ] 3.1 后端新增 SSE 事件类型 `persist_warning`（`chat_stream.py` emit 机制）：携带 `{stage, error, conversation_id, question}`
+  - `stage` 枚举：`saved_query` / `fewshot` / `memory_extract` / `linkage`
+  - `error` 脱敏（对标 complete 的 error 处理，不泄露内部细节）
+- [ ] 3.2 `persist_warning` 在 complete 事件之前发送，complete 照常发（success 仍 true，查询本身成功）；多个反哺失败可发多个 persist_warning
+- [ ] 3.3 **改造 `_persist` 所有反哺点**（SavedQuery line 774 / fewshot line 806 / 记忆提炼 line 819 / 链路沉淀）的 try/except：从静默 WARNING 改为发 persist_warning 事件（Fail-Closed，统一告知）
+- [ ] 3.4 前端 `ChatView.vue` handleSSEEvent 新增 `case 'persist_warning'`：非阻塞 ElMessage warning toast，文案含 question 片段（如"查询『本月销售』的后台保存失败，不影响结果"）；多个可叠加或合并带计数
+- [ ] 3.5 单测：mock 各反哺点抛异常 → SSE 流含对应 stage 的 persist_warning + complete 正常 success=true
 
 ## 4. 配置项（config.py，走环境变量）
 
@@ -56,7 +59,7 @@
 
 - [ ] 8.1 端到端：3 次同表对成功查询 → linkage 记忆 co_occurrence=3 → 整理触发 → SemanticModel 新版本 confidence 提升
 - [ ] 8.2 端到端：5 次未知表对共现 → 整理触发新关系发现 → 新 Relationship 加入（source=implicit_mining, confidence=0.5）
-- [ ] 8.3 链路沉淀失败：mock 抛异常 → SSE 流含 persist_warning + complete 正常 success=true + 前端 toast 展示
+- [ ] 8.3 反哺失败告知：mock 各反哺点（SavedQuery/fewshot/记忆/链路）抛异常 → SSE 流含对应 stage 的 persist_warning + complete 正常 success=true + 前端 toast 含 question 片段
 - [ ] 8.4 图谱冲突：并发整理 → 第二个返回 409 + 详情 → 前端弹框 → 重试成功
 - [ ] 8.5 零额外计算验证：mock 查询，断言沉淀过程只读 state 字段，不调用 SQL 正则/JOIN 重算
 - [ ] 8.6 全量测试通过：`.venv/bin/python -m pytest backend/tests/ -q`（538 passed 基线不回归）

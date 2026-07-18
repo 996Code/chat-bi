@@ -31,26 +31,28 @@
   - Green: 实现 `persist_linkage_memory`，从 current_tables 两两组合（或解析 join_path_section），写记忆
   - Refactor: 抽取"表对提取"为独立函数，便于测试
 
-### Task 2.2 — SSE persist_warning 事件（type: implement）
+### Task 2.2 — SSE persist_warning 事件协议（type: implement）
 - **read_first**: `backend/app/api/chat_stream.py:170-183`（emit 函数）/ SSE 事件头注释 line 9-18
-- **acceptance**: 新增 `persist_warning` 事件类型，携带 `{stage, error}`，在 complete 之前发送，complete 照常发
+- **acceptance**: 新增 `persist_warning` 事件类型，携带 `{stage, error, conversation_id, question}`；stage 枚举 saved_query/fewshot/memory_extract/linkage；error 脱敏；在 complete 之前发送，complete 照常发；多个反哺失败可发多个
 - **actions**:
-  - 在 emit 支持的新增事件里加 `persist_warning`
+  - 在 emit 支持新增 `persist_warning` 事件
   - 更新 SSE 事件头注释
 
-### Task 2.3 — 接入 _persist + 失败 SSE 告知（type: tdd）
-- **read_first**: `chat_stream.py:819-842`（记忆提炼块）/ finally 块 line 607-643
-- **acceptance**: 多表成功查询触发链路沉淀；单表跳过；失败发 persist_warning + complete 正常 success=true；不阻塞其他反哺
+### Task 2.3 — 改造 _persist 所有反哺点为 persist_warning 告知（type: tdd）
+- **read_first**: `chat_stream.py:774-842`（SavedQuery/fewshot/记忆提炼/链路沉淀四个反哺点的 try/except）
+- **acceptance**: 四个反哺点失败时都发 persist_warning（含对应 stage），不再静默 WARNING；complete 仍 success=true；不互相阻塞
 - **actions**:
-  - Red: 测试——mock persist_linkage_memory 抛异常，断言 SSE 流含 persist_warning + complete success=true
-  - Green: 在 _persist 记忆提炼后插入链路沉淀，try/except 发 persist_warning 事件
-  - 注意：persist_warning 需在 finally 的 complete 之前发出，调整发送时机
+  - Red: 测试——mock 每个反哺点逐一抛异常，断言 SSE 流含对应 stage 的 persist_warning + complete success=true
+  - Green: 改造四个反哺点的 try/except，except 里发 persist_warning 事件（替代 logger.warning）
+  - 注意：链路沉淀是新增反哺点（Task 2.1 的接入），其他三个是改造现有
+  - persist_warning 在 finally 的 complete 之前发出，注意 SSE 流顺序
 
 ### Task 2.4 — 前端 persist_warning 处理（type: implement）
 - **read_first**: `frontend/src/views/ChatView.vue` handleSSEEvent（case 分支）
-- **acceptance**: 收到 persist_warning 事件，ElMessage warning toast 非阻塞展示
+- **acceptance**: 收到 persist_warning，ElMessage warning toast 非阻塞展示，文案含 question 片段；多个可叠加或合并带计数
 - **actions**:
   - handleSSEEvent 新增 `case 'persist_warning'`，调 ElMessage.warning
+  - toast 文案："查询『{question前15字}』的后台保存失败（{stage}），不影响结果"
 
 ## Wave 3：图谱更新（依赖 Wave 1-2，需要 linkage 数据）
 
@@ -105,7 +107,7 @@
 - **acceptance**: 对照 spec.md 全部 Scenario 验证（8.1-8.6 in tasks.md）
   - 3 次共现 → 整理 → confidence 提升
   - 5 次未知表对 → 新关系发现
-  - 链路沉淀失败 → persist_warning + complete 正常
+  - 反哺失败告知 → 各反哺点 mock 抛异常 → persist_warning（含 stage）+ complete 正常
   - 并发整理 → 409 → 弹框 → 重试成功
   - 零额外计算（只读 state）
   - 全量测试 538 passed 不回归
