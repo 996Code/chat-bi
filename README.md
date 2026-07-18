@@ -33,7 +33,9 @@
 
 📝 **业务规则** — SKILL.md 格式定义业务规则，热更新，按数据库方言自动匹配
 
-💬 **多轮对话** — 上下文压缩 + 状态补偿，追问时自动继承上次查询维度
+💬 **多轮对话** — 上下文压缩 + 状态补偿，追问时自动继承上次查询维度；**全量落库**，问了就留（含闲聊/确认/中断），刷新不丢
+
+🤝 **主动确认** — 意图不清/表不确定/结果异常三种场景，Agent 主动暂停问用户，确认内容一并留存
 
 🔐 **企业级安全** — JWT 认证、Fernet 加密、SQL 注入三层拦截、多租户隔离、审计日志
 
@@ -190,7 +192,45 @@ ChatBI 支持连续追问，自动继承上文查询维度，无需重复描述�
 
 ---
 
-## 🛠️ 技术栈
+## 💾 对话全量落库
+
+对话记录**问了就留**——无论查询成功、闲聊、需要确认还是中途刷新中断，都能在历史里完整还原，不会丢失提问记录。
+
+### 落库时机（两阶段）
+
+```
+用户提问 POST /chat/stream
+        │
+        ├─① start 事件: 落「骨架行」(只有问题, 无 sql/结果)
+        │   → 即使中途刷新/断流, 历史也能看到"问过这个问题"
+        │
+        ├─② pipeline 执行 (意图→schema→sql→自愈→图表)
+        │
+        └─③ finally 统一落「完整行」(复用骨架的 turn 号, 不重复轮次)
+            → SQL/结果/图表/thinking/ask_user 全量存入
+```
+
+### 全场景覆盖
+
+| 场景 | 落库内容 | 刷新后能看到 |
+|------|----------|------------|
+| ✅ 查询成功 | 问题 + SQL + 结果采样 + 图表 + 预思考 + 各步耗时 | 完整对话 |
+| 💬 闲聊 (GENERAL) | 问题 + Agent 自然语言回复 | 完整对话 |
+| 🤔 需要确认 | 问题 + **Agent 的确认问题 + 候选选项** | 当时让你澄清什么 |
+| ⚡ 中途刷新/断流 | 骨架行（只有问题） | "问过这个问题"（无结果） |
+| ❌ 查询失败 | 问题 + 错误信息 | 当时为什么失败 |
+
+### 存储格式
+
+- **位置**：`data/states/{tenant}/{conversation_id}.jsonl`（JSONL append-only，每轮一行）
+- **骨架标记**：`result_summary.skeleton=True` 标识骨架行，完整行复用其 turn 号
+- **回放合并**：前端检测到骨架行后跟同问题的完整行时，自动跳过骨架（只显示一次问题），断流场景则保留骨架问题
+
+> 💡 **主动确认内容也留存** — Agent 在意图不清（CLARIFICATION）、表不确定（多候选低分）、结果异常（笛卡尔积/全 NULL）三种场景会暂停问用户，这些确认问题 + 候选选项都持久化到 `ask_user` 字段，刷新后可还原当时的交互。
+
+---
+
+
 
 ### 后端
 
@@ -328,7 +368,7 @@ chat-bi/
 │   │   │   ├── chart_agent.py   # 图表生成
 │   │   │   ├── compressor.py    # 上下文压缩
 │   │   │   ├── schema_utils.py  # Schema 上下文 + 🕸️图谱驱动扩展/JOIN路径
-│   │   │   ├── state_store.py   # 对话状态持久化
+│   │   │   ├── state_store.py   # 对话状态持久化 (JSONL, 骨架行+完整行+ask_user)
 │   │   │   ├── recall.py        # Agent 记忆召回
 │   │   │   └── ...
 │   │   ├── api/                 # 🌐 API 端点
@@ -392,6 +432,9 @@ chat-bi/
 | `GRAPH_MAX_JOIN_PATH_HOPS` | `4` | 🕸️JOIN 路径最大跳数 |
 | `GRAPH_COMMUNITY_ALGORITHM` | `label_propagation` | 🕸️社区发现算法 |
 | `GRAPH_JOIN_PATH_IN_PROMPT` | `true` | 🕸️是否在 SQL prompt 注入 JOIN 路径 |
+| `STATE_STORE_DIR` | `data/states` | 对话状态存储目录 (JSONL) |
+| `STATE_STORE_ROW_SAMPLE_LIMIT` | `50` | 对话落库的结果采样行数上限 |
+| `CONVERSATION_TITLE_MAX_LENGTH` | `16` | 对话标题最大字数 |
 | `DEBUG` | `false` | 调试模式 (开启后持久化 Prompt) |
 | `SECRET_KEY` | `CHANGE_ME_*` | JWT 签名密钥 (生产必须修改) |
 

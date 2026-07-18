@@ -22,8 +22,9 @@ cat openspec/changes/chatbi-v2/tasks.md
 
 ## 当前状态
 
-- **全部 10 Phase 已完成**：68 任务 (T001-T068)，516 测试通过
+- **全部 10 Phase 已完成**：68 任务 (T001-T068)，538 测试通过
 - **Phase 10（技术债清理）已收尾**，详见 `.planning/STATE.md`（唯一状态真相源）
+- **新增能力**（2026-07）：🕸️知识图谱中间件（SchemaGraph 可视化 + JOIN 路径驱动）+ 💾对话全量落库（问了就留 + 主动确认内容留存）
 - 开源文档已就绪：README.md / LICENSE (MIT) / CONTRIBUTING.md / SECURITY.md / CHANGELOG.md
 
 ---
@@ -65,6 +66,7 @@ cat openspec/changes/chatbi-v2/tasks.md
 3. **"问用户"就是普通 Tool** — ask_user 不是特殊机制，Agent 不确定时自己决定暂停
 4. **压缩 = 压缩 + 状态补偿** — 压缩后补回语义层 + 当前 SQL + 筛选条件 + Skills
 5. **Prompt 分层可缓存** — 语义层/Skills 放 boundary 前（可缓存），用户问题/历史放后面
+6. **对话问了就留** — start 事件落骨架行（问题先存），pipeline 末尾落完整行（复用 turn 号）；闲聊/确认/中断全量留存，刷新不丢提问记录
 
 ## BI 领域关键原则（来自海泰 + v1 教训）
 
@@ -86,10 +88,10 @@ chat-bi/
 │   ├── core/                # config / security / auth / sql_validator /
 │   │                        # llm_client / token_tracker / prompt_capture / ...
 │   ├── db/                  # models（8 张表）/ session（懒加载引擎）
-│   ├── ai/                  # Agent 核心管线 (agent/intent/thinking/sql_agent/...)
+│   ├── ai/                  # Agent 核心管线 (agent/intent/thinking/sql_agent/state_store/...)
 │   ├── schemas/             # Pydantic 模型 (semantic_layer/...)
-│   ├── services/            # 业务服务 (retriever/embedder/indexer/skills_loader/...)
-│   └── tests/               # 516 passed
+│   ├── services/            # 业务服务 (retriever/embedder/graph_service/indexer/...)
+│   └── tests/               # 538 passed
 ├── frontend/src/            # Vue3 + TS (9 个功能页面 + api 封装层)
 ├── openspec/changes/chatbi-v2/   # ★ OpenSpec 规格（任务真相源）
 ├── .planning/                    # ★ GSD 状态（STATE/ROADMAP/PROJECT + phases/）
@@ -119,7 +121,7 @@ chat-bi/
 
 ## 开发规范（硬约束）
 
-- **测试**：`.venv/bin/python -m pytest backend/tests/ -q`，20 passed 为底线，**变更后必跑**
+- **测试**：`.venv/bin/python -m pytest backend/tests/ -q`，538 passed 为底线，**变更后必跑**
 - **Python 3.12+**：用 `X | None`，不用 `Optional[X]`
 - **配置集中**：所有魔法数字/超时/阈值在 `app/core/config.py`，环境变量控制（v1 #1）
 - **API 前缀**：`settings.api_prefix`（默认 `/chat-bi/api/v1`）
@@ -171,4 +173,4 @@ uv run pytest backend/tests/ -v
 
 ---
 
-*最后更新: 2026-07-06*
+*最后更新: 2026-07-18*
