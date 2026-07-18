@@ -15,13 +15,15 @@
 - **WHEN** 沉淀链路经验时
 - **THEN** 直接使用 state 已有字段（查询过程中图谱扩展/JOIN 路径预计算的产物），不从 SQL 正则重新扫表名、不重算 JOIN 路径
 
-#### Scenario: 链路沉淀失败不阻塞主管线
+#### Scenario: 链路沉淀失败不阻塞主流程但告知前端
 - **WHEN** 链路记忆写入抛出任何异常
-- **THEN** 仅记录 WARNING 日志，不影响查询结果返回、不影响其他反哺点（SavedQuery/fewshot/自然语言记忆）、不向用户暴露错误
+- **THEN** 不影响查询结果返回、不影响其他反哺点（SavedQuery/fewshot/自然语言记忆）、complete 事件正常发送
+- **AND** 通过新增的 SSE 事件（如 `persist_warning`）携带错误信息告知前端，前端非阻塞展示警告（toast）
+- **AND** Fail-Closed：不静默吞掉错误（符合项目设计法则：出问题显式失败/提示）
 
-#### Scenario: 总开关可关闭链路沉淀
-- **WHEN** 配置 `memory_linkage_capture_enabled = false`
-- **THEN** 完全跳过链路经验沉淀，不产生 linkage 记忆
+#### Scenario: 链路沉淀默认开启
+- **WHEN** 成功的多表查询完成
+- **THEN** 链路沉淀固定执行，不提供关闭开关（是默认行为，不做 feature flag）
 
 ### Requirement: 整理时轻聚合更新图谱 confidence
 
@@ -37,9 +39,18 @@
 - **WHEN** 整理时聚合 linkage 记忆
 - **THEN** 仅做"读字段→算 boost→写版本"的轻聚合，不重新解析 SQL、不重算 JOIN 路径（链路在查询时已结构化沉淀）
 
-#### Scenario: 图谱更新失败不影响整理
-- **WHEN** 图谱 confidence 更新抛出异常（版本冲突/校验失败等）
-- **THEN** 记录 WARNING 日志，但记忆整理本身（consolidate_memories）仍成功完成；图谱更新下次整理再试
+#### Scenario: 图谱同步默认开启
+- **WHEN** `/memory/consolidate` 整理完成
+- **THEN** 自动触发图谱 confidence 更新，不提供关闭开关（整理与图谱同步是原子语义，不做 feature flag）
+
+#### Scenario: 图谱版本冲突时一致性优先 + 前端处理
+- **WHEN** 图谱 confidence 更新时检测到 SemanticModel 版本冲突（并发修改）
+- **THEN** **不静默跳过**（违反 Fail-Closed），整理 API 返回 conflict 详情（当前版本号、冲突的表对、预期 vs 实际版本）
+- **AND** 前端弹框展示冲突详情，让用户选择处理方式：
+  - **重试**：基于最新版本重新计算 boost 并合并
+  - **仅保留记忆整理**：放弃本次图谱更新（记忆已整理成功，不回滚）
+  - **取消**：整体放弃（记忆整理若未提交则回滚）
+- **AND** 服务端提供对应的 `/memory/consolidate/retry` 端点支持重试
 
 #### Scenario: 新表对保守发现
 - **WHEN** 某表对 `co_occurrence ≥ new_pair_threshold`（默认 5，比 boost 阈值更严）且该表对不在 SemanticModel 的 relationships 中

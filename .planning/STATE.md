@@ -8,7 +8,8 @@
 ## OpenSpec 关联
 - **活动 change**: `openspec/changes/graph-feedback-loop/`
 - **规格状态**: 4/4 artifacts complete（proposal/design/specs/tasks）
-- **下一步**: 运行 `/ai:plan graph-feedback-loop` 转执行计划
+- **计划状态**: E1-CONTEXT.md + E1-PLAN.md 已生成（5 Wave / 14 Task）
+- **下一步**: 运行 `/ai:do` 开始执行 Wave 1
 - **演进路线图**: `doc/chatbi-v2/EVOLUTION-ROADMAP.md`（13 个方向）
 
 

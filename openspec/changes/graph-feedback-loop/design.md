@@ -74,9 +74,9 @@ SELECT ... FROM biz_orders JOIN biz_users ON ...
 **为什么查询时就沉淀而非暂存**：
 - state 数据现成，写入是纯数据搬运，几乎零成本
 - 整理时（D3）只需聚合已结构化的 co_occurrence，从"重计算"降级为"轻聚合"
-- 失败不阻塞（复用 _persist 的 try/except 模式）
+- 失败不阻塞主流程，但通过新增 SSE 事件（`persist_warning`）告知前端（Fail-Closed：不静默吞错）
 
-**节流保护**：单表查询（`len(current_tables) < 2`）跳过；`memory_linkage_capture_enabled=false` 可关闭。
+**节流保护**：单表查询（`len(current_tables) < 2`）跳过。链路沉淀默认开启，无开关。
 
 ### D3: 整理时只做轻聚合 + 更新图谱（查询时已结构化，整理压力小）
 
@@ -91,7 +91,14 @@ SELECT ... FROM biz_orders JOIN biz_users ON ...
 **为什么在整理时做而非每次查询**：
 - 避免版本爆炸（整理是低频手动动作）
 - 整理本身就是"经验沉淀到结构化"的语义时机
-- 复用整理的并发保护（单请求触发）
+
+**版本冲突处理（一致性优先，Fail-Closed）**：
+- 整理与图谱同步是**原子语义**，不静默跳过失败（违反项目 Fail-Closed 法则）
+- 图谱更新用乐观锁：读 SemanticModel 时记 `expected_version`，写时 `WHERE version = expected_version`
+- 冲突时（version 不匹配）→ 整理 API 返回 `409 Conflict` + 详情（current_version、expected_version、待更新的表对列表）
+- 前端弹框让用户选：①重试（基于最新版本重算 boost）②仅保留记忆整理（放弃图谱更新）③取消（回滚记忆整理若未提交）
+- 新增 `POST /memory/consolidate/retry` 端点支持重试（带最新 version）
+- 图谱同步默认开启，无开关
 
 ### D4: mine_implicit_relationships 改造——从记忆读取
 
@@ -101,16 +108,19 @@ SELECT ... FROM biz_orders JOIN biz_users ON ...
 
 ### D5: 配置项（进 config.py）
 
-- `memory_linkage_capture_enabled: bool = True`（是否沉淀链路经验）
-- `graph_sync_on_consolidate_enabled: bool = True`（整理时是否同步图谱）
 - `graph_linkage_co_occurrence_threshold: int = 3`（boost 阈值，复用 FREQUENT_JOIN_THRESHOLD 语义）
+- `graph_linkage_new_pair_threshold: int = 5`（新表对发现阈值，更保守）
 - `graph_linkage_confidence_boost: float = 0.1`
+- `graph_feedback_discover_new_pairs: bool = True`（新表对发现总开关，保守起见保留）
+
+> 注：链路沉淀（memory_linkage_capture）和图谱同步（graph_sync_on_consolidate）是默认行为，**不做开关**。失败按 Fail-Closed 处理（SSE 告知 / 冲突弹框），不通过开关回避。
 
 ## Risks / Trade-offs
 
 - **[linkage 记忆膨胀]** → 整理时 `consolidate_memories` 合并低频表对；co_occurrence 低的可标记 consolidated 隐藏；MEMORY.md 索引有 200 行/25KB 截断保护（`agent_memory.py`）
 - **[从 markdown 解析 co_occurrence 有成本]** → 格式约定固定（frontmatter 字段），解析简单；且整理时才解析（低频），非每次查询
-- **[整理触发图谱更新失败]** → 图谱更新 try/except 包裹，失败不影响整理本身；记忆仍整合成功；图谱下次整理再试
+- **[链路沉淀失败]** → 不静默吞错，通过 `persist_warning` SSE 事件告知前端（Fail-Closed），但 complete 正常发送不阻塞主流程
+- **[整理时图谱版本冲突]** → 一致性优先，不静默跳过；返回 409 + 详情，前端弹框让用户处理（重试/仅保留记忆/取消）；提供 retry 端点
 - **[linkage 记忆和自然语言记忆召回干扰]** → `recall_memories` 可按 type 过滤；或召回时 linkage 的 content 也注入（表共现信息对 SQL 生成有用）
 - **[错误查询污染 linkage]** → 多次共现才 boost（统计过滤）；人可编辑 linkage 文件修正；未来方向5/P0-7 补评估
 
@@ -120,7 +130,7 @@ SELECT ... FROM biz_orders JOIN biz_users ON ...
 2. 扩展 `extract_memory_from_turn` 抽取链路
 3. `/memory/consolidate` 追加图谱同步步骤
 4. 新增 config 项（带默认值）
-5. **回滚**：`memory_linkage_capture_enabled=false` 停止沉淀；`graph_sync_on_consolidate_enabled=false` 停止图谱同步；已有 linkage 记忆可保留（不影响）
+5. **回滚**：链路沉淀和图谱同步是默认行为，无开关；如需紧急停止，注释代码或通过 `graph_feedback_discover_new_pairs=false` 关闭新表对发现；已有 linkage 记忆可保留不影响
 6. 无数据迁移（现有记忆/图谱不动）
 
 ## Open Questions
