@@ -13,6 +13,7 @@ SSE 事件 (对标 V1, 适配 V2 状态机):
   data    — 执行结果 (含 columns/rows)
   heal    — 自愈 (含 retry/error_code)
   chart   — 图表生成
+  persist_warning — 反哺失败警告 (stage/error/conversation_id/question)
   complete — 结束 (含 success/conversation_id)
   error   — 异常
 
@@ -622,7 +623,15 @@ async def chat_stream(
                 # 传递各步骤耗时 (历史对话回放用)
                 state._step_durations = _step_durations
                 try:
-                    await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps)
+                    persist_warnings = await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps)
+                    # E1 Task 2.3: 反哺失败通过 persist_warning SSE 事件告知前端 (Fail-Closed, 不静默)
+                    for warn in persist_warnings:
+                        yield emit("persist_warning", {
+                            "stage": warn["stage"],
+                            "error": warn["error"],
+                            "conversation_id": conv_id,
+                            "question": state.question,
+                        })
                 except Exception as pe:
                     logger.error("finally _persist 抛异常: %s", pe, exc_info=True)
             # 客户端安全: 内部异常不泄露详情, 业务错误保留原文
@@ -683,8 +692,14 @@ async def _persist_skeleton(user, question: str, conv_id: str, is_new: bool) -> 
         return None
 
 
-async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
-    """持久化对话状态 + 标题 + 审计 (流式版, 复用 chat.py 同款逻辑)。"""
+async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) -> list[dict]:
+    """持久化对话状态 + 标题 + 审计 (流式版, 复用 chat.py 同款逻辑)。
+    
+    Returns:
+        list[dict]: 反哺失败警告列表, 每项包含 {stage, error}
+    """
+    persist_warnings: list[dict] = []
+    
     # StateStore 持久化
     try:
         from app.ai.state_store import ConversationState, StateStore
@@ -801,6 +816,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
                     db.add(saved)
             except Exception as e:
                 logger.warning("SavedQuery 写入失败 (不阻塞): %s", e)
+                persist_warnings.append({"stage": "saved_query", "error": str(e)})
 
         # Few-shot SQL 回流: 成功查询 → 向量库 (RAG-004, 失败不阻塞)
         if state.success and state.sql:
@@ -815,6 +831,10 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
                 )
             except Exception:
                 logger.debug("fewshot 回流失败 (不阻塞)")
+                persist_warnings.append({
+                    "stage": "fewshot",
+                    "error": "示例回流失败",
+                })
 
         # LLM 自主提炼记忆: 成功查询后判断是否产生值得保留的新知识
         if state.success and state.sql:
@@ -840,9 +860,32 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
                     logger.info("LLM 自主提炼记忆: %s (ds=%s)", extracted["name"], data_source_id)
             except Exception:
                 logger.debug("LLM 自主提炼记忆失败 (不阻塞)")
+                persist_warnings.append({
+                    "stage": "memory_extract",
+                    "error": "记忆提炼失败",
+                })
+
+        # E1: 链路经验沉淀 (成功查询 + 多表)
+        if state.success and state.sql and len(state.current_tables) >= 2:
+            try:
+                from app.ai.recall import persist_linkage_memory
+                from app.core.agent_memory import AgentMemoryStore
+                mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
+                mem_store = AgentMemoryStore(base_dir=mem_dir)
+                persist_linkage_memory(mem_store, state)
+            except Exception as e:
+                logger.warning("链路经验沉淀失败: %s", e)
+                persist_warnings.append({
+                    "stage": "linkage",
+                    "error": "链路经验沉淀失败",
+                })
 
     except Exception as e:
         logger.warning("流式 StateStore 持久化失败 (不阻塞): %s", e)
+        persist_warnings.append({
+            "stage": "state_store",
+            "error": "状态持久化失败",
+        })
 
     # 审计
     # SEC-006: SQL 注入拦截专项标识 — Layer 1(AST/多语句/写操作) 或 Layer 2(危险函数) 失败
@@ -871,3 +914,5 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps):
         data_source_id=data_source_id,
     )
     await db.commit()
+    
+    return persist_warnings

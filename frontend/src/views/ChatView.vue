@@ -1087,6 +1087,15 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
     case 'clarify':
       msg.askUser = { question: data.question, options: data.options || null }
       break
+    case 'persist_warning':
+      // E1 Task 2.4: 反哺失败非阻塞 toast 告知 (Fail-Closed, 不静默吞错)
+      const questionText = data.question ? `『${data.question.slice(0, 15)}』` : ''
+      ElMessage.warning({
+        message: `查询${questionText}的后台保存失败 (${data.stage})，不影响结果`,
+        duration: 5000,
+        showClose: true,
+      })
+      break
     case 'thinking':
       // 预思考 (REF-001): schema 事件已 push running 的预思考步骤, 这里更新为 done + 填充内容
       updateStep('预思考', 'done', {

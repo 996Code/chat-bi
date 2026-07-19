@@ -114,13 +114,20 @@
 
 > 基于 `doc/chatbi-v2/EVOLUTION-ROADMAP.md` 的 13 个演进方向，严格单点推进。
 
-### 🔗 记忆与图谱集成 (graph-feedback-loop, E1 Wave 1)
+### 🔗 记忆与图谱集成 (graph-feedback-loop, E1)
 
+**Wave 1 - linkage 记忆基建**
 - **linkage 记忆类型**：扩展 AgentMemoryStore 支持 `memory_type="linkage"`，新增 `extra_metadata` 参数（co_occurrence/tables 结构化字段）
 - **按表对查询**：`get_linkage_memory(table_a, table_b)` 遍历 metadata.tables 匹配（遵守 UUID 文件名约定）
 - **链路经验沉淀**：`persist_linkage_memory` 查询时直接复用 AgentState 现成字段（current_tables/join_path_section/thinking），零额外计算；更新时追加新场景（去重）；三表间接关联标注"经由 XXX"
 - **frontmatter 健壮性**：修复长 description 截断（读 frontmatter 段不截断）、schema 前缀表名（引号包裹）、extra_metadata key 校验
 - **配置项**：graph_linkage_co_occurrence_threshold / new_pair_threshold / confidence_boost / discover_new_pairs
+
+**Wave 2 - 反哺失败前端告知**
+- **persist_warning SSE 事件**：新增事件类型，携带 `{stage, error, conversation_id, question}`，在 complete 前发送
+- **_persist 改造**：所有反哺点（saved_query/fewshot/memory_extract/linkage）失败时收集警告，统一通过 persist_warning 告知前端（Fail-Closed，不静默吞错）
+- **前端 toast 处理**：ChatView.vue 新增 `case 'persist_warning'`，非阻塞 ElMessage.warning 展示，含 question 片段定位
+- **测试覆盖**：test_persist_warning.py 验证 4 个反哺点失败场景
 
 ### 📋 规格与规划
 

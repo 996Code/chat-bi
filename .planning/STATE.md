@@ -1,7 +1,7 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: 演进规划 E1 / graph-feedback-loop（Wave 1 完成，Wave 2 待执行）
+- **阶段**: 演进规划 E1 / graph-feedback-loop（Wave 2 完成，Wave 3 待执行）
 - **状态**: v2 核心交付完成（68 任务，552 tests passed）；演进 E1 进行中
 - **前序**: chatbi-v2 Phase 1-10 全部完成（B3+C5+C6+C8 技术债清理收尾）
 
@@ -12,9 +12,9 @@
 - **执行进度**:
   - ✅ Wave 1: Task 1.1（linkage 记忆基建 + helper）+ Task 1.2（config 配置项）
   - ✅ Task 2.1: persist_linkage_memory 函数 + 测试
-  - ⏳ Wave 2 剩余: Task 2.2-2.4（persist_warning SSE + 前端 toast）
+  - ✅ Wave 2: Task 2.2-2.4（persist_warning SSE + 前端 toast）
   - ❌ Wave 3-5: 图谱更新/冲突弹框/验收
-- **下一步**: 执行 Wave 2 Task 2.2（SSE persist_warning 事件协议）
+- **下一步**: 执行 Wave 3（图谱 confidence 更新）
 - **演进路线图**: `doc/chatbi-v2/EVOLUTION-ROADMAP.md`（13 个方向）
 
 
