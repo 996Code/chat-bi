@@ -72,6 +72,9 @@ def recall_memories(
             # 跳过已整理的记忆 (已被合并, 不再注入 prompt)
             if re.search(r"^\s*consolidated:\s*true", content[:500], re.MULTILINE):
                 continue
+            # 跳过 linkage 类型 (结构化数据, 不适合注入 prompt; 通过图谱 confidence 间接影响 SQL 生成)
+            if re.search(r"^\s*type:\s*linkage", content[:500], re.MULTILINE):
+                continue
             # 提取 frontmatter 的 id + name + description
             id_match = re.search(r"^id:\s*(.+)$", content, re.MULTILINE)
             name_match = re.search(r"^name:\s*(.+)$", content, re.MULTILINE)
@@ -269,9 +272,12 @@ async def consolidate_memories(
 
     all_memories = store.list_memories()
     # 过滤: 已整理的不参与, ids 非空时只取指定的 (空列表/None 都表示整理全部)
+    # linkage 类型是结构化数据 (co_occurrence/tables), LLM 整理会破坏结构, 跳过
     memories = []
     for m in all_memories:
         if m.get("consolidated"):
+            continue
+        if m.get("type") == "linkage":
             continue
         if ids and m["id"] not in ids:
             continue

@@ -276,6 +276,13 @@ class AgentMemoryStore:
                     entry["tables"] = quoted
                 else:
                     entry["tables"] = [t.strip() for t in tables_match.group(1).split(",") if t.strip()]
+            else:
+                # YAML 多行列表格式: tables:\n  - "a"\n  - "b"
+                tables_block = re.search(r"^\s*tables:\s*\n((?:\s+-\s+['\"]?[^'\"]+['\"]?\s*\n)+)", head, re.MULTILINE)
+                if tables_block:
+                    items = re.findall(r"""-\s+['"]?([^'"\n]+)['"]?""", tables_block.group(1))
+                    if items:
+                        entry["tables"] = [t.strip() for t in items]
             memories.append(entry)
 
         return memories
@@ -298,7 +305,7 @@ class AgentMemoryStore:
         return None
 
     def mark_consolidated(self, mem_id: str) -> bool:
-        """标记记忆为已整理 (在 frontmatter 加 consolidated: true)。
+        """标记记忆为已整理 (在 frontmatter 设 consolidated: true)。
 
         整理后原始记忆不删除, 但默认隐藏, 用户可通过开关查看。
         """
@@ -308,19 +315,27 @@ class AgentMemoryStore:
             return False
         try:
             content = file_path.read_text(encoding="utf-8")
-            # 如果已有 consolidated 标记, 跳过
+            # 如果已有 consolidated: true, 跳过
             if re.search(r"^\s*consolidated:\s*true", content, re.MULTILINE):
                 return True
-            original = content
-            # 在 metadata 段加 consolidated: true (健壮: 先尝试 type 行后插入, 再尝试 metadata 行后插入)
+            # 替换已有的 consolidated: false → true (而非追加, 避免重复键)
+            new_content = re.sub(
+                r"^(\s*)consolidated:\s*false",
+                r"\1consolidated: true",
+                content,
+                flags=re.MULTILINE,
+            )
+            if new_content != content:
+                file_path.write_text(new_content, encoding="utf-8")
+                return True
+            # 无已有 consolidated 行 → 在 metadata 段的 type 行后插入
             if "metadata:" in content:
-                # 方式1: type 行后插入 (正常情况)
+                original = content
                 content = re.sub(
                     r"(metadata:\n(\s+)type: .+\n)",
                     r"\1\2consolidated: true\n",
                     content,
                 )
-                # 方式1 没生效 (metadata 段无 type 行) → 方式2: metadata 行后直接插入
                 if content == original:
                     content = re.sub(
                         r"(metadata:\n)",

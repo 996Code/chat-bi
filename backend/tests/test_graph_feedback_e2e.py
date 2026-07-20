@@ -237,10 +237,15 @@ class TestZeroExtraComputation:
 # ── 8.6: 全量测试通过 (由 CI 验证, 此处只确认单测文件本身) ──
 
 class TestRecallMemoriesHitsLinkage:
-    """7.2: 确认 recall_memories 召回时能命中 linkage 记忆。"""
+    """7.2: linkage 记忆不直接注入 prompt (结构化数据), 通过图谱 confidence 间接影响。
 
-    def test_recall_hits_linkage_memory(self, tmp_path):
-        """用户问涉及 orders 和 users → linkage 记忆被召回。"""
+    recall_memories 跳过 linkage 类型, 因为它是结构化数据 (co_occurrence/tables),
+    不适合直接注入 SQL 生成 prompt。它的价值通过 sync_linkage_to_graph 间接体现:
+    整理时 boost 图谱 confidence → 影响表扩展和 JOIN 路径。
+    """
+
+    def test_recall_skips_linkage_memory(self, tmp_path):
+        """recall_memories 不返回 linkage 类型记忆。"""
         store = AgentMemoryStore(base_dir=str(tmp_path))
         state = _make_state(
             tables=["biz_orders", "biz_users"],
@@ -249,12 +254,11 @@ class TestRecallMemoriesHitsLinkage:
         )
         persist_linkage_memory(store, state)
 
-        # 召回: 问题和 linkage description 有关键词重叠
+        # 召回: 应该不包含 linkage 类型
         results = recall_memories(
             question="查一下订单和用户的关系",
             memory_dir=str(tmp_path),
             max_count=5,
         )
-        # 应该能命中 linkage 记忆 (description 含 "orders" 和 "users")
-        assert any("biz_orders" in r.get("name", "") or "biz_users" in r.get("name", "") for r in results), \
-            f"linkage 记忆未被召回, results: {[r.get('name') for r in results]}"
+        linkage_results = [r for r in results if "linkage" in r.get("name", "")]
+        assert len(linkage_results) == 0, "linkage 记忆不应被 recall_memories 返回"
