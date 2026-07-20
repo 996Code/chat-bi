@@ -89,8 +89,14 @@ intent(1) → retrieve精排(1) → think(1) → generate_sql(1) → [heal × 0~
 ### 方向 1：查询反哺知识图谱（纯隐式信号）🔄 进行中
 
 > **执行状态**：E1 Wave 1 完成（2026-07-18）。详见 `openspec/changes/graph-feedback-loop/`。
-> 重新设计为「记忆与图谱集成」：记忆承载链路经验（linkage 类型），整理时汇总更新图谱 confidence。
-> 已完成：linkage 记忆基建 + persist_linkage_memory 函数 + 配置项。下一步：Wave 2（persist_warning SSE + 接入 _persist）。
+> ✅ **已完成 (E1 graph-feedback-loop)**。5 Wave 全部交付:
+> - Wave 1: linkage 记忆基建 + persist_linkage_memory + config 配置项
+> - Wave 2: persist_warning SSE 事件 (反哺失败前端告知) + C1/W1/W2 修复
+> - Wave 3: 图谱 confidence 更新 (乐观锁 + 新表对发现 + sync_linkage_to_graph)
+> - Wave 4: 前端冲突弹框 (三选项: 重试/放弃/取消)
+> - Wave 5: 双路召回确认 + 端到端验收测试 + 文档
+>
+> 最终设计: 记忆承载链路经验 (linkage 类型), 整理时轻聚合 → 按阈值 boost confidence / 发现新表对 → 乐观锁写入语义层。版本冲突不静默吞错, 前端弹框让用户决策。
 
 **一句话**：成功的查询应该让图谱越来越准——表共现频繁的关系自动提升 confidence。
 

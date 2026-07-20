@@ -110,9 +110,10 @@
 
 ---
 
-## v2.1.0 (2026-07) - 演进规划 E1 进行中
+## v2.1.0 (2026-07) - 演进规划 E1 完成
 
 > 基于 `doc/chatbi-v2/EVOLUTION-ROADMAP.md` 的 13 个演进方向，严格单点推进。
+> E1 (查询反哺知识图谱) 5 Wave 全部完成，587 tests passed。
 
 ### 🔗 记忆与图谱集成 (graph-feedback-loop, E1)
 
@@ -127,7 +128,24 @@
 - **persist_warning SSE 事件**：新增事件类型，携带 `{stage, error, conversation_id, question}`，在 complete 前发送
 - **_persist 改造**：所有反哺点（saved_query/fewshot/memory_extract/linkage）失败时收集警告，统一通过 persist_warning 告知前端（Fail-Closed，不静默吞错）
 - **前端 toast 处理**：ChatView.vue 新增 `case 'persist_warning'`，非阻塞 ElMessage.warning 展示，含 question 片段定位
-- **测试覆盖**：test_persist_warning.py 验证 4 个反哺点失败场景
+- **C1/W1/W2 修复**：审计异常路径保留 persist_warnings / 错误信息脱敏 / 前端 const 作用域
+
+**Wave 3 - 图谱 confidence 更新**
+- **轻聚合**：`linkage_memories_to_cooccurrence` 从 linkage 记忆 frontmatter 读 co_occurrence
+- **confidence boost**：`_compute_confidence_updates` 已知关系按阈值+增量提升 confidence
+- **新表对发现**：`_discover_new_pairs` 共现≥new_pair_threshold 的未知表对自动发现 (source=implicit_mining, confidence=0.5)
+- **乐观锁写入**：`apply_confidence_updates` 校验 expected_version，冲突抛 VersionConflictError 不静默吞错
+- **端到端同步**：`sync_linkage_to_graph` 整合轻聚合→boost→发现→写入全链路
+- **整理后自动同步**：`_run_consolidate_background` 完成后调 sync_linkage_to_graph，冲突标记 graph_sync_conflict
+
+**Wave 4 - 前端冲突弹框**
+- **三选项弹框**：图谱同步版本冲突时弹 ElMessageBox：①重试同步 ②放弃图谱更新 ③取消
+- **重试端点**：`POST /memory/consolidate/retry` 基于最新版本号重新计算 boost
+- **API 类型扩展**：ConsolidateStatus 新增 graph_sync_conflict/graph_sync_error/graph_sync 字段
+
+**Wave 5 - 双路召回 + 验收**
+- **recall_memories 命中 linkage**：确认 linkage 记忆可被关键词召回注入 prompt
+- **端到端验收**：7 项测试覆盖 (3 次查询→boost / 5 次共现→新发现 / 版本冲突 / 零额外计算 / 召回命中)
 
 ### 📋 规格与规划
 
