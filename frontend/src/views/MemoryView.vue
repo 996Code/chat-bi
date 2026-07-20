@@ -212,7 +212,20 @@ async function pollConsolidateStatus() {
       stopPolling()
       consolidating.value = false
       const detail = data.result?.detail || '整理完成'
-      ElMessage.success(detail)
+
+      // E1 Wave 4: 图谱同步冲突弹框
+      if (data.result?.graph_sync_conflict) {
+        showGraphSyncConflictDialog(data.result)
+      } else if (data.result?.graph_sync) {
+        const gs = data.result.graph_sync
+        const syncInfo = gs.new_version
+          ? `图谱已更新 (v${gs.new_version}, ${gs.boosted_pairs} 个表对增强, ${gs.new_pairs} 个新发现)`
+          : ''
+        ElMessage.success(detail + (syncInfo ? `\n${syncInfo}` : ''))
+      } else {
+        ElMessage.success(detail)
+      }
+
       selectedIds.value = new Set()
       await fetchData()
     } else if (data.status === 'failed') {
@@ -228,6 +241,55 @@ async function pollConsolidateStatus() {
       stopPolling()
       consolidating.value = false
       ElMessage.error('网络异常，轮询已停止')
+    }
+  }
+}
+
+/** 图谱同步冲突弹框: 三个选项 (重试/放弃图谱更新/取消) */
+async function showGraphSyncConflictDialog(result: NonNullable<ConsolidateStatus['result']>) {
+  const detail = result.detail || '整理完成'
+  try {
+    await ElMessageBox.confirm(
+      `${detail}\n\n图谱同步时版本冲突 (其他操作同时修改了语义层)。\n请选择如何处理：`,
+      '图谱同步冲突',
+      {
+        confirmButtonText: '重试同步',
+        cancelButtonText: '放弃图谱更新',
+        distinguishCancelAndClose: true,
+        type: 'warning',
+      },
+    )
+    // 用户点"重试同步"
+    await doRetryGraphSync()
+  } catch (action: any) {
+    if (action === 'cancel') {
+      // 用户点"放弃图谱更新" — 记忆整理结果保留, 仅图谱未更新
+      ElMessage.info('已放弃图谱同步, 记忆整理结果保留')
+    } else {
+      // 用户点关闭按钮 — 同放弃
+      ElMessage.info('已跳过图谱同步')
+    }
+  }
+}
+
+/** 调用重试图谱同步端点 */
+async function doRetryGraphSync() {
+  if (!selectedDsId.value) return
+  consolidating.value = true
+  consolidateProgress.value = 50
+  consolidateStage.value = '重试图谱同步...'
+  try {
+    await memoryApi.retryGraphSync(selectedDsId.value)
+    // 重试也是异步, 启动轮询
+    startPolling()
+  } catch (e: any) {
+    consolidating.value = false
+    if (e.response?.status === 409) {
+      // 仍在运行, 开始轮询
+      consolidating.value = true
+      startPolling()
+    } else {
+      ElMessage.error('图谱同步重试失败: ' + (extractErrorDetail(e)))
     }
   }
 }
