@@ -816,7 +816,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                     db.add(saved)
             except Exception as e:
                 logger.warning("SavedQuery 写入失败 (不阻塞): %s", e)
-                persist_warnings.append({"stage": "saved_query", "error": str(e)})
+                persist_warnings.append({"stage": "saved_query", "error": "保存查询记录失败"})
 
         # Few-shot SQL 回流: 成功查询 → 向量库 (RAG-004, 失败不阻塞)
         if state.success and state.sql:
@@ -887,32 +887,39 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
             "error": "状态持久化失败",
         })
 
-    # 审计
-    # SEC-006: SQL 注入拦截专项标识 — Layer 1(AST/多语句/写操作) 或 Layer 2(危险函数) 失败
-    # 视为注入拦截, 用 action="sql_injection_blocked" 单独标记便于检索
-    _INJECTION_LAYERS = ("AST", "dangerous_function")
-    is_injection_block = bool(
-        state.error and any(f"({layer})" in state.error for layer in _INJECTION_LAYERS)
-    )
-    # DSO-07: 从执行结果取耗时, 判定慢查询 (阈值可配置)
-    from app.core.config import get_settings
-    _settings = get_settings()
-    exec_duration = getattr(state.execute_result, "duration_ms", None) if state.execute_result else None
-    is_slow = bool(
-        exec_duration is not None
-        and exec_duration >= _settings.sql_slow_query_threshold * 1000
-    )
-    await write_audit_log(
-        db, tenant_id=user.tenant_id, user_id=user.user_id,
-        resource_type="chat",
-        action="sql_injection_blocked" if is_injection_block else "query",
-        status="success" if state.success else "fail",
-        sql_text=state.sql or None,
-        error_message=state.error[:500] if state.error else None,
-        duration_ms=exec_duration,
-        is_slow=is_slow,
-        data_source_id=data_source_id,
-    )
-    await db.commit()
+    # 审计 (try/except 包裹, 避免审计异常丢失已收集的 persist_warnings)
+    try:
+        # SEC-006: SQL 注入拦截专项标识 — Layer 1(AST/多语句/写操作) 或 Layer 2(危险函数) 失败
+        # 视为注入拦截, 用 action="sql_injection_blocked" 单独标记便于检索
+        _INJECTION_LAYERS = ("AST", "dangerous_function")
+        is_injection_block = bool(
+            state.error and any(f"({layer})" in state.error for layer in _INJECTION_LAYERS)
+        )
+        # DSO-07: 从执行结果取耗时, 判定慢查询 (阈值可配置)
+        from app.core.config import get_settings
+        _settings = get_settings()
+        exec_duration = getattr(state.execute_result, "duration_ms", None) if state.execute_result else None
+        is_slow = bool(
+            exec_duration is not None
+            and exec_duration >= _settings.sql_slow_query_threshold * 1000
+        )
+        await write_audit_log(
+            db, tenant_id=user.tenant_id, user_id=user.user_id,
+            resource_type="chat",
+            action="sql_injection_blocked" if is_injection_block else "query",
+            status="success" if state.success else "fail",
+            sql_text=state.sql or None,
+            error_message=state.error[:500] if state.error else None,
+            duration_ms=exec_duration,
+            is_slow=is_slow,
+            data_source_id=data_source_id,
+        )
+        await db.commit()
+    except Exception as e:
+        logger.warning("审计日志写入失败 (不阻塞): %s", e)
+        persist_warnings.append({
+            "stage": "audit",
+            "error": "审计日志写入失败",
+        })
     
     return persist_warnings
