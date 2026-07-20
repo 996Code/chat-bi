@@ -136,6 +136,11 @@ class ConsolidateStatus(BaseModel):
     error: str | None = None      # 失败原因
 
 
+class _VersionConflict(Exception):
+    """内部异常: 图谱同步版本冲突 (简化, 不暴露 knowledge_graph 的类给 API 层)。"""
+    pass
+
+
 # 内存状态: {(tenant_id, ds_id): ConsolidateStatus}
 _consolidate_status: dict[tuple[str, str], ConsolidateStatus] = {}
 
@@ -256,8 +261,121 @@ async def get_consolidate_status(
     return _get_consolidate_status(user.tenant_id, data_source_id)
 
 
+@router.post("/consolidate/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_consolidate_graph_sync(
+    data_source_id: str = Query(..., description="数据源 ID"),
+    user=Depends(require_admin),
+):
+    """重试图谱同步 (整理后版本冲突时调用)。
+
+    基于最新 SemanticModel 版本重新计算 boost 并写入。
+    如果仍然冲突, 返回 409。
+    """
+    key = (user.tenant_id, data_source_id)
+    current = _get_consolidate_status(user.tenant_id, data_source_id)
+
+    # 只有整理完成且图谱同步冲突时才允许重试
+    if current.status != "done":
+        raise HTTPException(status_code=409, detail="整理未完成, 无法重试图谱同步")
+    if not current.result or not current.result.get("graph_sync_conflict"):
+        raise HTTPException(status_code=400, detail="无图谱同步冲突, 无需重试")
+
+    # 标记运行中
+    cs = ConsolidateStatus(status="running", progress=50, stage="重试图谱同步...")
+    _consolidate_status[key] = cs
+
+    asyncio.create_task(_retry_graph_sync_background(user.tenant_id, data_source_id))
+
+    return cs
+
+
+async def _sync_linkage_after_consolidate(tenant_id: str, ds_id: str) -> dict | None:
+    """整理后同步 linkage 记忆到知识图谱 (E1 Wave 3)。
+
+    获取独立 DB session (不与整理流程共享), 读取当前版本号作为乐观锁,
+    调 sync_linkage_to_graph。冲突时抛 _VersionConflict。
+    """
+    from app.db.session import get_db
+    from app.services.knowledge_graph import sync_linkage_to_graph, VersionConflictError
+
+    # 获取独立 DB session (整理流程不持有 session)
+    db_gen = get_db()
+    db = await anext(db_gen)
+    try:
+        # 读取当前版本号 (乐观锁)
+        from sqlalchemy import select
+        from app.db.models import SemanticModel
+        current = (
+            await db.execute(
+                select(SemanticModel).where(
+                    SemanticModel.tenant_filter(tenant_id),
+                    SemanticModel.data_source_id == ds_id,
+                    SemanticModel.is_current == True,  # noqa: E712
+                )
+            )
+        ).scalar_one_or_none()
+
+        expected_version = current.version if current else None
+
+        store = _get_ds_store(tenant_id, ds_id)
+        result = await sync_linkage_to_graph(
+            db=db,
+            mem_store=store,
+            tenant_id=tenant_id,
+            data_source_id=ds_id,
+            expected_version=expected_version,
+        )
+        return result
+    except VersionConflictError as e:
+        raise _VersionConflict(str(e)) from e
+    finally:
+        await db.close()
+        try:
+            await db_gen.aclose()
+        except Exception:
+            pass
+
+
+async def _retry_graph_sync_background(tenant_id: str, ds_id: str) -> None:
+    """后台重试图谱同步 (基于最新版本号)。"""
+    key = (tenant_id, ds_id)
+    cs = _consolidate_status[key]
+
+    try:
+        result = await _sync_linkage_after_consolidate(tenant_id, ds_id)
+        # 重试成功: 更新 result, 清除冲突标记
+        if cs.result:
+            cs.result.pop("graph_sync_conflict", None)
+            cs.result.pop("graph_sync_error", None)
+            if result:
+                cs.result["graph_sync"] = result
+        cs.status = "done"
+        cs.progress = 100
+        cs.stage = "完成 (图谱同步重试成功)"
+        logger.info("图谱同步重试成功: tenant=%s ds=%s", tenant_id, ds_id)
+    except _VersionConflict as e:
+        cs.status = "done"
+        cs.progress = 100
+        cs.stage = "完成 (图谱同步仍冲突)"
+        if cs.result:
+            cs.result["graph_sync_conflict"] = True
+            cs.result["graph_sync_error"] = str(e)
+        logger.warning("图谱同步重试仍冲突: tenant=%s ds=%s error=%s", tenant_id, ds_id, e)
+    except Exception as e:
+        cs.status = "done"
+        cs.progress = 100
+        cs.stage = "完成 (图谱同步重试失败)"
+        if cs.result:
+            cs.result["graph_sync_error"] = f"重试失败: {e}"
+        logger.warning("图谱同步重试失败: tenant=%s ds=%s error=%s", tenant_id, ds_id, e)
+
+
 async def _run_consolidate_background(tenant_id: str, ds_id: str, ids: list[str] | None) -> None:
-    """后台跑整理全流程 (更新内存状态, 不依赖 DB session)。"""
+    """后台跑整理全流程 (更新内存状态, 不依赖 DB session)。
+
+    整理完成后尝试同步 linkage 记忆到知识图谱 (E1 Wave 3)。
+    图谱同步需要 DB session, 在整理成功后单独获取。
+    """
     key = (tenant_id, ds_id)
     cs = _consolidate_status[key]
 
@@ -269,6 +387,21 @@ async def _run_consolidate_background(tenant_id: str, ds_id: str, ids: list[str]
         store = _get_ds_store(tenant_id, ds_id)
         from app.ai.recall import consolidate_memories as _consolidate
         result = await _consolidate(store, memory_dir=f"memory/{tenant_id}/{ds_id}", ids=ids, on_progress=on_progress)
+
+        # E1 Wave 3: 整理后尝试同步 linkage → 图谱
+        graph_result = None
+        try:
+            graph_result = await _sync_linkage_after_consolidate(tenant_id, ds_id)
+        except Exception as e:
+            # 图谱同步失败不阻塞整理结果 (Fail-Closed: 记录但不吞错)
+            logger.warning("整理后图谱同步失败 (不阻塞): %s", e)
+            if isinstance(e, _VersionConflict):
+                result["graph_sync_conflict"] = True
+                result["graph_sync_error"] = str(e)
+
+        if graph_result:
+            result["graph_sync"] = graph_result
+
         cs.status = "done"
         cs.progress = 100
         cs.stage = "完成"

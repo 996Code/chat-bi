@@ -312,6 +312,7 @@ async def infer_knowledge_graph(
 # ── T017: 演化（算法先行，e2e 留 Phase 6）─────────────────────
 # NOTE: 以下两个函数目前无生产调用方, 仅有单元测试。待 Phase 6 接入管线后移除此标记。
 
+
 def mine_implicit_relationships(
     query_history: list[str],
     existing_relationships: list[Relationship],
@@ -418,3 +419,404 @@ def apply_feedback_signals(
             suggestions[pair] = new_conf
 
     return suggestions
+
+
+# ── E1 Wave 3: 图谱 confidence 更新 (linkage → 图谱同步) ──────
+
+class VersionConflictError(Exception):
+    """乐观锁冲突: SemanticModel 版本在计算期间被其他操作修改。
+
+    Fail-Closed: 不静默吞错, 抛出异常让调用方决定如何处理 (重试/放弃)。
+    """
+
+    def __init__(self, expected_version: int, current_version: int, pending_updates: dict):
+        self.expected_version = expected_version
+        self.current_version = current_version
+        self.pending_updates = pending_updates  # {(from, to): new_confidence}
+        super().__init__(
+            f"版本冲突: 期望 {expected_version}, 当前 {current_version}, "
+            f"待更新 {len(pending_updates)} 个表对"
+        )
+
+
+def linkage_memories_to_cooccurrence(mem_store) -> dict[tuple[str, str], int]:
+    """从 linkage 记忆 frontmatter 轻聚合表对共现次数。
+
+    遍历所有 type=linkage 的记忆, 读取 metadata.co_occurrence 和 metadata.tables,
+    返回 {(table_a, table_b): co_occurrence} 字典序表对映射。
+
+    Args:
+        mem_store: AgentMemoryStore 实例
+
+    Returns:
+        {(table_a, table_b): co_occurrence} — 字典序表对 → 共现次数
+    """
+    result: dict[tuple[str, str], int] = {}
+    for m in mem_store.list_memories():
+        if m.get("type") != "linkage":
+            continue
+        co = m.get("co_occurrence")
+        tables = m.get("tables")
+        if not co or not tables or len(tables) != 2:
+            continue
+        pair = tuple(sorted(tables))
+        # 同一表对可能有多条记忆 (理论上不会, 但防御性取 max)
+        result[pair] = max(result.get(pair, 0), co)
+    return result
+
+
+def _compute_confidence_updates(
+    cooccurrence: dict[tuple[str, str], int],
+    existing_relationships: list[Relationship],
+    co_occurrence_threshold: int,
+    confidence_boost: float,
+) -> dict[tuple[str, str], float]:
+    """计算已知关系的 confidence boost (不修改任何数据)。
+
+    对共现次数 >= co_occurrence_threshold 的已知表对,
+    confidence += confidence_boost * (co_occurrence - threshold + 1),
+    封顶 MAX_CONFIDENCE。
+
+    Args:
+        cooccurrence: linkage 轻聚合结果
+        existing_relationships: 当前语义层关系
+        co_occurrence_threshold: 共现阈值 (config)
+        confidence_boost: 每次增量 (config)
+
+    Returns:
+        {(from, to): new_confidence} 仅包含有提升的表对
+    """
+    # 已知关系 → 当前 confidence
+    known: dict[tuple[str, str], float] = {}
+    for r in existing_relationships:
+        from_table = r.name.split("_to_")[0] if "_to_" in r.name else ""
+        if from_table:
+            known[(from_table, r.target_model)] = r.confidence
+
+    updates: dict[tuple[str, str], float] = {}
+    for pair, co in cooccurrence.items():
+        if co < co_occurrence_threshold:
+            continue
+        if pair not in known:
+            continue  # 未知表对由新表对发现逻辑处理
+        # boost = confidence_boost * 超出阈值的次数 (至少 1 次 boost)
+        boost_count = co - co_occurrence_threshold + 1
+        new_conf = min(known[pair] + confidence_boost * boost_count, MAX_CONFIDENCE)
+        if new_conf > known[pair]:
+            updates[pair] = new_conf
+
+    return updates
+
+
+def _discover_new_pairs(
+    cooccurrence: dict[tuple[str, str], int],
+    existing_relationships: list[Relationship],
+    new_pair_threshold: int,
+) -> list[tuple[tuple[str, str], float]]:
+    """发现共现频繁但不在现有关系中的新表对。
+
+    对共现 >= new_pair_threshold 且不在 existing_relationships 中的表对,
+    建议以 confidence=0.5, source="implicit_mining" 加入。
+
+    Args:
+        cooccurrence: linkage 轻聚合结果
+        existing_relationships: 当前语义层关系
+        new_pair_threshold: 新表对发现阈值 (比 boost 更严)
+
+    Returns:
+        [((from, to), confidence), ...] 新发现的表对列表
+    """
+    # 已知关系表对集合 (双向)
+    known_pairs: set[tuple[str, str]] = set()
+    for r in existing_relationships:
+        from_table = r.name.split("_to_")[0] if "_to_" in r.name else ""
+        if from_table:
+            known_pairs.add((from_table, r.target_model))
+            known_pairs.add((r.target_model, from_table))  # 双向
+
+    new_pairs: list[tuple[tuple[str, str], float]] = []
+    for pair, co in cooccurrence.items():
+        if co < new_pair_threshold:
+            continue
+        # 检查双向是否都不在已知关系中
+        if pair in known_pairs or (pair[1], pair[0]) in known_pairs:
+            continue
+        new_pairs.append((pair, 0.5))  # 初始 confidence 0.5
+
+    return new_pairs
+
+
+async def apply_confidence_updates(
+    db,  # AsyncSession
+    tenant_id: str,
+    data_source_id: str,
+    updates: dict[tuple[str, str], float],
+    new_pairs: list[tuple[tuple[str, str], float]] | None = None,
+    expected_version: int | None = None,
+) -> int:
+    """将 confidence 更新写入语义层 (乐观锁, append-only 新版本)。
+
+    流程:
+      1. 读取当前 is_current=True 的 SemanticModel
+      2. 校验 expected_version (乐观锁, 防并发冲突)
+      3. 深拷贝 content, 更新已知关系的 confidence
+      4. 新表对发现: 加入新 Relationship (source=implicit_mining)
+      5. 旧版本 is_current=False, 插入新版本
+      6. 重建向量索引 (降级不阻塞)
+
+    Args:
+        db: AsyncSession
+        tenant_id: 租户 ID
+        data_source_id: 数据源 ID
+        updates: {(from, to): new_confidence} 已知关系的 confidence 更新
+        new_pairs: [((from, to), confidence)] 新发现的表对 (None=不发现)
+        expected_version: 乐观锁期望版本号 (None=不校验)
+
+    Returns:
+        新版本号
+
+    Raises:
+        VersionConflictError: 乐观锁冲突
+        ValueError: 无当前版本 / 无更新内容
+    """
+    import copy
+    from sqlalchemy import select
+    from app.db.models import SemanticModel
+
+    # 1. 读取当前版本
+    current = (
+        await db.execute(
+            select(SemanticModel).where(
+                SemanticModel.tenant_filter(tenant_id),
+                SemanticModel.data_source_id == data_source_id,
+                SemanticModel.is_current == True,  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+
+    if current is None:
+        raise ValueError(f"数据源 {data_source_id} 无当前语义层版本")
+
+    # 2. 乐观锁校验
+    if expected_version is not None and current.version != expected_version:
+        raise VersionConflictError(
+            expected_version=expected_version,
+            current_version=current.version,
+            pending_updates=updates,
+        )
+
+    # 3. 深拷贝 content → 修改
+    new_content = copy.deepcopy(current.content)
+    models = new_content.get("models", [])
+    changed = False
+
+    # 更新已知关系的 confidence
+    for model_dict in models:
+        model_name = model_dict.get("name", "")
+        rels = model_dict.get("relationships", [])
+        for rel in rels:
+            target = rel.get("target_model", "")
+            pair = (model_name, target)
+            if pair in updates:
+                new_conf = updates[pair]
+                if rel.get("confidence", 0) != new_conf:
+                    rel["confidence"] = new_conf
+                    # source 保持不变 (manual > foreign_key > ai_inferred > name_pattern)
+                    # 不覆盖 source, 只提升 confidence
+                    changed = True
+
+    # 4. 新表对发现: 加入新 Relationship
+    if new_pairs:
+        # 构建表名 → model_dict 映射
+        model_by_name: dict[str, dict] = {m.get("name", ""): m for m in models}
+        for (from_table, to_table), confidence in new_pairs:
+            from_model = model_by_name.get(from_table)
+            if from_model is None:
+                # from_table 不在语义层中 (理论上不应发生, 跳过)
+                logger.warning("新表对发现: %s 不在语义层中, 跳过", from_table)
+                continue
+            # 检查是否已存在 (防御性)
+            existing_targets = {r.get("target_model") for r in from_model.get("relationships", [])}
+            if to_table in existing_targets:
+                continue
+            # 加入新关系
+            from_model.setdefault("relationships", []).append({
+                "name": f"{from_table}_to_{to_table}",
+                "target_model": to_table,
+                "join_type": "LEFT",
+                "on": f"{from_table}.id = {to_table}.{_strip_table_prefix(from_table)}_id",
+                "type": "N:1",
+                "source": "implicit_mining",
+                "confidence": confidence,
+            })
+            changed = True
+            logger.info(
+                "新表对发现: %s → %s (confidence=%.2f, source=implicit_mining)",
+                f"{from_table}_to_{to_table}", confidence,
+            )
+
+    if not changed:
+        raise ValueError("无有效更新内容 (所有表对 confidence 未变或表不在语义层中)")
+
+    # 5. 旧版本 is_current=False
+    old_currents = (
+        await db.execute(
+            select(SemanticModel).where(
+                SemanticModel.tenant_filter(tenant_id),
+                SemanticModel.data_source_id == data_source_id,
+                SemanticModel.is_current == True,  # noqa: E712
+            )
+        )
+    ).scalars().all()
+    for old in old_currents:
+        old.is_current = False
+
+    # 新版本号 = 全局 max + 1
+    max_v = (
+        await db.execute(
+            select(SemanticModel.version).where(
+                SemanticModel.tenant_filter(tenant_id),
+                SemanticModel.data_source_id == data_source_id,
+            ).order_by(SemanticModel.version.desc()).limit(1)
+        )
+    ).scalar_one()
+    new_version = max_v + 1
+
+    new_sm = SemanticModel(
+        tenant_id=tenant_id,
+        data_source_id=data_source_id,
+        version=new_version,
+        content=new_content,
+        is_current=True,
+    )
+    db.add(new_sm)
+    await db.flush()
+    await db.commit()
+    await db.refresh(new_sm)
+
+    # 6. 重建向量索引 (降级不阻塞)
+    try:
+        from app.services.indexer_update import rebuild_index
+        from app.services.embedder import get_embedder
+        from app.services.vector_store import get_vector_store
+        from app.schemas.semantic_layer import SemanticModelContent
+        content = SemanticModelContent(**new_sm.content)
+        await rebuild_index(
+            content=content,
+            data_source_id=data_source_id,
+            store=get_vector_store(),
+            embedder=get_embedder(),
+        )
+    except Exception as e:
+        logger.warning("图谱更新后重建索引失败, RAG 检索将降级: %s", e)
+
+    logger.info(
+        "图谱 confidence 更新完成: tenant=%s ds=%s v%d→v%d, %d 个表对 boost, %d 个新表对",
+        tenant_id, data_source_id, current.version, new_version,
+        len(updates), len(new_pairs or []),
+    )
+    return new_version
+
+
+async def sync_linkage_to_graph(
+    db,  # AsyncSession
+    mem_store,
+    tenant_id: str,
+    data_source_id: str,
+    expected_version: int | None = None,
+) -> dict:
+    """从 linkage 记忆同步到知识图谱 (整理后调用)。
+
+    流程:
+      1. 从 linkage 记忆轻聚合 co_occurrence
+      2. 读取当前语义层关系
+      3. 计算已知关系的 confidence boost
+      4. 新表对发现 (若开关开启)
+      5. 调 apply_confidence_updates 写入 (乐观锁)
+
+    Args:
+        db: AsyncSession
+        mem_store: AgentMemoryStore 实例
+        tenant_id: 租户 ID
+        data_source_id: 数据源 ID
+        expected_version: 乐观锁期望版本号
+
+    Returns:
+        {"new_version": int, "boosted_pairs": int, "new_pairs": int}
+
+    Raises:
+        VersionConflictError: 乐观锁冲突
+        ValueError: 无当前版本 / 无更新内容
+    """
+    from app.core.config import get_settings
+    settings = get_settings()
+
+    # 1. 轻聚合
+    cooccurrence = linkage_memories_to_cooccurrence(mem_store)
+    if not cooccurrence:
+        return {"new_version": None, "boosted_pairs": 0, "new_pairs": 0, "detail": "无 linkage 记忆"}
+
+    # 2. 读取当前语义层关系
+    from sqlalchemy import select
+    from app.db.models import SemanticModel
+    from app.schemas.semantic_layer import SemanticModelContent
+
+    current = (
+        await db.execute(
+            select(SemanticModel).where(
+                SemanticModel.tenant_filter(tenant_id),
+                SemanticModel.data_source_id == data_source_id,
+                SemanticModel.is_current == True,  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+
+    if current is None:
+        return {"new_version": None, "boosted_pairs": 0, "new_pairs": 0, "detail": "无当前语义层版本"}
+
+    content = SemanticModelContent(**current.content)
+    all_relationships: list[Relationship] = []
+    for m in content.models:
+        all_relationships.extend(m.relationships)
+
+    # 3. 计算 confidence boost
+    updates = _compute_confidence_updates(
+        cooccurrence=cooccurrence,
+        existing_relationships=all_relationships,
+        co_occurrence_threshold=settings.graph_linkage_co_occurrence_threshold,
+        confidence_boost=settings.graph_linkage_confidence_boost,
+    )
+
+    # 4. 新表对发现
+    new_pairs = None
+    if settings.graph_feedback_discover_new_pairs:
+        new_pairs = _discover_new_pairs(
+            cooccurrence=cooccurrence,
+            existing_relationships=all_relationships,
+            new_pair_threshold=settings.graph_linkage_new_pair_threshold,
+        )
+
+    # 无更新则跳过
+    if not updates and not new_pairs:
+        return {
+            "new_version": None,
+            "boosted_pairs": 0,
+            "new_pairs": 0,
+            "detail": "无达阈值的表对, 无需更新",
+        }
+
+    # 5. 写入 (乐观锁)
+    new_version = await apply_confidence_updates(
+        db=db,
+        tenant_id=tenant_id,
+        data_source_id=data_source_id,
+        updates=updates,
+        new_pairs=new_pairs,
+        expected_version=expected_version,
+    )
+
+    return {
+        "new_version": new_version,
+        "boosted_pairs": len(updates),
+        "new_pairs": len(new_pairs or []),
+    }
