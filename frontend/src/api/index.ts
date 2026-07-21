@@ -323,6 +323,12 @@ export interface Memory {
   type: string
   content: string
   consolidated?: boolean
+  // linkage 结构化字段
+  tables?: string[]
+  co_occurrence?: number
+  join_paths?: { on: string; join_type: string }[]
+  scenes?: string[]
+  aggregation?: string
 }
 
 export interface ConsolidateStatus {
@@ -498,6 +504,14 @@ export interface JoinPathResult {
   found: boolean
 }
 
+export interface TableColumn {
+  name: string
+  display_name: string
+  data_type: string
+  semantic_type: string | null
+  label: string
+}
+
 export const graph = {
   /** 获取全图数据 (G6 渲染) */
   full(dataSourceId: string) {
@@ -527,13 +541,18 @@ export const graph = {
   joinPath(dataSourceId: string, source: string, target: string) {
     return apiClient.get<JoinPathResult>('/graph/join-path', { params: { data_source_id: dataSourceId, source, target } })
   },
+  /** 获取表列信息 (用于 ON 条件下拉框) */
+  tableColumns(dataSourceId: string, table: string) {
+    return apiClient.get<{ table: string; columns: TableColumn[] }>('/graph/table-columns', { params: { data_source_id: dataSourceId, table } })
+  },
   /** 新增关系 */
   addRelationship(dataSourceId: string, data: {
     from_table: string
     name: string
     target_model: string
     join_type?: string
-    on: string
+    on?: string
+    on_conditions?: { source_column: string; target_column: string }[]
     type?: string
     source?: string
     confidence?: number

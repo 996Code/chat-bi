@@ -111,6 +111,12 @@ class MemoryOut(BaseModel):
     type: str
     content: str
     consolidated: bool = False
+    # linkage 结构化字段 (frontmatter 真相源)
+    tables: list[str] | None = None
+    co_occurrence: int | None = None
+    join_paths: list[dict] | None = None
+    scenes: list[str] | None = None
+    aggregation: str | None = None
 
 
 class MemorySave(BaseModel):
@@ -176,6 +182,12 @@ async def list_memories(
             id=m["id"], name=m["name"], description=m["description"],
             type=m["type"], content=content,
             consolidated=m.get("consolidated", False),
+            # linkage 结构化字段 (frontmatter 真相源, 非 linkage 类型为 None)
+            tables=m.get("tables"),
+            co_occurrence=m.get("co_occurrence"),
+            join_paths=m.get("join_paths"),
+            scenes=m.get("scenes"),
+            aggregation=m.get("aggregation"),
         ))
     return memories
 

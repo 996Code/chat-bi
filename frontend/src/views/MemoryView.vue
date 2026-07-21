@@ -98,6 +98,18 @@
           </div>
         </template>
         <pre class="mem-content">{{ mem.content }}</pre>
+        <!-- linkage 结构化信息 -->
+        <div v-if="mem.type === 'linkage' && (mem.tables || mem.co_occurrence)" class="linkage-meta">
+          <el-tag v-if="mem.co_occurrence" size="small" type="info">共现 {{ mem.co_occurrence }} 次</el-tag>
+          <el-tag v-if="mem.aggregation" size="small">{{ mem.aggregation }}</el-tag>
+          <span v-if="mem.join_paths?.length" class="linkage-detail">
+            <el-icon size="12"><Link /></el-icon>
+            {{ mem.join_paths.length }} 条 JOIN 路径
+          </span>
+          <span v-if="mem.scenes?.length" class="linkage-detail">
+            {{ mem.scenes.length }} 个场景
+          </span>
+        </div>
         <div class="recall-hint">
           <el-icon size="12" color="#909399"><InfoFilled /></el-icon>
           <span>描述「{{ mem.description || mem.name }}」用于关键词匹配召回，越具体召回越精准</span>
@@ -124,6 +136,7 @@
             <el-option label="反馈 (feedback) — 经验教训" value="feedback" />
             <el-option label="参考 (reference) — 外部知识" value="reference" />
             <el-option label="整理成果 (consolidated) — AI 整理产出" value="consolidated" />
+            <el-option label="链路经验 (linkage) — 表关联经验 (系统自动生成)" value="linkage" />
           </el-select>
         </el-form-item>
         <el-form-item label="内容 (Markdown)">
@@ -142,7 +155,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Edit, Delete, InfoFilled, Sort, Lock } from '@element-plus/icons-vue'
+import { Plus, Refresh, Edit, Delete, InfoFilled, Sort, Lock, Link } from '@element-plus/icons-vue'
 import { memory as memoryApi, datasource, type Memory, type ConsolidateStatus } from '@/api'
 import { extractErrorDetail } from '@/utils/error'
 
@@ -467,11 +480,11 @@ async function doConsolidate() {
 }
 
 function typeLabel(t: string): string {
-  const map: Record<string, string> = { project: '项目', user: '用户', feedback: '反馈', reference: '参考', consolidated: '整理成果' }
+  const map: Record<string, string> = { project: '项目', user: '用户', feedback: '反馈', reference: '参考', consolidated: '整理成果', linkage: '链路经验' }
   return map[t] || t
 }
 function typeTag(t: string): any {
-  const map: Record<string, any> = { project: '', user: 'success', feedback: 'warning', reference: 'info', consolidated: 'danger' }
+  const map: Record<string, any> = { project: '', user: 'success', feedback: 'warning', reference: 'info', consolidated: 'danger', linkage: 'success' }
   return map[t] || ''
 }
 
@@ -512,6 +525,15 @@ onUnmounted(stopPolling)
   display: flex; align-items: center; gap: 4px;
   margin-top: 8px; font-size: 0.72rem; color: #909399;
   border-top: 1px dashed #ebeef5; padding-top: 6px;
+}
+.linkage-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; padding-top: 6px;
+  border-top: 1px dashed #ebeef5;
+}
+.linkage-detail {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 0.75rem; color: #909399;
 }
 .consolidated-card {
   opacity: 0.65;

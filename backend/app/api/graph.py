@@ -36,13 +36,20 @@ router = APIRouter(prefix="/graph", tags=["graph"])
 
 # ── 请求/响应模型 ──────────────────────────────────────────────
 
+class OnCondition(BaseModel):
+    """单个 ON 条件。"""
+    source_column: str = Field(description="源表列名")
+    target_column: str = Field(description="目标表列名")
+
+
 class AddRelationshipRequest(BaseModel):
     """新增关系请求体。"""
     from_table: str = Field(description="源表名")
     name: str = Field(description="关系名称, 如 biz_orders_to_biz_users")
     target_model: str = Field(description="目标表名")
     join_type: str = Field(default="LEFT", description="JOIN 类型: INNER/LEFT/RIGHT/FULL")
-    on: str = Field(description="ON 条件, 如 orders.user_id = users.id")
+    on: str | None = Field(default=None, description="ON 条件文本 (兼容旧版, 优先使用 on_conditions)")
+    on_conditions: list[OnCondition] | None = Field(default=None, description="结构化 ON 条件列表 (推荐)")
     type: str = Field(default="N:1", description="基数: N:1/1:N/1:1/N:N")
     source: str = Field(default="manual", description="来源: manual/foreign_key/name_pattern/ai_inferred")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="置信度 0-1")
@@ -214,6 +221,14 @@ async def add_relationship(
     if not graph.has_node(req.target_model):
         raise HTTPException(status_code=400, detail=f"目标表 '{req.target_model}' 不在图谱中")
 
+    # 构建 ON 条件字符串: 优先用 on_conditions (结构化), 否则用 on (文本)
+    on_str = req.on
+    if req.on_conditions:
+        parts = [f"{req.from_table}.{oc.source_column} = {req.target_model}.{oc.target_column}" for oc in req.on_conditions]
+        on_str = " AND ".join(parts)
+    if not on_str:
+        raise HTTPException(status_code=400, detail="必须提供 on 或 on_conditions")
+
     # 持久化: 更新语义层 content (创建新版本)
     content = SemanticModelContent(**sm.content) if sm.content else SemanticModelContent()
     for model in content.models:
@@ -229,7 +244,7 @@ async def add_relationship(
                 name=req.name,
                 target_model=req.target_model,
                 join_type=req.join_type,
-                on=req.on,
+                on=on_str,
                 type=req.type,
                 source=req.source,
                 confidence=req.confidence,
@@ -311,3 +326,32 @@ async def delete_relationship(
     )
 
     return {"success": True}
+
+
+@router.get("/table-columns")
+async def get_table_columns(
+    data_source_id: str = Query(..., description="数据源 ID"),
+    table: str = Query(..., description="表名"),
+    user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取指定表的列信息 (用于 ON 条件下拉框)。"""
+    graph, sm = await _get_graph(data_source_id, user, db)
+    if sm is None:
+        raise HTTPException(status_code=404, detail="该数据源无语义层")
+
+    content = SemanticModelContent(**sm.content) if sm.content else SemanticModelContent()
+    for model in content.models:
+        if model.name == table:
+            columns = []
+            for col in model.columns:
+                columns.append({
+                    "name": col.name,
+                    "display_name": col.display_name,
+                    "data_type": col.data_type,
+                    "semantic_type": col.semantic_type,
+                    "label": f"{col.display_name} ({col.name}) [{col.data_type}]",
+                })
+            return {"table": table, "columns": columns}
+
+    raise HTTPException(status_code=404, detail=f"表 '{table}' 不在语义层中")

@@ -107,21 +107,42 @@
     </div>
 
     <!-- 新增关系对话框 -->
-    <el-dialog v-model="addDialogVisible" title="新增关系" width="480px" @close="resetAddForm">
+    <el-dialog v-model="addDialogVisible" title="新增关系" width="560px" @close="resetAddForm">
       <el-form :model="addForm" :rules="addFormRules" ref="addFormRef" label-width="80px">
         <el-form-item label="源表" prop="from_table">
-          <el-select v-model="addForm.from_table" placeholder="选择源表" filterable>
+          <el-select v-model="addForm.from_table" placeholder="选择源表" filterable @change="onTableChange">
             <el-option v-for="n in graphNodes" :key="n.id" :label="n.label + ' (' + n.id + ')'" :value="n.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="目标表" prop="target_model">
-          <el-select v-model="addForm.target_model" placeholder="选择目标表" filterable>
+          <el-select v-model="addForm.target_model" placeholder="选择目标表" filterable @change="onTableChange">
             <el-option v-for="n in graphNodes" :key="n.id" :label="n.label + ' (' + n.id + ')'" :value="n.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="ON 条件" prop="on">
-          <el-input v-model="addForm.on" placeholder="如: orders.user_id = users.id" />
+
+        <!-- ON 条件: 下拉框选择, 支持多个 -->
+        <el-form-item label="ON 条件" prop="on_conditions" :error="onConditionsError">
+          <div v-if="addForm.from_table && addForm.target_model && fromColumns.length > 0" class="on-conditions">
+            <div v-for="(oc, idx) in addForm.on_conditions" :key="idx" class="on-condition-row">
+              <el-select v-model="oc.source_column" placeholder="源列" filterable size="small" style="width: 40%">
+                <el-option v-for="c in fromColumns" :key="c.name" :label="c.label" :value="c.name" />
+              </el-select>
+              <span class="on-eq">=</span>
+              <el-select v-model="oc.target_column" placeholder="目标列" filterable size="small" style="width: 40%">
+                <el-option v-for="c in toColumns" :key="c.name" :label="c.label" :value="c.name" />
+              </el-select>
+              <el-button v-if="addForm.on_conditions.length > 1" size="small" type="danger" plain :icon="Delete" @click="removeOnCondition(idx)" style="margin-left: 4px" />
+            </div>
+            <el-button size="small" type="primary" plain :icon="Plus" @click="addOnCondition" style="margin-top: 4px">添加条件</el-button>
+          </div>
+          <div v-else-if="addForm.from_table && addForm.target_model" style="color: #909399; font-size: 0.85rem">
+            加载列信息中...
+          </div>
+          <div v-else style="color: #909399; font-size: 0.85rem">
+            请先选择源表和目标表
+          </div>
         </el-form-item>
+
         <el-form-item label="JOIN 类型">
           <el-select v-model="addForm.join_type">
             <el-option label="LEFT JOIN" value="LEFT" />
@@ -160,7 +181,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, ZoomIn, ZoomOut, FullScreen, Plus, Close, Search, Rank, Connection } from '@element-plus/icons-vue'
-import { graph, type GraphData, type GraphNode } from '@/api'
+import { graph, type GraphData, type GraphNode, type TableColumn } from '@/api'
 import {
   getCommunityColor,
   getCommunityGlow,
@@ -209,15 +230,20 @@ const addFormRef = ref()
 const addForm = ref({
   from_table: '',
   target_model: '',
-  on: '',
+  on_conditions: [{ source_column: '', target_column: '' }] as { source_column: string; target_column: string }[],
   join_type: 'LEFT',
   type: 'N:1',
 })
 const addFormRules = {
   from_table: [{ required: true, message: '请选择源表', trigger: 'change' }],
   target_model: [{ required: true, message: '请选择目标表', trigger: 'change' }],
-  on: [{ required: true, message: '请输入 ON 条件', trigger: 'blur' }],
 }
+const onConditionsError = ref('')
+
+// 列信息缓存
+const fromColumns = ref<TableColumn[]>([])
+const toColumns = ref<TableColumn[]>([])
+const columnsLoading = ref(false)
 
 // 删除关系
 const deleteDialogVisible = ref(false)
@@ -705,29 +731,88 @@ function showAddDialog() {
   addForm.value = {
     from_table: '',
     target_model: '',
-    on: '',
+    on_conditions: [{ source_column: '', target_column: '' }],
     join_type: 'LEFT',
     type: 'N:1',
   }
+  fromColumns.value = []
+  toColumns.value = []
+  onConditionsError.value = ''
   addDialogVisible.value = true
 }
 
 function resetAddForm() {
   addFormRef.value?.resetFields()
+  fromColumns.value = []
+  toColumns.value = []
+  onConditionsError.value = ''
+}
+
+// ── ON 条件管理 ──────────────────────────────────────────────
+
+async function onTableChange() {
+  // 两表都选中时加载列信息
+  fromColumns.value = []
+  toColumns.value = []
+  const f = addForm.value
+  if (!f.from_table || !f.target_model) return
+
+  columnsLoading.value = true
+  try {
+    const [fromResp, toResp] = await Promise.all([
+      graph.tableColumns(props.dataSourceId, f.from_table),
+      graph.tableColumns(props.dataSourceId, f.target_model),
+    ])
+    fromColumns.value = fromResp.data.columns
+    toColumns.value = toResp.data.columns
+
+    // 智能匹配: 如果两表有同名列 (如 id, xxx_id), 自动填充
+    if (f.on_conditions.length === 1 && !f.on_conditions[0].source_column) {
+      for (const fc of fromColumns.value) {
+        for (const tc of toColumns.value) {
+          if (fc.name === tc.name || fc.name === `${f.target_model.replace(/^[a-z]+_/, '')}_id` || tc.name === `${f.from_table.replace(/^[a-z]+_/, '')}_id`) {
+            f.on_conditions[0] = { source_column: fc.name, target_column: tc.name }
+            break
+          }
+        }
+        if (f.on_conditions[0].source_column) break
+      }
+    }
+  } catch {
+    ElMessage.warning('加载列信息失败, 请手动输入 ON 条件')
+  } finally {
+    columnsLoading.value = false
+  }
+}
+
+function addOnCondition() {
+  addForm.value.on_conditions.push({ source_column: '', target_column: '' })
+}
+
+function removeOnCondition(idx: number) {
+  addForm.value.on_conditions.splice(idx, 1)
 }
 
 async function handleAddRelationship() {
   const valid = await addFormRef.value?.validate().catch(() => false)
   if (!valid) return
 
+  // 校验 ON 条件
+  const f = addForm.value
+  const filledConditions = f.on_conditions.filter(oc => oc.source_column && oc.target_column)
+  if (filledConditions.length === 0) {
+    onConditionsError.value = '至少填写一个 ON 条件'
+    return
+  }
+  onConditionsError.value = ''
+
   addLoading.value = true
   try {
-    const f = addForm.value
     await graph.addRelationship(props.dataSourceId, {
       from_table: f.from_table,
       name: `${f.from_table}_to_${f.target_model}`,
       target_model: f.target_model,
-      on: f.on,
+      on_conditions: filledConditions,
       join_type: f.join_type,
       type: f.type,
       source: 'manual',
@@ -929,5 +1014,22 @@ onBeforeUnmount(() => {
 
 .detail-item .value {
   color: #303133;
+}
+
+.on-conditions {
+  width: 100%;
+}
+
+.on-condition-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.on-eq {
+  color: #909399;
+  font-weight: bold;
+  flex-shrink: 0;
 }
 </style>

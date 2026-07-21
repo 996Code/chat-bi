@@ -550,11 +550,11 @@ def _build_linkage_content(
 
     # 聚合方式
     if hasattr(state, "thinking") and state.thinking and hasattr(state.thinking, "aggregation"):
-        content_parts.append(f"## 聚合方式\n{state.thinking.aggregation}\n")
-
-    # SQL 示例（截断）
-    if state.sql:
-        content_parts.append(f"## SQL 示例\n```sql\n{state.sql[:200]}\n```\n")
+        agg_text = state.thinking.aggregation
+        # 只保留聚合关键词, 不存 LLM 原始长文本
+        agg_clean = _clean_aggregation(agg_text) if agg_text else ""
+        if agg_clean:
+            content_parts.append(f"## 聚合方式\n{agg_clean}\n")
 
     return "\n".join(content_parts)
 
