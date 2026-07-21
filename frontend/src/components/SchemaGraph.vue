@@ -73,98 +73,64 @@
       <!-- 节点详情 -->
       <template v-if="selectedNode">
         <div class="panel-header">
-          <span>{{ selectedNode.label }}</span>
+          <span class="panel-title">{{ selectedNode.label }}</span>
+          <span class="panel-subtitle">{{ selectedNode.id }}</span>
           <el-icon class="close-btn" @click="selectedNode = null"><Close /></el-icon>
         </div>
         <div class="panel-body">
-          <div class="detail-item">
-            <span class="label">表名:</span>
-            <span class="value">{{ selectedNode.id }}</span>
-          </div>
-          <div class="detail-item">
-            <span class="label">列数:</span>
-            <span class="value">{{ selectedNode.columnCount }}</span>
-          </div>
-          <div class="detail-item">
-            <span class="label">中心度:</span>
-            <span class="value">{{ selectedNode.centrality.toFixed(4) }}</span>
-          </div>
-          <div class="detail-item">
-            <span class="label">社区:</span>
-            <span class="value">
-              <el-tag size="small" :color="getCommunityColor(selectedNode.community)" style="color: #fff; border: none">
-                #{{ selectedNode.community + 1 }}
-              </el-tag>
-            </span>
+          <div class="stat-row">
+            <div class="stat-item"><span class="stat-num">{{ selectedNode.columnCount }}</span><span class="stat-label">列</span></div>
+            <div class="stat-item"><span class="stat-num">{{ selectedNode.degree }}</span><span class="stat-label">关联</span></div>
+            <div class="stat-item"><span class="stat-num">{{ selectedNode.centrality.toFixed(2) }}</span><span class="stat-label">中心度</span></div>
           </div>
 
           <!-- 关系列表 -->
           <div class="rel-section" v-if="nodeRelationships.length > 0">
-            <div class="rel-title">关联关系 ({{ nodeRelationships.length }})</div>
+            <div class="section-title">关联关系</div>
             <div v-for="rel in nodeRelationships" :key="rel.source + '-' + rel.target" class="rel-item" @click="focusEdge(rel)">
-              <div class="rel-direction">
-                <span v-if="rel.direction === 'out'" class="rel-out">→</span>
-                <span v-else class="rel-in">←</span>
+              <span class="rel-arrow" :class="rel.direction === 'out' ? 'arrow-out' : 'arrow-in'">{{ rel.direction === 'out' ? '→' : '←' }}</span>
+              <div class="rel-main">
+                <span class="rel-name">{{ rel.direction === 'out' ? rel.target : rel.source }}</span>
+                <span class="rel-meta">{{ rel.joinType }} · {{ rel.cardinality }}</span>
               </div>
-              <div class="rel-info">
-                <span class="rel-target">{{ rel.direction === 'out' ? rel.target : rel.source }}</span>
-                <el-tag size="small" type="info" style="margin-left: 4px">{{ rel.joinType }}</el-tag>
-              </div>
-              <div class="rel-on">{{ rel.on }}</div>
             </div>
           </div>
-          <div v-else class="rel-section">
-            <div class="rel-title" style="color: #909399">无关联关系</div>
-          </div>
+          <div v-else class="rel-empty">无关联关系</div>
         </div>
       </template>
 
       <!-- 边详情 -->
       <template v-if="selectedEdge">
         <div class="panel-header">
-          <span>关系详情</span>
+          <span class="panel-title">关系详情</span>
           <el-icon class="close-btn" @click="selectedEdge = null"><Close /></el-icon>
         </div>
         <div class="panel-body">
-          <div class="detail-item">
-            <span class="label">源表:</span>
-            <span class="value">{{ selectedEdge.source }}</span>
-          </div>
-          <div class="detail-item">
-            <span class="label">目标表:</span>
-            <span class="value">{{ selectedEdge.target }}</span>
-          </div>
-          <div class="detail-item">
-            <span class="label">JOIN:</span>
-            <el-tag size="small">{{ selectedEdge.joinType }} JOIN</el-tag>
-          </div>
-          <div class="detail-item">
-            <span class="label">基数:</span>
-            <span class="value">{{ selectedEdge.cardinality }}</span>
-          </div>
-          <div class="detail-item">
-            <span class="label">来源:</span>
-            <el-tag size="small" :type="selectedEdge.relSource === 'manual' ? 'success' : 'warning'">{{ selectedEdge.relSource }}</el-tag>
-          </div>
-          <div class="detail-item">
-            <span class="label">置信度:</span>
-            <span class="value">{{ (selectedEdge.confidence * 100).toFixed(0) }}%</span>
+          <div class="edge-flow">
+            <span class="edge-table">{{ selectedEdge.source }}</span>
+            <span class="edge-join">{{ selectedEdge.joinType }} JOIN</span>
+            <span class="edge-table">{{ selectedEdge.target }}</span>
           </div>
 
-          <!-- ON 条件解析展示 -->
+          <!-- 属性标签 -->
+          <div class="edge-tags">
+            <el-tag size="small" type="info">{{ selectedEdge.cardinality }}</el-tag>
+            <el-tag size="small" :type="selectedEdge.relSource === 'manual' ? 'success' : 'warning'">{{ selectedEdge.relSource }}</el-tag>
+            <el-tag size="small" v-if="selectedEdge.confidence < 1" type="warning">{{ (selectedEdge.confidence * 100).toFixed(0) }}%</el-tag>
+          </div>
+
+          <!-- ON 条件 -->
           <div class="on-section">
-            <div class="on-title">ON 条件</div>
-            <div v-for="(cond, idx) in parseOnConditions(selectedEdge.on)" :key="idx" class="on-condition-display">
-              <el-tag size="small" type="primary" effect="plain">{{ cond.sourceTable }}.{{ cond.sourceCol }}</el-tag>
+            <div class="section-title">ON 条件</div>
+            <div v-for="(cond, idx) in parseOnConditions(selectedEdge.on)" :key="idx" class="on-row">
+              <span class="on-col">{{ cond.sourceTable }}.<b>{{ cond.sourceCol }}</b></span>
               <span class="on-eq">=</span>
-              <el-tag size="small" type="success" effect="plain">{{ cond.targetTable }}.{{ cond.targetCol }}</el-tag>
+              <span class="on-col">{{ cond.targetTable }}.<b>{{ cond.targetCol }}</b></span>
             </div>
             <div v-if="parseOnConditions(selectedEdge.on).length === 0" class="on-raw">{{ selectedEdge.on }}</div>
           </div>
 
-          <div class="edge-actions">
-            <el-button size="small" type="danger" plain :icon="Delete" @click="confirmDeleteEdge">删除关系</el-button>
-          </div>
+          <el-button size="small" type="danger" plain :icon="Delete" @click="confirmDeleteEdge" style="width: 100%; margin-top: 12px">删除此关系</el-button>
         </div>
       </template>
     </div>
@@ -544,19 +510,6 @@ async function initG6() {
           joinType: d.joinType || 'LEFT',
           cardinality: d.cardinality || 'N:1',
         }
-      }
-    }
-  })
-
-  // 右键菜单: 删除关系
-  g6Instance.on('edge:contextmenu', (e: any) => {
-    e.preventDefault?.()
-    const edgeId = e.target?.id
-    if (edgeId) {
-      const edgeData = g6Instance.getEdgeData(edgeId)
-      if (edgeData) {
-        deleteTarget.value = { from: edgeData.source, to: edgeData.target }
-        deleteDialogVisible.value = true
       }
     }
   })
@@ -1112,33 +1065,48 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 12px;
   right: 12px;
-  width: 280px;
+  width: 260px;
   max-height: calc(100% - 24px);
   overflow-y: auto;
   background: #fff;
   border: 1px solid #e4e7ed;
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   z-index: 10;
 }
 
 .panel-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid #e4e7ed;
-  font-weight: 600;
-  font-size: 14px;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #ebeef5;
   position: sticky;
   top: 0;
   background: #fff;
   z-index: 1;
+  border-radius: 8px 8px 0 0;
+}
+
+.panel-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+}
+
+.panel-subtitle {
+  font-size: 11px;
+  color: #909399;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .close-btn {
   cursor: pointer;
-  color: #909399;
+  color: #c0c4cc;
+  flex-shrink: 0;
 }
 
 .close-btn:hover {
@@ -1146,49 +1114,66 @@ onBeforeUnmount(() => {
 }
 
 .panel-body {
-  padding: 10px 14px;
+  padding: 12px 14px;
 }
 
-.detail-item {
+/* 统计行 */
+.stat-row {
   display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f2f6fc;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  margin-bottom: 6px;
-  font-size: 12px;
+  flex: 1;
 }
 
-.detail-item .label {
-  color: #909399;
-  width: 56px;
-  flex-shrink: 0;
-}
-
-.detail-item .value {
+.stat-num {
+  font-size: 16px;
+  font-weight: 600;
   color: #303133;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: #909399;
+  margin-top: 2px;
 }
 
 /* 关系列表 */
 .rel-section {
-  margin-top: 10px;
-  border-top: 1px dashed #ebeef5;
-  padding-top: 8px;
+  margin-top: 4px;
 }
 
-.rel-title {
-  font-size: 12px;
+.section-title {
+  font-size: 11px;
   font-weight: 600;
-  color: #606266;
-  margin-bottom: 6px;
+  color: #909399;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.rel-empty {
+  font-size: 12px;
+  color: #c0c4cc;
+  text-align: center;
+  padding: 12px 0;
 }
 
 .rel-item {
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 5px 6px;
-  border-radius: 4px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s;
-  font-size: 11px;
   margin-bottom: 2px;
 }
 
@@ -1196,55 +1181,111 @@ onBeforeUnmount(() => {
   background: #f5f7fa;
 }
 
-.rel-direction {
+.rel-arrow {
   flex-shrink: 0;
-  width: 16px;
-  text-align: center;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 12px;
   font-weight: bold;
 }
 
-.rel-out { color: #409eff; }
-.rel-in { color: #67c23a; }
+.arrow-out {
+  background: #ecf5ff;
+  color: #409eff;
+}
 
-.rel-info {
+.arrow-in {
+  background: #f0f9eb;
+  color: #67c23a;
+}
+
+.rel-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.rel-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rel-meta {
+  font-size: 10px;
+  color: #909399;
+  margin-top: 1px;
+}
+
+/* 边详情 */
+.edge-flow {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  padding: 10px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #f2f6fc;
 }
 
-.rel-target {
+.edge-table {
+  font-size: 13px;
+  font-weight: 600;
   color: #303133;
-  font-weight: 500;
+  background: #f5f7fa;
+  padding: 4px 8px;
+  border-radius: 4px;
+  word-break: break-all;
 }
 
-.rel-on {
-  color: #909399;
+.edge-join {
   font-size: 10px;
+  color: #909399;
+  flex-shrink: 0;
+}
+
+.edge-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+/* ON 条件 */
+.on-section {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid #f2f6fc;
+}
+
+.on-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: #606266;
+}
+
+.on-col {
   word-break: break-all;
   line-height: 1.4;
-  margin-top: 2px;
-  padding-left: 22px;
 }
 
-/* ON 条件结构化展示 */
-.on-section {
-  margin-top: 10px;
-  border-top: 1px dashed #ebeef5;
-  padding-top: 8px;
+.on-col b {
+  color: #303133;
 }
 
-.on-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #606266;
-  margin-bottom: 6px;
-}
-
-.on-condition-display {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 4px;
+.on-eq {
+  color: #c0c4cc;
+  flex-shrink: 0;
 }
 
 .on-raw {
@@ -1252,15 +1293,9 @@ onBeforeUnmount(() => {
   color: #606266;
   word-break: break-all;
   line-height: 1.5;
-  padding: 4px 8px;
+  padding: 6px 8px;
   background: #f5f7fa;
   border-radius: 4px;
-}
-
-.edge-actions {
-  margin-top: 12px;
-  padding-top: 8px;
-  border-top: 1px dashed #ebeef5;
 }
 
 .on-conditions {
