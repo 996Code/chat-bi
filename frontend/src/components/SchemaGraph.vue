@@ -295,7 +295,8 @@ const tableLabelMap = computed(() => {
 })
 
 function getTableLabel(tableName: string): string {
-  return tableLabelMap.value[tableName] || tableName
+  const label = tableLabelMap.value[tableName]
+  return label ? `${label} (${tableName})` : tableName
 }
 
 // 选中节点的所有关联关系
