@@ -68,42 +68,105 @@
       </el-button>
     </div>
 
-    <!-- 节点详情面板 -->
-    <div v-if="selectedNode" class="node-detail-panel">
-      <div class="panel-header">
-        <span>{{ selectedNode.label }}</span>
-        <el-icon class="close-btn" @click="selectedNode = null"><Close /></el-icon>
-      </div>
-      <div class="panel-body">
-        <div class="detail-item">
-          <span class="label">表名:</span>
-          <span class="value">{{ selectedNode.id }}</span>
+    <!-- 详情面板: 节点关系 / 边详情 -->
+    <div v-if="selectedNode || selectedEdge" class="detail-panel">
+      <!-- 节点详情 -->
+      <template v-if="selectedNode">
+        <div class="panel-header">
+          <span>{{ selectedNode.label }}</span>
+          <el-icon class="close-btn" @click="selectedNode = null"><Close /></el-icon>
         </div>
-        <div class="detail-item">
-          <span class="label">列数:</span>
-          <span class="value">{{ selectedNode.columnCount }}</span>
+        <div class="panel-body">
+          <div class="detail-item">
+            <span class="label">表名:</span>
+            <span class="value">{{ selectedNode.id }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">列数:</span>
+            <span class="value">{{ selectedNode.columnCount }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">中心度:</span>
+            <span class="value">{{ selectedNode.centrality.toFixed(4) }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">社区:</span>
+            <span class="value">
+              <el-tag size="small" :color="getCommunityColor(selectedNode.community)" style="color: #fff; border: none">
+                #{{ selectedNode.community + 1 }}
+              </el-tag>
+            </span>
+          </div>
+
+          <!-- 关系列表 -->
+          <div class="rel-section" v-if="nodeRelationships.length > 0">
+            <div class="rel-title">关联关系 ({{ nodeRelationships.length }})</div>
+            <div v-for="rel in nodeRelationships" :key="rel.source + '-' + rel.target" class="rel-item" @click="focusEdge(rel)">
+              <div class="rel-direction">
+                <span v-if="rel.direction === 'out'" class="rel-out">→</span>
+                <span v-else class="rel-in">←</span>
+              </div>
+              <div class="rel-info">
+                <span class="rel-target">{{ rel.direction === 'out' ? rel.target : rel.source }}</span>
+                <el-tag size="small" type="info" style="margin-left: 4px">{{ rel.joinType }}</el-tag>
+              </div>
+              <div class="rel-on">{{ rel.on }}</div>
+            </div>
+          </div>
+          <div v-else class="rel-section">
+            <div class="rel-title" style="color: #909399">无关联关系</div>
+          </div>
         </div>
-        <div class="detail-item">
-          <span class="label">来源:</span>
-          <span class="value">{{ selectedNode.source }}</span>
+      </template>
+
+      <!-- 边详情 -->
+      <template v-if="selectedEdge">
+        <div class="panel-header">
+          <span>关系详情</span>
+          <el-icon class="close-btn" @click="selectedEdge = null"><Close /></el-icon>
         </div>
-        <div class="detail-item">
-          <span class="label">中心度:</span>
-          <span class="value">{{ selectedNode.centrality.toFixed(4) }}</span>
+        <div class="panel-body">
+          <div class="detail-item">
+            <span class="label">源表:</span>
+            <span class="value">{{ selectedEdge.source }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">目标表:</span>
+            <span class="value">{{ selectedEdge.target }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">JOIN:</span>
+            <el-tag size="small">{{ selectedEdge.joinType }} JOIN</el-tag>
+          </div>
+          <div class="detail-item">
+            <span class="label">基数:</span>
+            <span class="value">{{ selectedEdge.cardinality }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">来源:</span>
+            <el-tag size="small" :type="selectedEdge.relSource === 'manual' ? 'success' : 'warning'">{{ selectedEdge.relSource }}</el-tag>
+          </div>
+          <div class="detail-item">
+            <span class="label">置信度:</span>
+            <span class="value">{{ (selectedEdge.confidence * 100).toFixed(0) }}%</span>
+          </div>
+
+          <!-- ON 条件解析展示 -->
+          <div class="on-section">
+            <div class="on-title">ON 条件</div>
+            <div v-for="(cond, idx) in parseOnConditions(selectedEdge.on)" :key="idx" class="on-condition-display">
+              <el-tag size="small" type="primary" effect="plain">{{ cond.sourceTable }}.{{ cond.sourceCol }}</el-tag>
+              <span class="on-eq">=</span>
+              <el-tag size="small" type="success" effect="plain">{{ cond.targetTable }}.{{ cond.targetCol }}</el-tag>
+            </div>
+            <div v-if="parseOnConditions(selectedEdge.on).length === 0" class="on-raw">{{ selectedEdge.on }}</div>
+          </div>
+
+          <div class="edge-actions">
+            <el-button size="small" type="danger" plain :icon="Delete" @click="confirmDeleteEdge">删除关系</el-button>
+          </div>
         </div>
-        <div class="detail-item">
-          <span class="label">连接数:</span>
-          <span class="value">{{ selectedNode.degree }}</span>
-        </div>
-        <div class="detail-item">
-          <span class="label">社区:</span>
-          <span class="value">
-            <el-tag size="small" :color="getCommunityColor(selectedNode.community)" style="color: #fff; border: none">
-              #{{ selectedNode.community + 1 }}
-            </el-tag>
-          </span>
-        </div>
-      </div>
+      </template>
     </div>
 
     <!-- 新增关系对话框 -->
@@ -180,8 +243,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Loading, ZoomIn, ZoomOut, FullScreen, Plus, Close, Search, Rank, Connection } from '@element-plus/icons-vue'
-import { graph, type GraphData, type GraphNode, type TableColumn } from '@/api'
+import { Loading, ZoomIn, ZoomOut, FullScreen, Plus, Close, Search, Rank, Connection, Delete } from '@element-plus/icons-vue'
+import { graph, type GraphData, type GraphNode, type GraphEdge, type TableColumn } from '@/api'
 import {
   getCommunityColor,
   getCommunityGlow,
@@ -209,6 +272,7 @@ const graphRef = ref<HTMLDivElement>()
 const loading = ref(false)
 const graphData = ref<GraphData>({ nodes: [], edges: [] })
 const selectedNode = ref<GraphNode | null>(null)
+const selectedEdge = ref<GraphEdge | null>(null)
 let g6Instance: any = null
 
 // 交互模式: move=拖拽移动, connect=拖拽连线
@@ -254,6 +318,63 @@ const deleteTarget = ref<{ from: string; to: string } | null>(null)
 
 const isEmpty = computed(() => graphData.value.nodes.length === 0)
 const graphNodes = computed(() => graphData.value.nodes)
+
+// 选中节点的所有关联关系
+const nodeRelationships = computed(() => {
+  if (!selectedNode.value) return []
+  const tableId = selectedNode.value.id
+  return graphData.value.edges
+    .filter(e => e.source === tableId || e.target === tableId)
+    .map(e => ({
+      ...e,
+      direction: e.source === tableId ? 'out' : 'in',
+    }))
+    .sort((a, b) => a.direction.localeCompare(b.direction))
+})
+
+// 解析 ON 条件: "a.col1 = b.col1 AND a.col2 = b.col2" → [{sourceTable, sourceCol, targetTable, targetCol}]
+function parseOnConditions(on: string): { sourceTable: string; sourceCol: string; targetTable: string; targetCol: string }[] {
+  if (!on) return []
+  const conditions: { sourceTable: string; sourceCol: string; targetTable: string; targetCol: string }[] = []
+  const parts = on.split(/\s+AND\s+/i)
+  for (const part of parts) {
+    const match = part.trim().match(/^(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)$/)
+    if (match) {
+      conditions.push({ sourceTable: match[1], sourceCol: match[2], targetTable: match[3], targetCol: match[4] })
+    }
+  }
+  return conditions
+}
+
+// 点击关系项: 高亮对应边
+function focusEdge(rel: any) {
+  if (!g6Instance) return
+  // 找到对应边的 ID
+  const edges = g6Instance.getEdgeData() as any[]
+  for (const edge of edges) {
+    if (edge.source === rel.source && edge.target === rel.target) {
+      g6Instance.setElementState(edge.id, ['selected'])
+      // 清除之前选中的边
+      selectedEdge.value = {
+        source: rel.source,
+        target: rel.target,
+        on: rel.on,
+        confidence: rel.confidence,
+        relSource: rel.relSource,
+        joinType: rel.joinType,
+        cardinality: rel.cardinality,
+      }
+      break
+    }
+  }
+}
+
+// 删除选中的边
+function confirmDeleteEdge() {
+  if (!selectedEdge.value) return
+  deleteTarget.value = { from: selectedEdge.value.source, to: selectedEdge.value.target }
+  deleteDialogVisible.value = true
+}
 
 // ── G6 初始化 ──────────────────────────────────────────────
 
@@ -406,6 +527,27 @@ async function initG6() {
     behaviors,
   })
 
+  // 左键点击边: 显示边详情
+  g6Instance.on('edge:click', (e: any) => {
+    const edgeId = e.target?.id
+    if (edgeId) {
+      const edgeData = g6Instance.getEdgeData(edgeId)
+      if (edgeData) {
+        const d = edgeData.data || {}
+        selectedNode.value = null  // 清除节点选中
+        selectedEdge.value = {
+          source: edgeData.source,
+          target: edgeData.target,
+          on: d.on || '',
+          confidence: d.confidence ?? 0,
+          relSource: d.relSource || 'manual',
+          joinType: d.joinType || 'LEFT',
+          cardinality: d.cardinality || 'N:1',
+        }
+      }
+    }
+  })
+
   // 右键菜单: 删除关系
   g6Instance.on('edge:contextmenu', (e: any) => {
     e.preventDefault?.()
@@ -462,6 +604,7 @@ function buildBehaviors() {
         const nodeData = g6Instance.getNodeData(nodeId)
         if (nodeData) {
           const d = nodeData.data || {}
+          selectedEdge.value = null  // 清除边选中
           selectedNode.value = {
             id: nodeData.id,
             label: d.label || nodeData.id,
@@ -474,6 +617,7 @@ function buildBehaviors() {
         }
       } else {
         selectedNode.value = null
+        selectedEdge.value = null
       }
     },
   }
@@ -504,7 +648,7 @@ function buildBehaviors() {
             addForm.value = {
               from_table: source,
               target_model: target,
-              on: '',
+              on_conditions: [{ source_column: '', target_column: '' }],
               join_type: 'LEFT',
               type: 'N:1',
             }
@@ -964,11 +1108,13 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(4px);
 }
 
-.node-detail-panel {
+.detail-panel {
   position: absolute;
   top: 12px;
   right: 12px;
-  width: 240px;
+  width: 280px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
   background: #fff;
   border: 1px solid #e4e7ed;
   border-radius: 6px;
@@ -984,6 +1130,10 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #e4e7ed;
   font-weight: 600;
   font-size: 14px;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 1;
 }
 
 .close-btn {
@@ -1014,6 +1164,103 @@ onBeforeUnmount(() => {
 
 .detail-item .value {
   color: #303133;
+}
+
+/* 关系列表 */
+.rel-section {
+  margin-top: 10px;
+  border-top: 1px dashed #ebeef5;
+  padding-top: 8px;
+}
+
+.rel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #606266;
+  margin-bottom: 6px;
+}
+
+.rel-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.rel-item:hover {
+  background: #f5f7fa;
+}
+
+.rel-direction {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-weight: bold;
+}
+
+.rel-out { color: #409eff; }
+.rel-in { color: #67c23a; }
+
+.rel-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rel-target {
+  color: #303133;
+  font-weight: 500;
+}
+
+.rel-on {
+  color: #909399;
+  font-size: 10px;
+  word-break: break-all;
+  line-height: 1.4;
+  margin-top: 2px;
+  padding-left: 22px;
+}
+
+/* ON 条件结构化展示 */
+.on-section {
+  margin-top: 10px;
+  border-top: 1px dashed #ebeef5;
+  padding-top: 8px;
+}
+
+.on-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #606266;
+  margin-bottom: 6px;
+}
+
+.on-condition-display {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.on-raw {
+  font-size: 11px;
+  color: #606266;
+  word-break: break-all;
+  line-height: 1.5;
+  padding: 4px 8px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+
+.edge-actions {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed #ebeef5;
 }
 
 .on-conditions {
