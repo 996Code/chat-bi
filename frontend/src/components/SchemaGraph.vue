@@ -90,7 +90,7 @@
             <div v-for="rel in nodeRelationships" :key="rel.source + '-' + rel.target" class="rel-item" @click="focusEdge(rel)">
               <span class="rel-arrow" :class="rel.direction === 'out' ? 'arrow-out' : 'arrow-in'">{{ rel.direction === 'out' ? '→' : '←' }}</span>
               <div class="rel-main">
-                <span class="rel-name">{{ rel.direction === 'out' ? rel.target : rel.source }}</span>
+                <span class="rel-name">{{ getTableLabel(rel.direction === 'out' ? rel.target : rel.source) }}</span>
                 <span class="rel-meta">{{ rel.joinType }} · {{ rel.cardinality }}</span>
               </div>
             </div>
@@ -107,9 +107,9 @@
         </div>
         <div class="panel-body">
           <div class="edge-flow">
-            <span class="edge-table">{{ selectedEdge.source }}</span>
+            <span class="edge-table">{{ getTableLabel(selectedEdge.source) }}</span>
             <span class="edge-join">{{ selectedEdge.joinType }} JOIN</span>
-            <span class="edge-table">{{ selectedEdge.target }}</span>
+            <span class="edge-table">{{ getTableLabel(selectedEdge.target) }}</span>
           </div>
 
           <!-- 属性标签 -->
@@ -284,6 +284,19 @@ const deleteTarget = ref<{ from: string; to: string } | null>(null)
 
 const isEmpty = computed(() => graphData.value.nodes.length === 0)
 const graphNodes = computed(() => graphData.value.nodes)
+
+// 表名 → 中文名 映射
+const tableLabelMap = computed(() => {
+  const map: Record<string, string> = {}
+  for (const n of graphData.value.nodes) {
+    map[n.id] = n.label
+  }
+  return map
+})
+
+function getTableLabel(tableName: string): string {
+  return tableLabelMap.value[tableName] || tableName
+}
 
 // 选中节点的所有关联关系
 const nodeRelationships = computed(() => {
