@@ -556,31 +556,48 @@ def seed_memories(token: str, ds_id: str, memories: list[dict]) -> None:
 
 
 def _build_linkage_content(link: dict) -> str:
-    """从 linkage 模板构建 Markdown body (给 LLM 看)"""
+    """从 linkage 模板构建简洁的 Markdown body (给 LLM 看)
+    
+    设计原则：
+    - 只包含结构化数据的可读摘要
+    - 不包含冗长的 SQL 示例（结构化数据已在 frontmatter 中）
+    - 聚合方式只保留关键词，不展开详细描述
+    """
     parts = []
-    table_a, table_b = link["tables"]
+    table_a, table_b = sorted(link["tables"])
     is_indirect = link.get("indirect", False)
 
     # JOIN 路径
     join_paths = link.get("join_paths", [])
     direct_joins = [jp for jp in join_paths if jp.get("on")]
     if direct_joins:
-        parts.append("## JOIN 路径\n" + "\n".join(jp["on"] for jp in direct_joins) + "\n")
+        on_conditions = [jp["on"] for jp in direct_joins]
+        parts.append(f"**JOIN**: {' AND '.join(on_conditions)}")
     elif is_indirect:
         via = link.get("via", "其他表")
-        parts.append(f"## 关联方式\n间接关联（经由 {via}）\n")
+        parts.append(f"**关联方式**: 间接关联（经由 {via}）")
 
-    # 典型场景
+    # 典型场景（只列出前3个，避免过长）
     scenes = link.get("scenes", [])
     if scenes:
-        parts.append("## 典型场景\n" + "\n".join(f"- {s}" for s in scenes) + "\n")
+        scene_list = scenes[:3]
+        if len(scenes) > 3:
+            scene_list.append(f"等{len(scenes)}个场景")
+        parts.append(f"**场景**: {', '.join(scene_list)}")
 
-    # 聚合方式
+    # 聚合方式（只保留关键词）
     agg = link.get("aggregation", "")
     if agg:
-        parts.append(f"## 聚合方式\n{agg}\n")
+        # 如果聚合方式太长，只提取第一个关键词
+        if len(agg) > 30:
+            # 提取第一个聚合函数
+            import re
+            match = re.search(r'\b(SUM|COUNT|AVG|MAX|MIN)\b', agg, re.IGNORECASE)
+            if match:
+                agg = match.group(1).upper()
+        parts.append(f"**聚合**: {agg}")
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def seed_linkage_memories(ds_id: str) -> None:
