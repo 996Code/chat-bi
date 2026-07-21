@@ -111,6 +111,8 @@ class MemoryOut(BaseModel):
     type: str
     content: str
     consolidated: bool = False
+    created_at: str | None = None
+    conversation_id: str | None = None
     # linkage 结构化字段 (frontmatter 真相源)
     tables: list[str] | None = None
     co_occurrence: int | None = None
@@ -182,6 +184,8 @@ async def list_memories(
             id=m["id"], name=m["name"], description=m["description"],
             type=m["type"], content=content,
             consolidated=m.get("consolidated", False),
+            created_at=m.get("created_at"),
+            conversation_id=m.get("conversation_id"),
             # linkage 结构化字段 (frontmatter 真相源, 非 linkage 类型为 None)
             tables=m.get("tables"),
             co_occurrence=m.get("co_occurrence"),

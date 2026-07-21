@@ -47,6 +47,8 @@ class AgentMemoryStore:
         self.index_path = self.base_dir / "MEMORY.md"
         # 种子数据: 目录为空时从 _template/ 复制默认记忆
         self._ensure_seed_memories()
+        # 启动时自动清理幽灵索引 (仅首次 list_memories 触发一次)
+        self._index_reconciled = False
 
     def _init_index(self) -> None:
         """Create MEMORY.md index if it doesn't exist."""
@@ -135,21 +137,34 @@ class AgentMemoryStore:
             content: The memory content (markdown body)
             memory_type: user | feedback | project | reference | linkage
             mem_id: Existing UUID to update (None = create new)
-            extra_metadata: 额外 metadata 字段 (E1: linkage 用 co_occurrence/tables)
+            extra_metadata: 额外 metadata 字段 (E1: linkage 用 co_occurrence/tables;
+                            conversation_id 标记来源对话)
 
         Returns:
             Path to the created memory file.
         """
+        from datetime import datetime, timezone
+
         self._init_index()
 
-        # 写记忆文件
+        # created_at: 新建时写入当前时间, 更新时保留原值
+        created_at: str | None = None
         if mem_id:
             # 更新已有记忆: filename = {mem_id}.md
             file_name = f"{mem_id}.md"
+            # 读取已有 frontmatter 中的 created_at
+            existing_path = self.base_dir / file_name
+            if existing_path.exists():
+                existing_text = existing_path.read_text(encoding="utf-8")
+                m = re.search(r"^created_at:\s*(.+)$", existing_text, re.MULTILINE)
+                if m:
+                    created_at = m.group(1).strip()
         else:
-            # 新建: 生成 UUID
+            # 新建: 生成 UUID + 当前时间
             mem_id = str(uuid_mod.uuid4())
             file_name = f"{mem_id}.md"
+            created_at = datetime.now(timezone.utc).isoformat()
+
         file_path = self.base_dir / file_name
 
         # metadata 段: 基础 (type/consolidated) + 额外 (co_occurrence/tables 等)
@@ -176,24 +191,33 @@ class AgentMemoryStore:
             f"id: {mem_id}\n"
             f"name: {name}\n"
             f"description: {description}\n"
+            + (f"created_at: {created_at}\n" if created_at else "")
             + "\n".join(meta_lines) + "\n"
             f"---\n\n"
             f"{content}\n"
         )
         file_path.write_text(frontmatter, encoding="utf-8")
 
-        # Update index
-        self._update_index_link(file_name, description)
+        # Update index (pass name for linkage dedup)
+        self._update_index_link(file_name, description, memory_name=name)
 
         logger.info("Memory saved: %s (%s)", name, memory_type)
         return file_path
 
-    def _update_index_link(self, file_name: str, description: str) -> None:
-        """Add or update a link entry in MEMORY.md."""
+    def _update_index_link(self, file_name: str, description: str, *, memory_name: str | None = None) -> None:
+        """Add or update a link entry in MEMORY.md.
+
+        Args:
+            file_name: The .md filename (UUID stem)
+            description: One-line description for the index
+            memory_name: The memory's name field (e.g. "linkage-biz_orders-uc_users").
+                         Used for dedup: if a linkage memory with the same name but
+                         different UUID already exists, the old entry is removed first.
+        """
         index_content = self.index_path.read_text(encoding="utf-8")
         link_line = f"- [{file_name.replace('.md', '')}]({file_name}) — {description}"
 
-        # Replace existing entry if present
+        # Replace existing entry for the same UUID
         existing_pattern = re.compile(
             rf"^- \[{re.escape(file_name.replace('.md', ''))}\]\(.*\) — .*$",
             re.MULTILINE,
@@ -202,6 +226,21 @@ class AgentMemoryStore:
             index_content = existing_pattern.sub(link_line, index_content)
         else:
             index_content += f"{link_line}\n"
+
+        # Dedup by memory name for linkage type: remove stale entries with same name but different UUID
+        if memory_name and memory_name.startswith("linkage-"):
+            # Find all index entries whose linked file has this memory name in frontmatter
+            # Simple approach: scan for entries where the description matches the linkage pattern
+            # and the UUID is different from current file_name
+            current_stem = file_name.replace(".md", "")
+            # Remove any other linkage entry with the same description (same table pair)
+            # Pattern: - [different-uuid](different-uuid.md) — 表 X 和 Y 的共现经验
+            desc_escaped = re.escape(description)
+            stale_pattern = re.compile(
+                rf"^- \[(?!{re.escape(current_stem)})[a-f0-9\-]+\]\([a-f0-9\-]+\.md\) — {desc_escaped}$\n?",
+                re.MULTILINE,
+            )
+            index_content = stale_pattern.sub("", index_content)
 
         self.index_path.write_text(index_content, encoding="utf-8")
 
@@ -231,12 +270,86 @@ class AgentMemoryStore:
         logger.info("Memory deleted: %s", stem)
         return True
 
+    def reconcile_index(self) -> int:
+        """清理幽灵索引条目 (索引指向的文件不存在) + 去重同名 linkage 条目。
+
+        Returns:
+            清理的条目数
+        """
+        self._init_index()
+        index_content = self.index_path.read_text(encoding="utf-8")
+        lines = index_content.split("\n")
+        clean_lines: list[str] = []
+        removed = 0
+
+        # 收集所有 linkage 描述 → UUID 的映射 (用于去重)
+        linkage_desc_to_stem: dict[str, str] = {}
+
+        for line in lines:
+            # 匹配索引行: - [uuid](uuid.md) — description
+            m = re.match(r"^- \[([a-f0-9\-]+)\]\(\1\.md\) — (.+)$", line)
+            if not m:
+                clean_lines.append(line)
+                continue
+            stem = m.group(1)
+            desc = m.group(2)
+
+            # 检查文件是否存在
+            if not (self.base_dir / f"{stem}.md").exists():
+                removed += 1
+                logger.info("幽灵索引清理: %s (文件不存在)", stem)
+                continue
+
+            # linkage 去重: 同一 description 只保留最新 (文件修改时间最晚的)
+            if desc.startswith("表 ") and "的共现经验" in desc:
+                if desc in linkage_desc_to_stem:
+                    existing_stem = linkage_desc_to_stem[desc]
+                    existing_mtime = (self.base_dir / f"{existing_stem}.md").stat().st_mtime
+                    current_mtime = (self.base_dir / f"{stem}.md").stat().st_mtime
+                    if current_mtime >= existing_mtime:
+                        # 当前更新, 删旧的
+                        removed += 1
+                        logger.info("linkage 索引进重: 删除旧条目 %s (保留 %s)", existing_stem, stem)
+                        # 从 clean_lines 中移除旧条目
+                        clean_lines = [cl for cl in clean_lines
+                                       if not cl.startswith(f"- [{existing_stem}]")]
+                        linkage_desc_to_stem[desc] = stem
+                    else:
+                        # 旧更新, 跳过当前
+                        removed += 1
+                        logger.info("linkage 索引进重: 跳过当前 %s (保留 %s)", stem, existing_stem)
+                        continue
+                else:
+                    linkage_desc_to_stem[desc] = stem
+
+            clean_lines.append(line)
+
+        if removed > 0:
+            new_content = "\n".join(clean_lines)
+            # 清理尾部多余空行
+            while new_content.endswith("\n\n\n"):
+                new_content = new_content[:-1]
+            self.index_path.write_text(new_content, encoding="utf-8")
+            logger.info("索引清理完成: 移除 %d 条幽灵/重复条目", removed)
+
+        return removed
+
     def list_memories(self) -> list[dict[str, str]]:
         """List all memory files with their metadata (for API + recall).
 
         对标 Claude Code: scanMemoryFiles() — scan file headers only,
         return id/name/description/type for the lightweight model to select.
         """
+        # 首次调用时自动清理幽灵索引
+        if not self._index_reconciled:
+            self._index_reconciled = True
+            try:
+                removed = self.reconcile_index()
+                if removed:
+                    logger.info("启动索引清理: 移除 %d 条幽灵/重复条目", removed)
+            except Exception as e:
+                logger.warning("启动索引清理失败 (不阻塞): %s", e)
+
         import yaml as _yaml  # lazy: 仅扫描时才 import
         memories = []
         for file_path in self.base_dir.glob("*.md"):
@@ -270,6 +383,12 @@ class AgentMemoryStore:
                 "consolidated": metadata.get("consolidated", False),
                 "path": str(file_path.absolute()),
             }
+            # created_at: 顶层 frontmatter 字段 (非 metadata 内)
+            if fm.get("created_at"):
+                entry["created_at"] = str(fm["created_at"])
+            # conversation_id: 来源对话 (metadata 内, 对话创建的记忆才有)
+            if "conversation_id" in metadata:
+                entry["conversation_id"] = str(metadata["conversation_id"])
             # E1: linkage 记忆的额外字段 (其他类型无此字段, 不污染 entry)
             if "co_occurrence" in metadata:
                 entry["co_occurrence"] = int(metadata["co_occurrence"])

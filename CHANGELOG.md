@@ -1,5 +1,43 @@
 # 变更记录
 
+## v2.2.0 (2026-07) - 记忆溯源 + 图谱交互增强 + 重复记忆修复
+
+### 🧠 记忆溯源 (Memory Traceability)
+
+- **创建时间**：每条记忆自动记录 `created_at`（UTC ISO），新建时写入、更新时保留原值；卡片 header 显示相对时间（"3分钟前"、"2天前"），hover 显示完整时间
+- **对话来源**：对话创建的记忆自动关联 `conversation_id`，记忆卡片底部显示"来源: 对话标题"可点击链接
+- **对话标题 API**：`GET /conversations/{id}/title` 轻量接口，只读 StateStore 最后一轮标题，供记忆页按需加载
+- **对话详情抽屉组件**：从 HistoryView 抽取 `ConversationDetailDrawer.vue` 共享组件，HistoryView 和 MemoryView 共用
+- **Memory API 扩展**：`MemoryOut` 新增 `created_at` + `conversation_id` 字段；`persist_linkage_memory` 透传 `conv_id`
+
+### 🕸️ 图谱交互增强
+
+- **ON 条件下拉框**：关系编辑的 ON 条件改为下拉选择（自动加载表列 + 同名列智能匹配），支持多个条件组合
+- **节点点击查看关联**：点击节点展示该表的关联关系列表
+- **边点击查看详情**：点击边展示 ON 条件详情面板，支持从面板删除关系
+- **去掉右键删除确认**：删除关系改为点击边后从详情面板操作
+- **表名中文显示**：详情面板表名显示为"中文（英文表名）"格式
+- **详情面板重设计**：修复换行和横向滚动条问题，布局更紧凑
+
+### 🐛 重复记忆修复
+
+- **竞态条件修复**：`persist_linkage_memory` 新建前二次检查（`get_linkage_memory`），防止并发对话创建重复记忆
+- **索引按语义键去重**：`_update_index_link` 对 linkage 类型按 description（表对）去重，同一表对只保留一条索引
+- **幽灵索引自愈**：新增 `reconcile_index()` 方法，清理文件不存在的幽灵索引 + linkage 同名去重；`list_memories` 首次调用自动执行
+- **清理 20 条幽灵索引**：对话创建的文件已被删除但索引残留，一次性清理完成
+
+### 📝 记忆内容优化
+
+- **linkage 内容精简**：移除 SQL 示例和冗长聚合描述，只保留 JOIN 路径 + 场景 + 聚合关键词
+- **Markdown 渲染**：记忆内容使用 `marked` 库渲染 Markdown，支持标题/列表/代码/表格等格式
+- **seed_memories.py 更新**：linkage 模板使用最新精简格式生成
+
+### 🧪 测试
+
+- 598 tests passed
+
+---
+
 ## v2.0.0 (2026-07)
 
 > V2 是基于 Claude Code 源码深度解读、海泰 ChatBI 代码分析、48 条 V1 经验教训的全面重构。

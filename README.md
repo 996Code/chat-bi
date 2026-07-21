@@ -37,6 +37,8 @@
 
 🤝 **主动确认** — 意图不清/表不确定/结果异常三种场景，Agent 主动暂停问用户，确认内容一并留存
 
+🧠 **记忆溯源** — 对话创建的记忆自动关联来源对话，点击可查看原始对话详情；每条记忆显示创建时间
+
 🔐 **企业级安全** — JWT 认证、Fernet 加密、SQL 注入三层拦截、多租户隔离、审计日志
 
 ---
@@ -399,6 +401,7 @@ chat-bi/
 ├── frontend/
 │   └── src/
 │       ├── views/               # 📱 页面组件
+│       ├── components/          # 🧩 共享组件 (ConversationDetailDrawer, SchemaGraph)
 │       ├── api/                 # 🔌 API 封装
 │       └── router/              # 🚦 路由
 ├── docker/                      # 🐳 Docker Compose
@@ -495,6 +498,7 @@ cp deploy/.env.example deploy/.env
 | GET | `/graph` | 🕸️知识图谱 (全图/子图/社区/枢纽/JOIN路径) |
 | GET | `/dashboards` | 看板管理 |
 | GET | `/conversations` | 对话列表 |
+| GET | `/conversations/{id}/title` | 对话标题 (轻量) |
 | GET | `/health/detail` | 系统状态 |
 
 ---

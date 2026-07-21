@@ -90,6 +90,7 @@
               <el-tag size="small" :type="typeTag(mem.type)" style="margin-left: 8px">{{ typeLabel(mem.type) }}</el-tag>
               <el-tag size="small" type="success" style="margin-left: 4px">自动召回</el-tag>
               <el-tag v-if="mem.consolidated" size="small" type="info" style="margin-left: 4px">已整理</el-tag>
+              <span v-if="mem.created_at" class="mem-time" :title="formatTime(mem.created_at)">{{ relativeTime(mem.created_at) }}</span>
             </div>
             <div v-if="!mem.consolidated || mem.type === 'consolidated'">
               <el-button size="small" :icon="Edit" @click="openEditor(mem)">编辑</el-button>
@@ -109,6 +110,14 @@
           <span v-if="mem.scenes?.length" class="linkage-detail">
             {{ mem.scenes.length }} 个场景
           </span>
+        </div>
+        <!-- 对话来源 -->
+        <div v-if="mem.conversation_id" class="conv-source">
+          <el-icon size="12" color="#409eff"><ChatDotRound /></el-icon>
+          <span>来源: </span>
+          <el-link type="primary" :underline="false" @click.stop="openConvDetail(mem)">
+            {{ convTitles[mem.conversation_id] || '加载中...' }}
+          </el-link>
         </div>
         <div class="recall-hint">
           <el-icon size="12" color="#909399"><InfoFilled /></el-icon>
@@ -149,16 +158,24 @@
         <el-button type="primary" :loading="saving" @click="doSave">保存</el-button>
       </template>
     </el-drawer>
+
+    <!-- 对话详情抽屉 (共用组件) -->
+    <ConversationDetailDrawer
+      v-model="showConvDetail"
+      :conversation-id="convDetailId"
+      :title="convDetailTitle"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Edit, Delete, InfoFilled, Sort, Lock, Link } from '@element-plus/icons-vue'
-import { memory as memoryApi, datasource, type Memory, type ConsolidateStatus } from '@/api'
+import { Plus, Refresh, Edit, Delete, InfoFilled, Sort, Lock, Link, ChatDotRound } from '@element-plus/icons-vue'
+import { memory as memoryApi, datasource, observability, type Memory, type ConsolidateStatus } from '@/api'
 import { extractErrorDetail } from '@/utils/error'
 import { marked } from 'marked'
+import ConversationDetailDrawer from '@/components/ConversationDetailDrawer.vue'
 
 // 配置 marked
 marked.setOptions({
@@ -411,6 +428,9 @@ async function fetchData() {
   try {
     const { data } = await memoryApi.list(selectedDsId.value, showConsolidated.value)
     memoryList.value = data
+    // 加载有 conversation_id 的记忆的对话标题
+    const convIds = [...new Set(data.filter(m => m.conversation_id).map(m => m.conversation_id!))]
+    convIds.forEach(id => loadConvTitle(id))
   } catch (e: any) {
     ElMessage.error('加载失败: ' + (extractErrorDetail(e)))
   } finally {
@@ -501,6 +521,57 @@ function typeTag(t: string): any {
   return map[t] || ''
 }
 
+// ── 时间格式化 ──────────────────────────────────────────────
+
+function formatTime(iso: string): string {
+  if (!iso) return ''
+  try { return new Date(iso).toLocaleString('zh-CN') } catch { return iso }
+}
+
+function relativeTime(iso: string): string {
+  if (!iso) return ''
+  try {
+    const now = Date.now()
+    const then = new Date(iso).getTime()
+    const diff = now - then
+    if (diff < 0) return '刚刚'
+    const minutes = Math.floor(diff / 60000)
+    if (minutes < 1) return '刚刚'
+    if (minutes < 60) return `${minutes}分钟前`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}小时前`
+    const days = Math.floor(hours / 24)
+    if (days < 30) return `${days}天前`
+    const months = Math.floor(days / 30)
+    if (months < 12) return `${months}个月前`
+    return `${Math.floor(months / 12)}年前`
+  } catch { return iso }
+}
+
+// ── 对话来源 ──────────────────────────────────────────────
+
+const convTitles = ref<Record<string, string>>({})
+const showConvDetail = ref(false)
+const convDetailId = ref('')
+const convDetailTitle = ref('')
+
+async function loadConvTitle(convId: string) {
+  if (convTitles.value[convId]) return
+  try {
+    const { data } = await observability.conversationTitle(convId)
+    convTitles.value[convId] = data.title || '新对话'
+  } catch {
+    convTitles.value[convId] = convId.slice(0, 8)
+  }
+}
+
+function openConvDetail(mem: Memory) {
+  if (!mem.conversation_id) return
+  convDetailId.value = mem.conversation_id
+  convDetailTitle.value = convTitles.value[mem.conversation_id] || ''
+  showConvDetail.value = true
+}
+
 onMounted(fetchDataSources)
 onUnmounted(stopPolling)
 </script>
@@ -530,6 +601,12 @@ onUnmounted(stopPolling)
   display: flex; align-items: center; gap: 8px;
 }
 .lock-icon { color: #c0c4cc; }
+.mem-time {
+  font-size: 0.72rem;
+  color: #c0c4cc;
+  margin-left: 8px;
+  cursor: default;
+}
 .mem-content {
   margin: 0; white-space: pre-wrap; font-size: 0.85rem;
   line-height: 1.6; color: #606266; max-height: 300px; overflow-y: auto;
@@ -619,6 +696,12 @@ onUnmounted(stopPolling)
 .linkage-detail {
   display: inline-flex; align-items: center; gap: 2px;
   font-size: 0.75rem; color: #909399;
+}
+.conv-source {
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 8px; font-size: 0.75rem; color: #909399;
+  padding-top: 6px;
+  border-top: 1px dashed #ebeef5;
 }
 .consolidated-card {
   opacity: 0.65;

@@ -264,6 +264,10 @@ export const observability = {
   conversationDetail(convId: string) {
     return apiClient.get(`/conversations/${convId}`)
   },
+  /** 对话标题 (轻量, 供记忆页显示来源) */
+  conversationTitle(convId: string) {
+    return apiClient.get(`/conversations/${convId}/title`)
+  },
   /** 对话 trace 导出 (T050 dump-prompts: 各轮 prompt + token 统计) */
   conversationTrace(convId: string) {
     return apiClient.get(`/conversations/${convId}/trace`)
@@ -323,6 +327,8 @@ export interface Memory {
   type: string
   content: string
   consolidated?: boolean
+  created_at?: string
+  conversation_id?: string
   // linkage 结构化字段
   tables?: string[]
   co_occurrence?: number

@@ -182,6 +182,27 @@ async def get_conversation_detail(
     return turns
 
 
+@router.get("/conversations/{conv_id}/title")
+async def get_conversation_title(
+    conv_id: str,
+    user: AuthUser = Depends(require_user),
+):
+    """对话标题 — 轻量接口, 供记忆页显示来源对话名称。
+
+    只读 StateStore 最后一轮的 title 字段, 不拉全量轮次。
+    """
+    from app.ai.state_store import StateStore
+    store = StateStore()
+    turns = store.list_turns(user.tenant_id, conv_id)
+    if not turns:
+        return {"id": conv_id, "title": ""}
+    last = turns[-1]
+    state = last.get("state", {})
+    first_state = turns[0].get("state", {})
+    title = state.get("title") or first_state.get("first_question") or "新对话"
+    return {"id": conv_id, "title": title}
+
+
 @router.get("/conversations/{conv_id}/trace")
 async def get_conversation_trace(
     conv_id: str,

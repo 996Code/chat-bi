@@ -604,7 +604,7 @@ def _clean_aggregation(agg_str: str) -> str:
     return agg_str[:20].strip()
 
 
-def persist_linkage_memory(mem_store, state) -> None:
+def persist_linkage_memory(mem_store, state, conv_id: str | None = None) -> None:
     """沉淀链路经验到 linkage 记忆 (E1 Task 2.1)。
 
     从 state 直接读取表对（不解析 SQL），对每对表创建或更新 linkage 记忆。
@@ -711,27 +711,70 @@ def persist_linkage_memory(mem_store, state) -> None:
                     "join_paths": merged_join_paths,
                     "scenes": merged_scenes,
                     **({"aggregation": final_aggregation} if final_aggregation else {}),
+                    **({"conversation_id": conv_id} if conv_id else {}),
                 }
             )
             logger.info(f"更新 linkage 记忆 {table_a}-{table_b}: co_occurrence={new_co}")
         else:
             # 新表对：创建 linkage 记忆
-            content = _build_linkage_content(table_a, table_b, state, direct_join_pairs)
-
-            # scenes 初始列表
-            scenes = [state.question] if state.question else []
-
-            mem_store.save_memory(
-                name=f"linkage-{table_a}-{table_b}",
-                description=f"表 {table_a} 和 {table_b} 的共现经验",
-                content=content,
-                memory_type="linkage",
-                extra_metadata={
-                    "co_occurrence": 1,
-                    "tables": sorted([table_a, table_b]),
-                    "join_paths": join_paths,
-                    "scenes": scenes,
-                    **({"aggregation": aggregation} if aggregation else {}),
-                }
-            )
-            logger.info(f"创建 linkage 记忆 {table_a}-{table_b}")
+            # 防竞态: save_memory 前再次检查 (并发对话可能已创建)
+            recheck = mem_store.get_linkage_memory(table_a, table_b)
+            if recheck:
+                # 竞态命中: 走更新路径 (递归调用, 最多重试 1 次)
+                logger.warning(f"竞态检测: {table_a}-{table_b} 已存在, 走更新路径")
+                # 把 existing 赋值后重新走上面的更新逻辑
+                existing = recheck
+                new_co = existing["co_occurrence"] + 1
+                existing_fm_scenes = existing.get("scenes")
+                original_content = mem_store.read_memory(existing["id"]) or ""
+                existing_scenes = _extract_existing_scenes(original_content, existing_fm_scenes)
+                existing_join_paths = existing.get("join_paths") or []
+                existing_on_set = {jp.get("on", "") for jp in existing_join_paths}
+                for jp in join_paths:
+                    if jp.get("on", "") not in existing_on_set:
+                        existing_join_paths.append(jp)
+                        existing_on_set.add(jp.get("on", ""))
+                new_content = _build_linkage_content(
+                    table_a, table_b, state, direct_join_pairs, existing_scenes
+                )
+                merged_scenes = list(existing_scenes)
+                if state.question and state.question not in merged_scenes:
+                    merged_scenes.append(state.question)
+                existing_agg = existing.get("aggregation", "")
+                final_aggregation = aggregation or (existing_agg if existing_agg else "")
+                if final_aggregation and len(final_aggregation) > 10:
+                    final_aggregation = _clean_aggregation(final_aggregation)
+                mem_store.save_memory(
+                    name=f"linkage-{table_a}-{table_b}",
+                    description=f"表 {table_a} 和 {table_b} 的共现经验",
+                    content=new_content,
+                    memory_type="linkage",
+                    mem_id=existing["id"],
+                    extra_metadata={
+                        "co_occurrence": new_co,
+                        "tables": sorted([table_a, table_b]),
+                        "join_paths": existing_join_paths,
+                        "scenes": merged_scenes,
+                        **({"aggregation": final_aggregation} if final_aggregation else {}),
+                        **({"conversation_id": conv_id} if conv_id else {}),
+                    }
+                )
+                logger.info(f"竞态更新 linkage 记忆 {table_a}-{table_b}: co_occurrence={new_co}")
+            else:
+                content = _build_linkage_content(table_a, table_b, state, direct_join_pairs)
+                scenes = [state.question] if state.question else []
+                mem_store.save_memory(
+                    name=f"linkage-{table_a}-{table_b}",
+                    description=f"表 {table_a} 和 {table_b} 的共现经验",
+                    content=content,
+                    memory_type="linkage",
+                    extra_metadata={
+                        "co_occurrence": 1,
+                        "tables": sorted([table_a, table_b]),
+                        "join_paths": join_paths,
+                        "scenes": scenes,
+                        **({"aggregation": aggregation} if aggregation else {}),
+                        **({"conversation_id": conv_id} if conv_id else {}),
+                    }
+                )
+                logger.info(f"创建 linkage 记忆 {table_a}-{table_b}")

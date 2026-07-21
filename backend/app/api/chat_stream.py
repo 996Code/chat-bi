@@ -856,6 +856,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                         description=extracted["description"],
                         content=extracted["content"],
                         memory_type=extracted.get("type", "project"),
+                        extra_metadata={"conversation_id": conv_id},
                     )
                     logger.info("LLM 自主提炼记忆: %s (ds=%s)", extracted["name"], data_source_id)
             except Exception:
@@ -872,7 +873,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                 from app.core.agent_memory import AgentMemoryStore
                 mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
                 mem_store = AgentMemoryStore(base_dir=mem_dir)
-                persist_linkage_memory(mem_store, state)
+                persist_linkage_memory(mem_store, state, conv_id=conv_id)
             except Exception as e:
                 logger.warning("链路经验沉淀失败: %s", e)
                 persist_warnings.append({
