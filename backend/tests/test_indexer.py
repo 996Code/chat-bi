@@ -30,7 +30,7 @@ from app.services.indexer import build_index, model_to_text, metric_to_text
 # ── 文本序列化 ────────────────────────────────────────────────
 
 class TestModelToText:
-    """Model → 可 embed 的文本 (表名+描述+列名+列描述)。"""
+    """Model → 可 embed 的文本 (中文优先, 描述重复, 英文表名放后)。"""
 
     def test_basic_model_text(self):
         model = Model(
@@ -43,20 +43,25 @@ class TestModelToText:
             ],
         )
         text = model_to_text(model)
-        assert "biz_orders" in text
+        # 中文描述重复2遍 (核心语义权重)
+        assert text.count("存储订单信息") == 2
+        # display_name (中文名)
         assert "订单表" in text
-        assert "total_amount" in text
+        # 英文表名以"表名"前缀出现
+        assert "表名biz_orders" in text
+        # 列只保留中文 display_name, 不含英文列名
         assert "总金额" in text
+        assert "total_amount" not in text
 
-    def test_text_includes_column_datatype(self):
-        """data_type 也要 embed (对标 RAG-005 类型约束)。"""
+    def test_text_excludes_column_datatype(self):
+        """data_type 不进文本 (对语义匹配无帮助, 反增噪声)。"""
         model = Model(
             name="t1",
             display_name="T1",
             columns=[Column(name="price", display_name="价格", data_type="DECIMAL")],
         )
         text = model_to_text(model)
-        assert "DECIMAL" in text
+        assert "DECIMAL" not in text
 
 
 class TestMetricToText:

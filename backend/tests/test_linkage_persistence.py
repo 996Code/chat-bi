@@ -219,3 +219,141 @@ class TestPersistLinkageMemory:
                 # 应有直接 JOIN 路径
                 assert "JOIN 路径" in content
                 assert "biz_orders.product_id = biz_products.id" in content
+
+    def test_persist_populates_join_paths_frontmatter(self, tmp_path):
+        """结构化 frontmatter: persist_linkage_memory 写入 join_paths。"""
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+
+        state = Mock()
+        state.current_tables = ["biz_orders", "biz_users"]
+        state.join_path_section = "biz_orders.user_id = biz_users.id"
+        state.thinking = Mock(tables=["biz_orders", "biz_users"], aggregation="COUNT", caveats=[])
+        state.question = "查询每个用户的订单数"
+        state.sql = "SELECT COUNT(*) FROM biz_orders JOIN biz_users"
+
+        persist_linkage_memory(store, state)
+
+        memories = store.list_memories()
+        linkage = [m for m in memories if m.get("type") == "linkage"]
+        assert len(linkage) == 1
+        link = linkage[0]
+        # join_paths 应包含结构化 ON 条件
+        assert "join_paths" in link
+        assert len(link["join_paths"]) == 1
+        assert link["join_paths"][0]["on"] == "biz_orders.user_id = biz_users.id"
+        assert link["join_paths"][0]["join_type"] == "LEFT"
+
+    def test_persist_populates_scenes_frontmatter(self, tmp_path):
+        """结构化 frontmatter: persist_linkage_memory 写入 scenes。"""
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+
+        state = Mock()
+        state.current_tables = ["biz_orders", "biz_users"]
+        state.join_path_section = "biz_orders.user_id = biz_users.id"
+        state.thinking = Mock(tables=["biz_orders", "biz_users"], aggregation="COUNT", caveats=[])
+        state.question = "查询每个用户的订单数"
+        state.sql = "SELECT COUNT(*) FROM biz_orders JOIN biz_users"
+
+        persist_linkage_memory(store, state)
+
+        memories = store.list_memories()
+        linkage = [m for m in memories if m.get("type") == "linkage"]
+        assert len(linkage) == 1
+        link = linkage[0]
+        assert "scenes" in link
+        assert "查询每个用户的订单数" in link["scenes"]
+
+    def test_persist_populates_aggregation_frontmatter(self, tmp_path):
+        """结构化 frontmatter: persist_linkage_memory 写入 aggregation。"""
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+
+        state = Mock()
+        state.current_tables = ["biz_orders", "biz_users"]
+        state.join_path_section = "biz_orders.user_id = biz_users.id"
+        state.thinking = Mock(tables=["biz_orders", "biz_users"], aggregation="SUM", caveats=[])
+        state.question = "查询总消费"
+        state.sql = "SELECT SUM(amount) FROM biz_orders JOIN biz_users"
+
+        persist_linkage_memory(store, state)
+
+        memories = store.list_memories()
+        linkage = [m for m in memories if m.get("type") == "linkage"]
+        assert len(linkage) == 1
+        link = linkage[0]
+        assert link.get("aggregation") == "SUM"
+
+    def test_persist_merges_join_paths_on_update(self, tmp_path):
+        """结构化 frontmatter: 更新时 join_paths 去重合并。"""
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+
+        # 第一次: ON 条件 A
+        state1 = Mock()
+        state1.current_tables = ["biz_orders", "biz_users"]
+        state1.join_path_section = "biz_orders.user_id = biz_users.id"
+        state1.thinking = Mock(tables=["biz_orders", "biz_users"], aggregation="COUNT", caveats=[])
+        state1.question = "查询订单数"
+        state1.sql = "SELECT COUNT(*) FROM biz_orders JOIN biz_users"
+        persist_linkage_memory(store, state1)
+
+        # 第二次: 同一 ON 条件 (应去重, 不重复)
+        persist_linkage_memory(store, state1)
+
+        memories = store.list_memories()
+        linkage = [m for m in memories if m.get("type") == "linkage"]
+        assert len(linkage) == 1
+        link = linkage[0]
+        # 同一 ON 条件不应重复
+        assert len(link["join_paths"]) == 1
+        assert link["co_occurrence"] == 2
+
+    def test_persist_merges_scenes_on_update(self, tmp_path):
+        """结构化 frontmatter: 更新时 scenes 去重追加。"""
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+
+        # 第一次: 场景 A
+        state1 = Mock()
+        state1.current_tables = ["biz_orders", "biz_users"]
+        state1.join_path_section = "biz_orders.user_id = biz_users.id = biz_users.id"
+        state1.thinking = Mock(tables=["biz_orders", "biz_users"], aggregation="COUNT", caveats=[])
+        state1.question = "查询订单数"
+        state1.sql = "SELECT COUNT(*) FROM biz_orders JOIN biz_users"
+        persist_linkage_memory(store, state1)
+
+        # 第二次: 场景 B
+        state2 = Mock()
+        state2.current_tables = ["biz_orders", "biz_users"]
+        state2.join_path_section = "biz_orders.user_id.id = biz_users.id"
+        state2.thinking = Mock(tables=["biz_orders", "biz_users"], aggregation="SUM", caveats=[])
+        state2.question = "查询总消费"
+        state2.sql = "SELECT SUM(amount) FROM biz_orders JOIN biz_users"
+        persist_linkage_memory(store, state2)
+
+        memories = store.list_memories()
+        linkage = [m for m in memories if m.get("type") == "linkage"]
+        assert len(linkage) == 1
+        link = linkage[0]
+        # 两个场景都应存在
+        assert "查询订单数" in link["scenes"]
+        assert "查询总消费" in link["scenes"]
+        assert link["co_occurrence"] == 2
+
+    def test_persist_no_aggregation_when_thinking_has_none(self, tmp_path):
+        """结构化 frontmatter: thinking 无 aggregation 时不写 aggregation 字段。"""
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+
+        state = Mock()
+        state.current_tables = ["biz_orders", "biz_users"]
+        state.join_path_section = "biz_orders.user_id = biz_users.id"
+        # thinking 无 aggregation 属性
+        state.thinking = Mock(spec=[])  # 空 spec, 无任何属性
+        state.question = "查询订单"
+        state.sql = "SELECT * FROM biz_orders JOIN biz_users"
+
+        persist_linkage_memory(store, state)
+
+        memories = store.list_memories()
+        linkage = [m for m in memories if m.get("type") == "linkage"]
+        assert len(linkage) == 1
+        link = linkage[0]
+        # 无 aggregation 时不写该字段
+        assert "aggregation" not in link

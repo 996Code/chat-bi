@@ -17,6 +17,9 @@ ChatBI v2 — 记忆种子脚本
   # 清空后重新生成
   CLEAN=true python backend/scripts/seed_memories.py
 
+  # 只生成 linkage 记忆 (从语义层关系推断)
+  LINKAGE_ONLY=true python backend/scripts/seed_memories.py
+
 幂等: 已存在的同名记忆会被覆盖 (PUT 语义)
 """
 from __future__ import annotations
@@ -31,6 +34,7 @@ import httpx
 API_BASE = os.getenv("API_BASE", "http://localhost:8999/chat-bi/api/v1")
 DATA_SOURCE_ID = os.getenv("DATA_SOURCE_ID", "")
 CLEAN = os.getenv("CLEAN", "").lower() in ("1", "true", "yes")
+LINKAGE_ONLY = os.getenv("LINKAGE_ONLY", "").lower() in ("1", "true", "yes")
 
 # ── 电商场景记忆模板 ──────────────────────────────────────────
 # 每条记忆都是 Agent 在实际查询中会遇到的业务约定/字段含义/常见陷阱
@@ -304,6 +308,173 @@ pd_categories 是树形结构 (有 parent_id), 但当前数据只有一级类目
 ]
 
 
+# ── 电商场景高频查询表对 + 典型场景 ──────────────────────────────
+# 从语义层关系 + 常见业务查询场景推断, 生成带结构化 frontmatter 的 linkage 记忆
+# co_occurrence 模拟真实查询频次, scenes 是典型业务问题, aggregation 是常见聚合方式
+
+ECOM_LINKAGE_MEMORIES: list[dict] = [
+    # ── 核心交易链路 (最高频) ──
+    {
+        "tables": ["biz_orders", "uc_users"],
+        "co_occurrence": 8,
+        "join_paths": [{"on": "biz_orders.user_id = uc_users.id", "join_type": "LEFT"}],
+        "scenes": ["按用户分组统计订单", "查询每个用户的订单数", "用户消费排行", "VIP 用户订单分析"],
+        "aggregation": "COUNT",
+    },
+    {
+        "tables": ["biz_orders", "biz_order_items"],
+        "co_occurrence": 7,
+        "join_paths": [{"on": "biz_order_items.order_id = biz_orders.id", "join_type": "LEFT"}],
+        "scenes": ["订单明细拆分", "每个订单的商品数", "订单金额与明细对比"],
+        "aggregation": "SUM",
+    },
+    {
+        "tables": ["biz_order_items", "pd_products"],
+        "co_occurrence": 6,
+        "join_paths": [{"on": "biz_order_items.product_id = pd_products.id", "join_type": "LEFT"}],
+        "scenes": ["各品类销售额", "商品排行", "热销商品分析"],
+        "aggregation": "SUM",
+    },
+    {
+        "tables": ["biz_orders", "pd_products"],
+        "co_occurrence": 5,
+        "join_paths": [],  # 间接关联
+        "scenes": ["促销活动订单", "商品销售趋势"],
+        "aggregation": "SUM",
+        "indirect": True,
+        "via": "biz_order_items",
+    },
+    # ── 营销分析 ──
+    {
+        "tables": ["biz_orders", "mkt_promotions"],
+        "co_occurrence": 6,
+        "join_paths": [
+            {"on": "biz_order_promotions.order_id = biz_orders.id", "join_type": "LEFT"},
+            {"on": "biz_order_promotions.promotion_id = mkt_promotions.id", "join_type": "LEFT"},
+        ],
+        "scenes": ["促销活动订单", "活动效果分析", "限时秒杀订单量", "活动 ROI"],
+        "aggregation": "SUM",
+    },
+    {
+        "tables": ["mkt_promotions", "pd_products"],
+        "co_occurrence": 4,
+        "join_paths": [{"on": "mkt_promotion_products.promotion_id = mkt_promotions.id", "join_type": "LEFT"}, {"on": "mkt_promotion_products.product_id = pd_products.id", "join_type": "LEFT"}],
+        "scenes": ["活动商品列表", "促销商品销量对比"],
+        "aggregation": "COUNT",
+    },
+    # ── 退款售后 ──
+    {
+        "tables": ["biz_orders", "biz_order_refunds"],
+        "co_occurrence": 5,
+        "join_paths": [{"on": "biz_order_refunds.order_id = biz_orders.id", "join_type": "LEFT"}],
+        "scenes": ["退款率统计", "退款金额分析", "净收入计算"],
+        "aggregation": "SUM",
+    },
+    {
+        "tables": ["biz_order_refunds", "uc_users"],
+        "co_occurrence": 3,
+        "join_paths": [{"on": "biz_order_refunds.user_id = uc_users.id", "join_type": "LEFT"}],
+        "scenes": ["用户退款记录", "退款用户画像"],
+        "aggregation": "COUNT",
+    },
+    # ── 商品维度 ──
+    {
+        "tables": ["pd_products", "pd_categories"],
+        "co_occurrence": 5,
+        "join_paths": [{"on": "pd_products.category_id = pd_categories.id", "join_type": "LEFT"}],
+        "scenes": ["各品类商品数", "品类销售额", "类目分布"],
+        "aggregation": "COUNT",
+    },
+    {
+        "tables": ["pd_products", "pd_brands"],
+        "co_occurrence": 3,
+        "join_paths": [{"on": "pd_products.brand_id = pd_brands.id", "join_type": "LEFT"}],
+        "scenes": ["品牌商品数", "品牌排行"],
+        "aggregation": "COUNT",
+    },
+    {
+        "tables": ["pd_products", "st_shops"],
+        "co_occurrence": 4,
+        "join_paths": [{"on": "pd_products.shop_id = st_shops.id", "join_type": "LEFT"}],
+        "scenes": ["店铺商品列表", "各店铺商品数"],
+        "aggregation": "COUNT",
+    },
+    # ── 支付 ──
+    {
+        "tables": ["biz_orders", "biz_order_payments"],
+        "co_occurrence": 4,
+        "join_paths": [{"on": "biz_order_payments.order_id = biz_orders.id", "join_type": "LEFT"}],
+        "scenes": ["支付方式分布", "支付成功率", "各渠道支付金额"],
+        "aggregation": "SUM",
+    },
+    # ── 店铺运营 ──
+    {
+        "tables": ["biz_orders", "st_shops"],
+        "co_occurrence": 5,
+        "join_paths": [{"on": "biz_orders.shop_id = st_shops.id", "join_type": "LEFT"}],
+        "scenes": ["各店铺销售额", "店铺订单量排行", "店铺业绩对比"],
+        "aggregation": "SUM",
+    },
+    {
+        "tables": ["st_shops", "fin_settlements"],
+        "co_occurrence": 3,
+        "join_paths": [{"on": "fin_settlements.shop_id = st_shops.id", "join_type": "LEFT"}],
+        "scenes": ["店铺结算金额", "待结算列表"],
+        "aggregation": "SUM",
+    },
+    # ── 物流仓储 ──
+    {
+        "tables": ["biz_orders", "biz_order_logistics"],
+        "co_occurrence": 3,
+        "join_paths": [{"on": "biz_order_logistics.order_id = biz_orders.id", "join_type": "LEFT"}],
+        "scenes": ["物流状态查询", "配送时效分析"],
+        "aggregation": "COUNT",
+    },
+    {
+        "tables": ["wms_inventory_records", "pd_product_skus"],
+        "co_occurrence": 3,
+        "join_paths": [{"on": "wms_inventory_records.sku_id = pd_product_skus.id", "join_type": "LEFT"}],
+        "scenes": ["SKU 库存查询", "库存预警"],
+        "aggregation": "SUM",
+    },
+    # ── 用户分析 ──
+    {
+        "tables": ["uc_users", "uc_user_profiles"],
+        "co_occurrence": 3,
+        "join_paths": [{"on": "uc_user_profiles.user_id = uc_users.id", "join_type": "LEFT"}],
+        "scenes": ["用户画像", "用户详情查询"],
+        "aggregation": "COUNT",
+    },
+    {
+        "tables": ["uc_users", "uc_points_accounts"],
+        "co_occurrence": 2,
+        "join_paths": [{"on": "uc_points_accounts.user_id = uc_users.id", "join_type": "LEFT"}],
+        "scenes": ["用户积分余额", "积分排行"],
+        "aggregation": "SUM",
+    },
+    # ── 财务 ──
+    {
+        "tables": ["biz_orders", "fin_transactions"],
+        "co_occurrence": 3,
+        "join_paths": [],  # 间接关联
+        "scenes": ["订单与交易流水对账", "财务收入分析"],
+        "aggregation": "SUM",
+        "indirect": True,
+        "via": "st_shops",
+    },
+    # ── 运营日报 ──
+    {
+        "tables": ["ops_daily_reports", "ops_product_daily_reports"],
+        "co_occurrence": 2,
+        "join_paths": [],
+        "scenes": ["运营日报汇总", "商品日报趋势"],
+        "aggregation": "SUM",
+        "indirect": True,
+        "via": "report_date",
+    },
+]
+
+
 def get_dev_token() -> str:
     """获取开发 token (需要 DEBUG=True)"""
     resp = httpx.post(
@@ -346,20 +517,26 @@ def clean_memories(token: str, ds_id: str) -> None:
     resp.raise_for_status()
     memories = resp.json()
     for m in memories:
-        del_resp = httpx.delete(
-            f"{API_BASE}/memory/{m['id']}",
-            params={"data_source_id": ds_id},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-        )
-        del_resp.raise_for_status()
-        print(f"  🗑️  删除: {m['name']}")
+        try:
+            del_resp = httpx.delete(
+                f"{API_BASE}/memory/{m['id']}",
+                params={"data_source_id": ds_id},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            )
+            del_resp.raise_for_status()
+            print(f"  🗑️  删除: {m['name']}")
+        except httpx.HTTPStatusError as e:
+            # 404 = 已删除, 不阻塞
+            if e.response.status_code != 404:
+                raise
+            print(f"  ⏭️  跳过 (已删除): {m['name']}")
     if memories:
         print(f"  已清空 {len(memories)} 条记忆")
 
 
 def seed_memories(token: str, ds_id: str, memories: list[dict]) -> None:
-    """写入记忆"""
+    """写入业务知识记忆 (reference/user/project 类型)"""
     for m in memories:
         resp = httpx.put(
             f"{API_BASE}/memory",
@@ -375,7 +552,90 @@ def seed_memories(token: str, ds_id: str, memories: list[dict]) -> None:
         )
         resp.raise_for_status()
         print(f"  ✅ {m['name']}: {m['description']}")
-    print(f"\n🎉 共写入 {len(memories)} 条记忆到数据源 {ds_id}")
+    print(f"\n🎉 共写入 {len(memories)} 条业务知识记忆到数据源 {ds_id}")
+
+
+def _build_linkage_content(link: dict) -> str:
+    """从 linkage 模板构建 Markdown body (给 LLM 看)"""
+    parts = []
+    table_a, table_b = link["tables"]
+    is_indirect = link.get("indirect", False)
+
+    # JOIN 路径
+    join_paths = link.get("join_paths", [])
+    direct_joins = [jp for jp in join_paths if jp.get("on")]
+    if direct_joins:
+        parts.append("## JOIN 路径\n" + "\n".join(jp["on"] for jp in direct_joins) + "\n")
+    elif is_indirect:
+        via = link.get("via", "其他表")
+        parts.append(f"## 关联方式\n间接关联（经由 {via}）\n")
+
+    # 典型场景
+    scenes = link.get("scenes", [])
+    if scenes:
+        parts.append("## 典型场景\n" + "\n".join(f"- {s}" for s in scenes) + "\n")
+
+    # 聚合方式
+    agg = link.get("aggregation", "")
+    if agg:
+        parts.append(f"## 聚合方式\n{agg}\n")
+
+    return "\n".join(parts)
+
+
+def seed_linkage_memories(ds_id: str) -> None:
+    """直接用 AgentMemoryStore 写入 linkage 记忆 (带结构化 frontmatter)。
+
+    绕过 API (API 不支持 extra_metadata), 直接操作文件系统。
+    """
+    # 添加项目根目录到 sys.path, 以便 import app
+    project_root = str(Path(__file__).resolve().parent.parent)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    from app.core.agent_memory import AgentMemoryStore
+
+    # 用绝对路径, 确保写入 backend/memory/ (与 API 一致)
+    backend_root = str(Path(__file__).resolve().parent.parent)
+    memory_dir = f"{backend_root}/memory/default_tenant/{ds_id}"
+    store = AgentMemoryStore(base_dir=memory_dir)
+
+    for link in ECOM_LINKAGE_MEMORIES:
+        table_a, table_b = sorted(link["tables"])
+        name = f"linkage-{table_a}-{table_b}"
+        description = f"表 {table_a} 和 {table_b} 的共现经验"
+        content = _build_linkage_content(link)
+
+        # 检查是否已有同名 linkage (按表对查找)
+        existing = store.get_linkage_memory(table_a, table_b)
+
+        # 构建 extra_metadata (结构化 frontmatter)
+        extra_metadata: dict = {
+            "co_occurrence": link["co_occurrence"],
+            "tables": sorted([table_a, table_b]),
+        }
+        join_paths = link.get("join_paths", [])
+        if join_paths:
+            extra_metadata["join_paths"] = join_paths
+        scenes = link.get("scenes", [])
+        if scenes:
+            extra_metadata["scenes"] = scenes
+        agg = link.get("aggregation", "")
+        if agg:
+            extra_metadata["aggregation"] = agg
+
+        store.save_memory(
+            name=name,
+            description=description,
+            content=content,
+            memory_type="linkage",
+            mem_id=existing["id"] if existing else None,
+            extra_metadata=extra_metadata,
+        )
+        print(f"  ✅ {name}: co_occurrence={link['co_occurrence']}, "
+              f"join_paths={len(join_paths)}, scenes={len(scenes)}, agg={agg or '-'}")
+
+    print(f"\n🎉 共写入 {len(ECOM_LINKAGE_MEMORIES)} 条 linkage 记忆到 {memory_dir}")
 
 
 def main() -> None:
@@ -391,8 +651,12 @@ def main() -> None:
         print("🧹 清空已有记忆...")
         clean_memories(token, ds_id)
 
-    print(f"\n📝 写入电商场景测试记忆 ({len(ECOM_MEMORIES)} 条)...")
-    seed_memories(token, ds_id, ECOM_MEMORIES)
+    if not LINKAGE_ONLY:
+        print(f"\n📝 写入电商场景测试记忆 ({len(ECOM_MEMORIES)} 条)...")
+        seed_memories(token, ds_id, ECOM_MEMORIES)
+
+    print(f"\n📝 写入 linkage 记忆 ({len(ECOM_LINKAGE_MEMORIES)} 条, 从语义层关系推断)...")
+    seed_linkage_memories(ds_id)
 
     # 验证
     print("\n🔍 验证...")
@@ -405,8 +669,28 @@ def main() -> None:
     resp.raise_for_status()
     result = resp.json()
     print(f"  当前记忆数: {len(result)}")
+
+    # 分类统计
+    by_type: dict[str, int] = {}
     for m in result:
-        print(f"  - [{m.get('type', '?')}] {m['name']}: {m['description']}")
+        t = m.get("type", "project")
+        by_type[t] = by_type.get(t, 0) + 1
+    for t, count in sorted(by_type.items()):
+        print(f"  - {t}: {count} 条")
+
+    # 展示 linkage 记忆的结构化字段
+    linkage_mems = [m for m in result if m.get("type") == "linkage"]
+    if linkage_mems:
+        print(f"\n  📊 Linkage 记忆详情:")
+        for m in linkage_mems[:5]:
+            co = m.get("co_occurrence", "?")
+            tables = m.get("tables", [])
+            jp = m.get("join_paths", [])
+            sc = m.get("scenes", [])
+            agg = m.get("aggregation", "-")
+            print(f"    {tables}: co={co}, join_paths={len(jp)}, scenes={len(sc)}, agg={agg}")
+        if len(linkage_mems) > 5:
+            print(f"    ... 还有 {len(linkage_mems) - 5} 条")
 
 
 if __name__ == "__main__":

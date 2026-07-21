@@ -31,31 +31,47 @@ logger = logging.getLogger(__name__)
 # ── 文本序列化: 语义对象 → 可 embed 的文本 ────────────────────
 
 def model_to_text(model: Model) -> str:
-    """Model → embed 文本 (表名 + display_name + 描述 + 列名/类型)。
+    """Model → embed 文本 (中文优先, 重复描述增强语义)。
 
-    列信息是 schema linking 的关键 (对标 RAG-002: 问"销售额"→含 amount 列的表)。
+    BGE 等中文向量模型对中文文本质量高度敏感。
+    设计原则:
+      - 中文描述重复2遍, 提升核心语义权重
+      - display_name (中文名) 优先, 英文表名放后面
+      - 列信息只保留 display_name (中文注释), 不放英文列名
+      - data_type 不进文本 (对语义匹配无帮助, 反增噪声)
     """
-    parts = [model.name, model.display_name]
+    parts: list[str] = []
+    # 中文描述重复2遍 — 核心语义
     if model.description:
         parts.append(model.description)
+        parts.append(model.description)
+    # display_name (中文名)
+    if model.display_name and model.display_name != model.name:
+        parts.append(model.display_name)
+    # 英文表名放最后 (向量模型对英文不敏感, 但保留给精确匹配)
+    parts.append(f"表名{model.name}")
+    # 列: 只取中文 display_name, 不放英文列名
+    col_names: list[str] = []
     for col in model.columns:
-        col_desc = col.name
         if col.display_name and col.display_name != col.name:
-            col_desc += f"({col.display_name})"
-        if col.data_type:
-            col_desc += f"[{col.data_type}]"  # data_type 对标 RAG-005 类型约束
-        parts.append(col_desc)
-    return " ".join(parts)
+            col_names.append(col.display_name)
+    if col_names:
+        parts.append("字段:" + ",".join(col_names))
+    return "。".join(parts)
 
 
 def metric_to_text(metric: Metric) -> str:
-    """Metric → embed 文本 (名 + display_name + 公式 + 描述)。"""
-    parts = [metric.name, metric.display_name, metric.formula]
-    if metric.condition:
-        parts.append(metric.condition)
+    """Metric → embed 文本 (中文优先, display_name + 描述 + 公式)。"""
+    parts: list[str] = []
     if metric.description:
         parts.append(metric.description)
-    return " ".join(parts)
+    if metric.display_name and metric.display_name != metric.name:
+        parts.append(metric.display_name)
+    if metric.condition:
+        parts.append(metric.condition)
+    parts.append(f"指标{metric.name}")
+    parts.append(metric.formula)
+    return "。".join(parts)
 
 
 # ── 索引构建 ──────────────────────────────────────────────────

@@ -262,6 +262,100 @@ class TestAgentMemory:
             found = store.get_linkage_memory(f"t{co}_a", f"t{co}_b")
             assert found["co_occurrence"] == co
 
+    def test_linkage_memory_structured_join_paths(self, tmp_path):
+        """结构化 frontmatter: join_paths (list of dicts) 正确存取。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        join_paths = [
+            {"on": "biz_orders.user_id = biz_users.id", "join_type": "LEFT"},
+        ]
+        store.save_memory("共现orders↔users", "desc", "body", memory_type="linkage",
+                          extra_metadata={
+                              "co_occurrence": 3,
+                              "tables": ["biz_orders", "biz_users"],
+                              "join_paths": join_paths,
+                          })
+
+        found = store.get_linkage_memory("biz_orders", "biz_users")
+        assert found is not None
+        assert found["join_paths"] == join_paths
+
+    def test_linkage_memory_structured_scenes(self, tmp_path):
+        """结构化 frontmatter: scenes (list of strings) 正确存取。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        scenes = ["本月各品类销售额", "订单和用户关联查询"]
+        store.save_memory("共现orders↔users", "desc", "body", memory_type="linkage",
+                          extra_metadata={
+                              "co_occurrence": 5,
+                              "tables": ["biz_orders", "biz_users"],
+                              "scenes": scenes,
+                          })
+
+        found = store.get_linkage_memory("biz_orders", "biz_users")
+        assert found is not None
+        assert found["scenes"] == scenes
+
+    def test_linkage_memory_structured_aggregation(self, tmp_path):
+        """结构化 frontmatter: aggregation (标量字符串) 正确存取。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        store.save_memory("共现orders↔users", "desc", "body", memory_type="linkage",
+                          extra_metadata={
+                              "co_occurrence": 2,
+                              "tables": ["biz_orders", "biz_users"],
+                              "aggregation": "SUM",
+                          })
+
+        found = store.get_linkage_memory("biz_orders", "biz_users")
+        assert found is not None
+        assert found["aggregation"] == "SUM"
+
+    def test_linkage_memory_all_structured_fields(self, tmp_path):
+        """结构化 frontmatter: join_paths + scenes + aggregation 同时存取。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        join_paths = [{"on": "biz_orders.user_id = biz_users.id", "join_type": "LEFT"}]
+        scenes = ["本月各品类销售额"]
+        store.save_memory("共现orders↔users", "desc", "body", memory_type="linkage",
+                          extra_metadata={
+                              "co_occurrence": 5,
+                              "tables": ["biz_orders", "biz_users"],
+                              "join_paths": join_paths,
+                              "scenes": scenes,
+                              "aggregation": "SUM",
+                          })
+
+        found = store.get_linkage_memory("biz_orders", "biz_users")
+        assert found is not None
+        assert found["co_occurrence"] == 5
+        assert found["tables"] == ["biz_orders", "biz_users"]
+        assert found["join_paths"] == join_paths
+        assert found["scenes"] == scenes
+        assert found["aggregation"] == "SUM"
+
+    def test_linkage_memory_backward_compat_no_structured_fields(self, tmp_path):
+        """向后兼容: 旧格式 linkage 记忆 (无 join_paths/scenes/aggregation) 不报错。"""
+        from app.core.agent_memory import AgentMemoryStore
+
+        store = AgentMemoryStore(base_dir=str(tmp_path / "memory"))
+        # 只写 co_occurrence + tables (旧格式)
+        store.save_memory("共现orders↔users", "desc", "body", memory_type="linkage",
+                          extra_metadata={"co_occurrence": 3, "tables": ["biz_orders", "biz_users"]})
+
+        found = store.get_linkage_memory("biz_orders", "biz_users")
+        assert found is not None
+        assert found["co_occurrence"] == 3
+        assert found["tables"] == ["biz_orders", "biz_users"]
+        # 旧格式无结构化字段, 不应报错
+        assert "join_paths" not in found
+        assert "scenes" not in found
+        assert "aggregation" not in found
+
 
 
 class TestPromptCache:

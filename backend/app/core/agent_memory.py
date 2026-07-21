@@ -155,18 +155,22 @@ class AgentMemoryStore:
         # metadata 段: 基础 (type/consolidated) + 额外 (co_occurrence/tables 等)
         meta_lines = ["metadata:", f"  type: {memory_type}", "  consolidated: false"]
         if extra_metadata:
+            import yaml as _yaml  # lazy: 仅写记忆时才 import
             for k, v in extra_metadata.items():
                 # key 必须是合法 YAML 标识符 (防御: 避免特殊字符破坏 frontmatter)
                 if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", str(k)):
                     raise ValueError(f"Invalid extra_metadata key: {k!r}")
-                # list: 每个元素用双引号包裹 (兼容含逗号/空格/schema前缀的表名)
-                if isinstance(v, list):
-                    quoted = ", ".join(f'"{str(i)}"' for i in v)
-                    meta_lines.append(f"  {k}: [{quoted}]")
-                elif isinstance(v, bool):
-                    meta_lines.append(f"  {k}: {'true' if v else 'false'}")
-                else:
-                    meta_lines.append(f"  {k}: {v}")
+                # 用 yaml.dump 序列化值 (支持标量/列表/嵌套 dict/list)
+                # default_flow_style=True 对简单值用行内格式 (co_occurrence: 3),
+                # 对嵌套结构自动用块格式 (可读性好)
+                dumped = _yaml.dump({k: v}, default_flow_style=False).strip()
+                # yaml.dump 输出 "key: value\n", 取掉首行 key 前缀, 保留缩进
+                # 简单值: "co_occurrence: 3" → "  co_occurrence: 3"
+                # 嵌套值: "join_paths:\n- on: ...\n  join_type: ..." → "  join_paths:\n    - on: ...\n      join_type: ..."
+                lines = dumped.split("\n")
+                # 首行是 "key: value" 或 "key:\n  - ...", 统一加 2 空格缩进
+                indented = "\n".join("  " + line if i == 0 else "  " + line for i, line in enumerate(lines))
+                meta_lines.append(indented)
         frontmatter = (
             f"---\n"
             f"id: {mem_id}\n"
@@ -233,56 +237,50 @@ class AgentMemoryStore:
         对标 Claude Code: scanMemoryFiles() — scan file headers only,
         return id/name/description/type for the lightweight model to select.
         """
+        import yaml as _yaml  # lazy: 仅扫描时才 import
         memories = []
         for file_path in self.base_dir.glob("*.md"):
             if file_path.name == "MEMORY.md":
                 continue
 
             # Read only the frontmatter (从开头到第二个 ---) for fast scanning
-            # 不用固定 [:500]: linkage 记忆的 co_occurrence/tables 可能在 500 字符外 (长 description)
             full_text = file_path.read_text(encoding="utf-8")
-            # frontmatter = 首个 --- 到第二个 --- 之间; 无 frontmatter 则取前 500 兜底
             parts = full_text.split("---", 2)
-            head = parts[1] if len(parts) >= 3 and full_text.startswith("---") else full_text[:500]
+            has_frontmatter = len(parts) >= 3 and full_text.startswith("---")
 
-            id_match = re.search(r"^id:\s*(.+)$", head, re.MULTILINE)
-            name_match = re.search(r"^name:\s*(.+)$", head, re.MULTILINE)
-            desc_match = re.search(r"^description:\s*(.+)$", head, re.MULTILINE)
-            type_match = re.search(r"^\s*type:\s*(.+)$", head, re.MULTILINE)
-            consolidated_match = re.search(r"^\s*consolidated:\s*(true|false)", head, re.MULTILINE)
-            co_match = re.search(r"^\s*co_occurrence:\s*(\d+)", head, re.MULTILINE)
-            # tables: 支持引号包裹格式 ["a", "b"] (兼容含逗号/空格的表名) 和无引号 [a, b]
-            tables_match = re.search(r"^\s*tables:\s*\[([^\]]*)\]", head, re.MULTILINE)
+            if has_frontmatter:
+                head = parts[1]
+                try:
+                    fm = _yaml.safe_load(head) or {}
+                except Exception:
+                    fm = {}
+            else:
+                fm = {}
 
             # id: 优先 frontmatter, 回退 filename (兼容旧格式无 id 的种子文件)
-            mem_id = id_match.group(1).strip() if id_match else file_path.stem
+            mem_id = str(fm.get("id", "")).strip() or file_path.stem
+            metadata = fm.get("metadata", {}) or {}
 
             entry: dict = {
                 "id": mem_id,
-                "name": name_match.group(1).strip() if name_match else file_path.stem,
+                "name": fm.get("name", file_path.stem),
                 "file": file_path.name,
-                "description": desc_match.group(1).strip() if desc_match else "",
-                "type": type_match.group(1).strip() if type_match else "project",
-                "consolidated": consolidated_match.group(1).strip().lower() == "true" if consolidated_match else False,
+                "description": fm.get("description", ""),
+                "type": metadata.get("type", "project"),
+                "consolidated": metadata.get("consolidated", False),
                 "path": str(file_path.absolute()),
             }
             # E1: linkage 记忆的额外字段 (其他类型无此字段, 不污染 entry)
-            if co_match:
-                entry["co_occurrence"] = int(co_match.group(1))
-            if tables_match:
-                # 优先提取引号内值 (兼容含逗号/空格的表名), 无引号则 split 逗号
-                quoted = re.findall(r'"([^"]*)"', tables_match.group(1))
-                if quoted:
-                    entry["tables"] = quoted
-                else:
-                    entry["tables"] = [t.strip() for t in tables_match.group(1).split(",") if t.strip()]
-            else:
-                # YAML 多行列表格式: tables:\n  - "a"\n  - "b"
-                tables_block = re.search(r"^\s*tables:\s*\n((?:\s+-\s+['\"]?[^'\"]+['\"]?\s*\n)+)", head, re.MULTILINE)
-                if tables_block:
-                    items = re.findall(r"""-\s+['"]?([^'"\n]+)['"]?""", tables_block.group(1))
-                    if items:
-                        entry["tables"] = [t.strip() for t in items]
+            if "co_occurrence" in metadata:
+                entry["co_occurrence"] = int(metadata["co_occurrence"])
+            if "tables" in metadata:
+                entry["tables"] = metadata["tables"]
+            if "join_paths" in metadata:
+                entry["join_paths"] = metadata["join_paths"]
+            if "scenes" in metadata:
+                entry["scenes"] = metadata["scenes"]
+            if "aggregation" in metadata:
+                entry["aggregation"] = metadata["aggregation"]
             memories.append(entry)
 
         return memories

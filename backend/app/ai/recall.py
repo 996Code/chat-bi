@@ -444,6 +444,66 @@ def _extract_join_pairs(join_path_section: str) -> set[tuple[str, str]]:
     return pairs
 
 
+def _extract_join_on_conditions(
+    join_path_section: str, table_a: str, table_b: str
+) -> list[dict[str, str]]:
+    """从 join_path_section 提取特定表对的直接 ON 条件 (结构化)。
+
+    join_path_section 有两种格式:
+      1. 简单格式: "biz_orders.user_id = biz_users.id"
+      2. 多跳格式: "biz_orders LEFT JOIN st_shops ON biz_orders.shop_id = st_shops.id (confidence=1.0)
+                     LEFT JOIN pd_categories ON st_shops.category_id = pd_categories.id (confidence=1.0)"
+
+    只提取 table_a 和 table_b **直接 JOIN** 的 ON 条件,
+    跳过通过中间表间接关联的路径段。
+
+    Returns:
+        [{"on": "biz_orders.user_id = biz_users.id", "join_type": "LEFT"}, ...]
+    """
+    if not join_path_section:
+        return []
+    results: list[dict[str, str]] = []
+    for line in join_path_section.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if table_a not in line or table_b not in line:
+            continue
+
+        # 判断是否为多跳格式 (含 JOIN 关键字)
+        has_join = bool(re.search(r"\b(?:LEFT|RIGHT|INNER|CROSS)?\s*JOIN\b", line, re.IGNORECASE))
+
+        if has_join:
+            # 多跳格式: 按 JOIN 拆成独立段, 每段格式: "table_b ON condition (confidence=x)"
+            segments = re.split(r"\b(?:LEFT|RIGHT|INNER|CROSS)?\s*JOIN\b", line, flags=re.IGNORECASE)
+            for seg in segments[1:]:  # 跳过第一段 (FROM 表, 不是 JOIN)
+                # 提取 ON 子句
+                on_match = re.search(r"\bON\s+(.+?)(?:\s+\(confidence|$)", seg, re.IGNORECASE)
+                if not on_match:
+                    continue
+                on_clause = on_match.group(1).strip()
+                on_clause = re.sub(r"\s*\(confidence.*$", "", on_clause).strip()
+                # 检查 ON 条件是否直接关联 table_a 和 table_b
+                col_match = re.search(
+                    r"([a-zA-Z_][\w]*)\.[a-zA-Z_][\w]*\s*=\s*([a-zA-Z_][\w]*)\.[a-zA-Z_][\w]*",
+                    on_clause,
+                )
+                if col_match and {col_match.group(1), col_match.group(2)} == {table_a, table_b}:
+                    results.append({"on": on_clause, "join_type": "LEFT"})
+        else:
+            # 简单格式: "table_a.col = table_b.col" — 直接提取等值条件
+            col_match = re.search(
+                r"([a-zA-Z_][\w]*)\.[a-zA-Z_][\w]*\s*=\s*([a-zA-Z_][\w]*)\.[a-zA-Z_][\w]*",
+                line,
+            )
+            if col_match and {col_match.group(1), col_match.group(2)} == {table_a, table_b}:
+                on_clause = col_match.group(0)
+                # 去掉可能的 confidence 标注
+                on_clause = re.sub(r"\s*\(confidence.*$", "", on_clause).strip()
+                results.append({"on": on_clause, "join_type": "LEFT"})
+    return results
+
+
 def _build_linkage_content(
     table_a: str,
     table_b: str,
@@ -451,7 +511,7 @@ def _build_linkage_content(
     direct_join_pairs: set[tuple[str, str]],
     existing_scenes: list[str] | None = None,
 ) -> str:
-    """构建 linkage 记忆的 content。
+    """构建 linkage 记忆的 content (Markdown body, 给 LLM 看)。
 
     Args:
         direct_join_pairs: 本轮查询中有直接 JOIN 的表对集合（判断间接关联）
@@ -472,7 +532,6 @@ def _build_linkage_content(
             content_parts.append(f"## JOIN 路径\n" + "\n".join(join_lines) + "\n")
     elif not is_direct:
         # 间接关联：标注经由哪些表
-        # 找到连接 table_a 和 table_b 的中间表
         intermediaries = []
         for t in state.current_tables:
             if t in (table_a, table_b):
@@ -500,8 +559,13 @@ def _build_linkage_content(
     return "\n".join(content_parts)
 
 
-def _extract_existing_scenes(content: str) -> list[str]:
-    """从已有 linkage content 提取已记录的场景列表（去重用）。"""
+def _extract_existing_scenes(content: str, frontmatter_scenes: list[str] | None = None) -> list[str]:
+    """从已有 linkage 记忆提取已记录的场景列表（去重用）。
+
+    优先从 frontmatter_scenes (结构化字段) 读取，回退到 Markdown body 解析。
+    """
+    if frontmatter_scenes:
+        return list(frontmatter_scenes)
     if not content:
         return []
     scenes: list[str] = []
@@ -518,11 +582,40 @@ def _extract_existing_scenes(content: str) -> list[str]:
     return scenes
 
 
+def _extract_aggregation(state) -> str:
+    """从 state.thinking 提取聚合方式 (简洁关键字)。
+
+    LLM 返回的 aggregation 可能是长文本如 "SUM(actual_amount) 按 category 分组",
+    只提取首个聚合函数名 (SUM/COUNT/AVG/MAX/MIN) 作为 frontmatter 值。
+    """
+    if hasattr(state, "thinking") and state.thinking and hasattr(state.thinking, "aggregation"):
+        agg = state.thinking.aggregation
+        if agg:
+            return _clean_aggregation(str(agg))
+    return ""
+
+
+def _clean_aggregation(agg_str: str) -> str:
+    """清洗 aggregation 值: 提取聚合关键字, 截断过长文本。"""
+    m = re.search(r"\b(SUM|COUNT|AVG|MAX|MIN)\b", agg_str, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    # 无匹配则截取前 20 字符 (兜底)
+    return agg_str[:20].strip()
+
+
 def persist_linkage_memory(mem_store, state) -> None:
     """沉淀链路经验到 linkage 记忆 (E1 Task 2.1)。
 
     从 state 直接读取表对（不解析 SQL），对每对表创建或更新 linkage 记忆。
     单表查询跳过（无 JOIN 信号）。
+
+    结构化 frontmatter 字段 (程序化消费):
+      - join_paths: [{"on": "biz_orders.user_id = biz_users.id", "join_type": "LEFT"}, ...]
+      - scenes: ["本月各品类销售额", ...]
+      - aggregation: "SUM" (标量字符串)
+
+    Markdown body 保留 (给 LLM 注入 prompt 用)。
 
     Args:
         mem_store: AgentMemoryStore 实例
@@ -537,10 +630,16 @@ def persist_linkage_memory(mem_store, state) -> None:
     # 预计算直接 JOIN 表对集合（W2: 判断间接关联）
     direct_join_pairs = _extract_join_pairs(state.join_path_section)
 
+    # 提取聚合方式
+    aggregation = _extract_aggregation(state)
+
     # 生成所有表对组合
     table_pairs = list(combinations(sorted(state.current_tables), 2))
 
     for table_a, table_b in table_pairs:
+        # 提取该表对的 JOIN ON 条件 (结构化)
+        join_paths = _extract_join_on_conditions(state.join_path_section, table_a, table_b)
+
         # 检查是否已有该表对的 linkage 记忆
         existing = mem_store.get_linkage_memory(table_a, table_b)
 
@@ -548,16 +647,57 @@ def persist_linkage_memory(mem_store, state) -> None:
             # 已存在：co_occurrence + 1，追加新场景（W1: 若 question 新颖）
             new_co = existing["co_occurrence"] + 1
 
-            # 读取原内容（list_memories 不返回 content，需要 read_memory）
+            # 从 frontmatter 读取已有 scenes (结构化字段优先), 回退到 Markdown body
+            existing_fm_scenes = existing.get("scenes")
             original_content = mem_store.read_memory(existing["id"]) or ""
+            existing_scenes = _extract_existing_scenes(original_content, existing_fm_scenes)
 
-            # 提取已记录的场景（去重用）
-            existing_scenes = _extract_existing_scenes(original_content)
+            # 合并 JOIN 路径: 保留已有 + 追加新的 (去重)
+            # 清洗已有的脏 on 值 (旧数据可能含 "LEFT JOIN" 或 "confidence")
+            existing_join_paths = existing.get("join_paths") or []
+            cleaned_existing: list[dict[str, str]] = []
+            for jp in existing_join_paths:
+                on_val = jp.get("on", "")
+                # 脏数据: on 值包含 LEFT JOIN (多跳路径整行被写入)
+                if "LEFT JOIN" in on_val.upper() or "JOIN" in on_val.upper().split()[0:1]:
+                    # 尝试从脏数据中提取纯 ON 条件
+                    col_match = re.search(
+                        r"([a-zA-Z_][\w]*)\.[a-zA-Z_][\w]*\s*=\s*([a-zA-Z_][\w]*)\.[a-zA-Z_][\w]*",
+                        on_val,
+                    )
+                    if col_match and {col_match.group(1), col_match.group(2)} == {table_a, table_b}:
+                        cleaned_existing.append({"on": col_match.group(0), "join_type": jp.get("join_type", "LEFT")})
+                    # 否则丢弃脏数据
+                elif "confidence" in on_val.lower():
+                    # 去掉 confidence 标注
+                    clean_on = re.sub(r"\s*\(confidence.*$", "", on_val).strip()
+                    cleaned_existing.append({"on": clean_on, "join_type": jp.get("join_type", "LEFT")})
+                else:
+                    cleaned_existing.append(jp)
+            existing_join_paths = cleaned_existing
+            existing_on_set = {jp.get("on", "") for jp in existing_join_paths}
+            for jp in join_paths:
+                if jp.get("on", "") not in existing_on_set:
+                    existing_join_paths.append(jp)
+                    existing_on_set.add(jp.get("on", ""))
+            merged_join_paths = existing_join_paths
 
             # 重建 content（含追加新场景 + 保留 JOIN 路径等）
             new_content = _build_linkage_content(
                 table_a, table_b, state, direct_join_pairs, existing_scenes
             )
+
+            # 合并 scenes: 已有 + 新问题 (去重)
+            merged_scenes = list(existing_scenes)
+            if state.question and state.question not in merged_scenes:
+                merged_scenes.append(state.question)
+
+            # 合并 aggregation: 优先用新值, 否则清洗旧值
+            existing_agg = existing.get("aggregation", "")
+            final_aggregation = aggregation or (existing_agg if existing_agg else "")
+            # 清洗过长的 aggregation (旧数据可能是 LLM 原始长文本)
+            if final_aggregation and len(final_aggregation) > 10:
+                final_aggregation = _clean_aggregation(final_aggregation)
 
             mem_store.save_memory(
                 name=f"linkage-{table_a}-{table_b}",
@@ -567,13 +707,19 @@ def persist_linkage_memory(mem_store, state) -> None:
                 mem_id=existing["id"],
                 extra_metadata={
                     "co_occurrence": new_co,
-                    "tables": [table_a, table_b]
+                    "tables": sorted([table_a, table_b]),
+                    "join_paths": merged_join_paths,
+                    "scenes": merged_scenes,
+                    **({"aggregation": final_aggregation} if final_aggregation else {}),
                 }
             )
             logger.info(f"更新 linkage 记忆 {table_a}-{table_b}: co_occurrence={new_co}")
         else:
             # 新表对：创建 linkage 记忆
             content = _build_linkage_content(table_a, table_b, state, direct_join_pairs)
+
+            # scenes 初始列表
+            scenes = [state.question] if state.question else []
 
             mem_store.save_memory(
                 name=f"linkage-{table_a}-{table_b}",
@@ -582,7 +728,10 @@ def persist_linkage_memory(mem_store, state) -> None:
                 memory_type="linkage",
                 extra_metadata={
                     "co_occurrence": 1,
-                    "tables": [table_a, table_b]
+                    "tables": sorted([table_a, table_b]),
+                    "join_paths": join_paths,
+                    "scenes": scenes,
+                    **({"aggregation": aggregation} if aggregation else {}),
                 }
             )
             logger.info(f"创建 linkage 记忆 {table_a}-{table_b}")
