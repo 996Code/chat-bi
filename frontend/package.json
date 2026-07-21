@@ -17,6 +17,7 @@
     "element-plus": "^2.8.0",
     "exceljs": "^4.4.0",
     "gridstack": "^11.5.1",
+    "marked": "^18.0.7",
     "vue": "^3.5.0",
     "vue-router": "^4.4.0"
   },

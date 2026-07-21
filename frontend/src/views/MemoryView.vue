@@ -97,7 +97,7 @@
             </div>
           </div>
         </template>
-        <pre class="mem-content">{{ mem.content }}</pre>
+        <div class="mem-content markdown-body" v-html="renderMarkdown(mem.content)"></div>
         <!-- linkage 结构化信息 -->
         <div v-if="mem.type === 'linkage' && (mem.tables || mem.co_occurrence)" class="linkage-meta">
           <el-tag v-if="mem.co_occurrence" size="small" type="info">共现 {{ mem.co_occurrence }} 次</el-tag>
@@ -158,6 +158,19 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Edit, Delete, InfoFilled, Sort, Lock, Link } from '@element-plus/icons-vue'
 import { memory as memoryApi, datasource, type Memory, type ConsolidateStatus } from '@/api'
 import { extractErrorDetail } from '@/utils/error'
+import { marked } from 'marked'
+
+// 配置 marked
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+})
+
+// 渲染 Markdown 内容
+function renderMarkdown(content: string): string {
+  if (!content) return ''
+  return marked.parse(content) as string
+}
 
 const memoryList = ref<Memory[]>([])
 const loading = ref(false)
@@ -520,6 +533,78 @@ onUnmounted(stopPolling)
 .mem-content {
   margin: 0; white-space: pre-wrap; font-size: 0.85rem;
   line-height: 1.6; color: #606266; max-height: 300px; overflow-y: auto;
+}
+.mem-content.markdown-body {
+  white-space: normal;
+}
+.mem-content.markdown-body :deep(h1),
+.mem-content.markdown-body :deep(h2),
+.mem-content.markdown-body :deep(h3),
+.mem-content.markdown-body :deep(h4),
+.mem-content.markdown-body :deep(h5),
+.mem-content.markdown-body :deep(h6) {
+  margin: 8px 0 4px 0;
+  font-weight: 600;
+  color: #303133;
+}
+.mem-content.markdown-body :deep(h1) { font-size: 1.2em; }
+.mem-content.markdown-body :deep(h2) { font-size: 1.1em; }
+.mem-content.markdown-body :deep(h3) { font-size: 1.05em; }
+.mem-content.markdown-body :deep(p) {
+  margin: 4px 0;
+}
+.mem-content.markdown-body :deep(ul),
+.mem-content.markdown-body :deep(ol) {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.mem-content.markdown-body :deep(li) {
+  margin: 2px 0;
+}
+.mem-content.markdown-body :deep(code) {
+  background: #f5f7fa;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.9em;
+  color: #e83e8c;
+}
+.mem-content.markdown-body :deep(pre) {
+  background: #f5f7fa;
+  padding: 8px 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.mem-content.markdown-body :deep(pre code) {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+.mem-content.markdown-body :deep(table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+}
+.mem-content.markdown-body :deep(th),
+.mem-content.markdown-body :deep(td) {
+  border: 1px solid #e4e7ed;
+  padding: 6px 10px;
+  text-align: left;
+}
+.mem-content.markdown-body :deep(th) {
+  background: #f5f7fa;
+  font-weight: 600;
+}
+.mem-content.markdown-body :deep(strong) {
+  color: #303133;
+  font-weight: 600;
+}
+.mem-content.markdown-body :deep(a) {
+  color: #409eff;
+  text-decoration: none;
+}
+.mem-content.markdown-body :deep(a:hover) {
+  text-decoration: underline;
 }
 .recall-hint {
   display: flex; align-items: center; gap: 4px;
