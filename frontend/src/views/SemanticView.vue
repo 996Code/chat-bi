@@ -149,8 +149,6 @@
           </el-table-column>
         </el-table>
 
-        <h4 v-if="reverseRelationships.length" style="margin-top: 20px">
-
         <!-- 指标区域 (和列、关系平级) -->
         <h4 style="margin-top: 20px">
           指标 ({{ selected.metrics?.length || 0 }})
