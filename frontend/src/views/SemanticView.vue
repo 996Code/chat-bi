@@ -37,10 +37,10 @@
           <div class="table-name">{{ m.display_name }}</div>
           <div class="table-meta">
             <span>{{ m.name }}</span>
-              <span class="badges">
-              <el-badge :value="m.columns.length" type="primary" />列
-              <el-badge :value="getRelationshipCount(m.name)" type="success" />关系
-              <el-badge v-if="m.metrics?.length" :value="m.metrics.length" type="warning" />指标
+            <span class="stat-chips">
+              <el-tag size="small" type="primary" effect="plain">{{ m.columns.length }} 列</el-tag>
+              <el-tag size="small" type="success" effect="plain">{{ getRelationshipCount(m.name) }} 关系</el-tag>
+              <el-tag v-if="m.metrics?.length" size="small" type="warning" effect="plain">{{ m.metrics.length }} 指标</el-tag>
             </span>
           </div>
         </div>

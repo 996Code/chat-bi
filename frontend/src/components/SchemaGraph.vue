@@ -97,6 +97,17 @@
             </div>
           </div>
           <div v-else class="rel-empty">无关联关系</div>
+
+          <!-- 指标列表 (只读, 编辑入口在语义层) -->
+          <div class="rel-section" v-if="nodeMetrics.length > 0">
+            <div class="section-title">业务指标</div>
+            <div v-for="m in nodeMetrics" :key="m.name" class="metric-item">
+              <code class="metric-name">{{ m.name }}</code>
+              <span class="metric-display">{{ m.display_name }}</span>
+              <code class="metric-formula">{{ m.formula }}</code>
+              <el-tag v-if="m.condition" size="small" type="info" effect="plain" style="margin-left: 4px">WHERE {{ m.condition }}</el-tag>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -211,7 +222,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, ZoomIn, ZoomOut, FullScreen, Plus, Close, Search, Rank, Connection, Delete } from '@element-plus/icons-vue'
-import { graph, type GraphData, type GraphNode, type GraphEdge, type TableColumn } from '@/api'
+import { graph, semantic, type GraphData, type GraphNode, type GraphEdge, type TableColumn, type SemanticMetric } from '@/api'
 import {
   getCommunityColor,
   getCommunityGlow,
@@ -240,6 +251,8 @@ const loading = ref(false)
 const graphData = ref<GraphData>({ nodes: [], edges: [] })
 const selectedNode = ref<GraphNode | null>(null)
 const selectedEdge = ref<GraphEdge | null>(null)
+// 选中节点的指标列表 (从语义层加载)
+const nodeMetrics = ref<SemanticMetric[]>([])
 let g6Instance: any = null
 
 // 交互模式: move=拖拽移动, connect=拖拽连线
@@ -987,6 +1000,25 @@ watch(() => props.dataSourceId, () => {
   loadGraphData()
 })
 
+// ── 选中节点时加载该表的指标列表 ──────────────────────────────
+async function loadNodeMetrics() {
+  nodeMetrics.value = []
+  if (!selectedNode.value || !props.dataSourceId) return
+  try {
+    const { data } = await semantic.current(props.dataSourceId)
+    const tableModel = data?.content?.models?.find(m => m.name === selectedNode.value!.id)
+    if (tableModel?.metrics) {
+      nodeMetrics.value = tableModel.metrics
+    }
+  } catch {
+    // 静默失败, 指标展示不影响主功能
+  }
+}
+
+watch(selectedNode, (val) => {
+  if (val) loadNodeMetrics()
+})
+
 // ── 暴露给父组件的方法 ──────────────────────────────────────
 
 function focusNode(nodeId: string) {
@@ -1196,6 +1228,33 @@ onBeforeUnmount(() => {
 
 .rel-item:hover {
   background: #f5f7fa;
+}
+
+.metric-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.metric-item:hover {
+  background: #f5f7fa;
+}
+.metric-name {
+  color: #e6a23c;
+  font-weight: 600;
+  font-size: 11px;
+}
+.metric-display {
+  color: #303030;
+  font-weight: 500;
+}
+.metric-formula {
+  color: #67c23a;
+  font-size: 11px;
 }
 
 .rel-arrow {
