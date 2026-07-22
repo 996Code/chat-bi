@@ -206,6 +206,8 @@ def build_schema_context(
 
     格式 (含 data_type, 对标 RAG-005 类型约束):
       biz_orders(订单表): id[BIGINT] user_id[BIGINT] total_amount[DECIMAL]
+    指标行 (无指标不输出):
+      指标: gmv(成交总额) = SUM(total_amount) WHERE status IN ('paid','shipped')
 
     Args:
         content: 语义层内容
@@ -237,8 +239,60 @@ def build_schema_context(
             rels.append(f"→{rel.target_model}({rel.on})")
         rel_str = " ".join(rels)
         display = f"({model.display_name})" if model.display_name != model.name else ""
-        lines.append(f"{model.name}{display}: {' '.join(col_descs)} {rel_str}".strip())
+        line = f"{model.name}{display}: {' '.join(col_descs)} {rel_str}".strip()
+        # 指标行 (有指标时追加, 让 LLM 知道业务计算口径)
+        if model.metrics:
+            metric_parts = []
+            for m in model.metrics:
+                m_desc = f"{m.name}({m.display_name}) = {m.formula}"
+                if m.condition:
+                    m_desc += f" WHERE {m.condition}"
+                if m.type == "composite" and m.factor_metric_names:
+                    m_desc += f" [子指标: {', '.join(m.factor_metric_names)}]"
+                metric_parts.append(m_desc)
+            line += f"\n  指标: {'; '.join(metric_parts)}"
+        lines.append(line)
     return "\n".join(lines)
+
+
+def build_metrics_hint(
+    content: SemanticModelContent | None,
+    model_names: list[str] | None = None,
+) -> str:
+    """从语义层构建业务指标定义文本 (供 SQL 生成 prompt 的 metrics_hint 段)。
+
+    格式:
+      biz_orders: gmv(成交总额) = SUM(total_amount) WHERE status IN ('paid','shipped')
+                  order_count(订单数) = COUNT(*)
+
+    Args:
+        content: 语义层内容
+        model_names: 只取指定表 (None = 全部)
+
+    Returns:
+        指标定义文本 (无指标返回空字符串)
+    """
+    if content is None or not content.models:
+        return ""
+
+    names_filter = set(model_names) if model_names else None
+    lines: list[str] = []
+    for model in content.models:
+        if names_filter is not None and model.name not in names_filter:
+            continue
+        if not model.metrics:
+            continue
+        metric_parts = []
+        for m in model.metrics:
+            m_desc = f"{m.name}({m.display_name}) = {m.formula}"
+            if m.condition:
+                m_desc += f" WHERE {m.condition}"
+            if m.type == "composite" and m.factor_metric_names:
+                m_desc += f" [子指标: {', '.join(m.factor_metric_names)}]"
+            metric_parts.append(m_desc)
+        lines.append(f"{model.name}: {'; '.join(metric_parts)}")
+
+    return "\n".join(lines) if lines else ""
 
 
 def build_join_path_section(

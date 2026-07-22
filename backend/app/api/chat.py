@@ -203,11 +203,15 @@ async def build_agent_deps(
         # 合并 skills + memory 进同一个 skills 参数 (generate_sql 的 skills 槽位)
         combined_skills = "\n\n".join(s for s in [skills_text, memory_text] if s) or None
         thinking_hint = kw.get("thinking_hint")  # 由 run_agent 传入 (预思考提示)
+        join_path_section = kw.get("join_path_section")  # 图驱动的 JOIN 路径
+        metrics_hint = kw.get("metrics_hint")  # 业务指标定义
         result = await generate_sql(
             question=question, schema_context=schema_context,
             allowed_columns=allowed_columns,
             skills=combined_skills, history=history, fewshot_examples=fewshot_text or None,
             thinking_hint=thinking_hint,
+            join_path_section=join_path_section,
+            metrics_hint=metrics_hint,
         )
         result.fewshot_count = fewshot_count
         return result

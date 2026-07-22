@@ -53,6 +53,7 @@ _EDGE_DIRECTION = "direction"  # "forward" | "reverse"
 # 节点属性键
 _NODE_DISPLAY_NAME = "display_name"
 _NODE_COLUMN_COUNT = "column_count"
+_NODE_METRIC_COUNT = "metric_count"
 _NODE_SOURCE = "source"
 
 
@@ -84,6 +85,7 @@ class SchemaGraph:
                 **{
                     _NODE_DISPLAY_NAME: model.display_name,
                     _NODE_COLUMN_COUNT: len(model.columns),
+                    _NODE_METRIC_COUNT: len(model.metrics),
                     _NODE_SOURCE: model.source,
                 },
             )
@@ -568,6 +570,7 @@ class SchemaGraph:
                 "community": community_map.get(node, 0),
                 "centrality": round(centrality.get(node, 0.0), 4),
                 "columnCount": data.get(_NODE_COLUMN_COUNT, 0),
+                "metricCount": data.get(_NODE_METRIC_COUNT, 0),
                 "source": data.get(_NODE_SOURCE, "manual"),
                 "degree": self._graph.degree(node),
             })
@@ -648,6 +651,7 @@ class SchemaGraph:
                 "community": community_map.get(node, 0),
                 "centrality": round(centrality.get(node, 0.0), 4),
                 "columnCount": data.get(_NODE_COLUMN_COUNT, 0),
+                "metricCount": data.get(_NODE_METRIC_COUNT, 0),
                 "source": data.get(_NODE_SOURCE, "manual"),
                 "degree": self._graph.degree(node),
             })

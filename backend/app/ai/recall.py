@@ -778,3 +778,118 @@ def persist_linkage_memory(mem_store, state, conv_id: str | None = None) -> None
                     }
                 )
                 logger.info(f"创建 linkage 记忆 {table_a}-{table_b}")
+
+
+def persist_metric_feedback(
+    mem_store,
+    state,
+    semantic_content,
+    conv_id: str | None = None,
+) -> None:
+    """运行时指标反哺 — 查询成功后校验 SQL 与指标的关系。
+
+    闭环逻辑:
+      1. SQL 命中已知 metric → co_occurrence += 1 (指标越用越可信)
+      2. SQL 聚合公式与已知 metric 公式偏差 → 写 metric_suggestion 记忆 (人工校正入口)
+      3. SQL 含新指标模式 (未在语义层定义的聚合) → 写 metric_suggestion 记忆 (发现新指标)
+
+    设计原则:
+      - 不缝合记忆系统的关键词召回 (指标信息走 schema_context, 不走 memory)
+      - 不写死列名模式判断
+      - 宁缺毋滥: 无法判断时跳过, 不写低质量 suggestion
+
+    Args:
+        mem_store: AgentMemoryStore 实例
+        state: AgentState 实例，需包含 sql/current_tables/semantic_content
+        semantic_content: SemanticModelContent 实例 (语义层完整内容)
+        conv_id: 对话 ID (追溯来源)
+    """
+    import re as _re
+
+    if not state.sql or not state.current_tables:
+        return
+
+    # 收集当前查询涉及的表的所有已知指标
+    known_metrics: dict[str, dict] = {}  # metric_name → {model, metric}
+    if semantic_content and hasattr(semantic_content, "models"):
+        for model in semantic_content.models:
+            if model.name not in state.current_tables:
+                continue
+            for m in model.metrics:
+                known_metrics[m.name] = {"model": model.name, "metric": m}
+
+    # 从 SQL 提取聚合函数 (简化匹配: SUM(col), COUNT(...), AVG(col) 等)
+    agg_pattern = _re.compile(
+        r"\b(SUM|COUNT|AVG|MAX|MIN)\s*\(\s*([^)]+)\s*\)",
+        _re.IGNORECASE,
+    )
+    sql_aggs: list[tuple[str, str]] = []  # (func, col)
+    for match in agg_pattern.finditer(state.sql):
+        sql_aggs.append((match.group(1).upper(), match.group(2).strip()))
+
+    if not sql_aggs:
+        return
+
+    # 1. SQL 命中已知 metric → co_occurrence += 1
+    # 匹配逻辑: SQL 的聚合函数+列名与 metric 的 formula 有交集
+    for metric_name, info in known_metrics.items():
+        metric = info["metric"]
+        formula_upper = metric.formula.upper()
+        # 简化匹配: formula 中包含 SQL 的聚合表达式
+        matched = False
+        for func, col in sql_aggs:
+            agg_expr = f"{func}({col})".upper()
+            # 同时匹配带/不带空格的版本
+            if agg_expr in formula_upper or f"{func} ( {col} )" in formula_upper:
+                matched = True
+                break
+        if matched:
+            # 更新语义层中该 metric 的 co_occurrence
+            metric.co_occurrence = metric.co_occurrence + 1
+            logger.info(
+                "metric_feedback: 指标 %s 命中, co_occurrence → %d",
+                metric_name, metric.co_occurrence,
+            )
+
+    # 2. 发现新指标模式: SQL 含聚合但不在已知指标中
+    # 只对单表聚合生成 suggestion (多表 JOIN 的聚合太复杂, 容易误判)
+    if len(state.current_tables) == 1 and known_metrics:
+        table_name = state.current_tables[0]
+        for func, col in sql_aggs:
+            agg_expr = f"{func}({col})"
+            # 检查这个聚合是否已被已知指标覆盖
+            covered = False
+            for info in known_metrics.values():
+                if agg_expr.upper() in info["metric"].formula.upper():
+                    covered = True
+                    break
+            if not covered:
+                # 写 metric_suggestion 记忆 (供人工在语义层页面采纳)
+                try:
+                    suggestion_name = f"metric-suggestion-{table_name}-{func.lower()}-{col.replace('.', '_')}"
+                    # 检查是否已有同名 suggestion (防重复)
+                    existing = mem_store.list_memories()
+                    if any(m.get("name") == suggestion_name for m in existing):
+                        continue
+                    mem_store.save_memory(
+                        name=suggestion_name,
+                        description=f"表 {table_name} 的新指标建议: {agg_expr}",
+                        content=f"## 新指标建议\n\n"
+                                f"表: {table_name}\n"
+                                f"聚合: {agg_expr}\n"
+                                f"来源 SQL: {state.sql[:200]}\n"
+                                f"来源问题: {state.question[:100]}\n\n"
+                                f"建议在语义层页面添加此指标定义。",
+                        memory_type="metric_suggestion",
+                        extra_metadata={
+                            "table": table_name,
+                            "formula": agg_expr,
+                            **({"conversation_id": conv_id} if conv_id else {}),
+                        },
+                    )
+                    logger.info(
+                        "metric_feedback: 新指标建议 %s (表=%s)",
+                        suggestion_name, table_name,
+                    )
+                except Exception as e:
+                    logger.warning("metric_feedback: 写 suggestion 失败: %s", e)

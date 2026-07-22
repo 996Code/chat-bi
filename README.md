@@ -72,7 +72,7 @@
   </tr>
   <tr>
     <td>
-      自动扫描数据源生成语义模型，支持表/列语义编辑、关系图谱、版本对比与一键回滚。
+      自动扫描数据源生成语义模型，支持表/列语义编辑、关系图谱、版本对比与一键回滚。扫描时 LLM 自动推断业务指标（GMV、客单价等），可在语义层页面人工校正，查询时指标定义注入 SQL prompt。
     </td>
     <td>
       审计日志、Token 用量统计、Prompt 调试、慢查询监控、数据源健康检查，运维全景可观测。
@@ -435,6 +435,7 @@ chat-bi/
 | `GRAPH_MAX_JOIN_PATH_HOPS` | `4` | 🕸️JOIN 路径最大跳数 |
 | `GRAPH_COMMUNITY_ALGORITHM` | `label_propagation` | 🕸️社区发现算法 |
 | `GRAPH_JOIN_PATH_IN_PROMPT` | `true` | 🕸️是否在 SQL prompt 注入 JOIN 路径 |
+| `SCAN_METRIC_INFERENCE` | `true` | 📊扫描时是否用 LLM 推断业务指标 |
 | `STATE_STORE_DIR` | `data/states` | 对话状态存储目录 (JSONL) |
 | `STATE_STORE_ROW_SAMPLE_LIMIT` | `50` | 对话落库的结果采样行数上限 |
 | `CONVERSATION_TITLE_MAX_LENGTH` | `16` | 对话标题最大字数 |

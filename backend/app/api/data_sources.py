@@ -332,6 +332,16 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
             except Exception as e:
                 logger.warning("LLM 推断失败, 退化列名: %s", e)
 
+            # ── Stage 2b: LLM 指标推断 (65% → 70%) ──────────────
+            await _update_scan(session, ds, progress=65, stage="LLM 推断业务指标...")
+            try:
+                from app.services.semantic_scanner import enrich_metrics
+                await asyncio.wait_for(enrich_metrics(content), timeout=float(get_settings().scan_llm_enrichment_timeout))
+            except asyncio.TimeoutError:
+                logger.warning("LLM 指标推断整体超时, 跳过")
+            except Exception as e:
+                logger.warning("LLM 指标推断失败, 跳过: %s", e)
+
             # ── Stage 3: 知识图谱 + 示例问题 (65% → 85%) ────────
             await _update_scan(session, ds, progress=70, stage="推断表关系...")
             try:

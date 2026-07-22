@@ -11,14 +11,18 @@ LLM 中文推断函数可注入（infer_llm 参数），不强制真实调用。
 """
 from __future__ import annotations
 
+import logging
 from typing import Callable, Protocol
 
 from app.schemas.semantic_layer import (
     Column,
+    Metric,
     Model,
     Relationship,
     SemanticModelContent,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── Inspector 协议（duck typing，兼容真实 inspect(engine) 和 mock）────
@@ -151,7 +155,7 @@ def _scan_table(
         confidence=t_conf,
         columns=columns,
         relationships=relationships,
-        metrics=[],  # 初始扫描不生成指标，留给人工/T018
+        metrics=[],  # 同步扫描不推断指标，留给异步 enrich_metrics()
         calculated_fields=[],
     )
 
@@ -195,3 +199,119 @@ def _scan_relationships(
             confidence=1.0,
         ))
     return rels
+
+
+# ── 异步指标推断 (扫描后 LLM 推断，与 _enrich_with_llm 同级) ────────
+
+async def enrich_metrics(content: SemanticModelContent) -> None:
+    """扫描后用 LLM 推断业务指标 (原地 patch)。
+
+    设计原则:
+      - 指标是数据模型的附属品，归表所有
+      - 无 measure 列的表 → 跳过，不调 LLM
+      - 有 measure 列 → 调 LLM 推断指标 JSON，Pydantic 校验，失败跳过
+      - 不写死列名模式，完全由 LLM 语义推断
+      - 宁缺毋滥：推断失败不阻塞扫描
+      - 跳过系统表 (ChatBI 元数据表, 用户不查)
+
+    调用时机: 在 _enrich_with_llm 之后 (列已有中文 display_name, 指标推断更准)
+    """
+    from app.core.config import get_settings
+    from app.core.llm_client import llm_chat
+    from app.core.llm_json import parse_json_response
+
+    # 配置开关关闭 → 跳过
+    if not get_settings().scan_metric_inference:
+        return
+
+    _system_tables = frozenset(get_settings().system_tables)
+
+    # 筛出有 measure 列的业务表
+    candidates: list[Model] = []
+    for model in content.models:
+        if model.name in _system_tables:
+            continue
+        if any(c.semantic_type == "measure" for c in model.columns):
+            candidates.append(model)
+
+    if not candidates:
+        return
+
+    # 逐表推断 (每张表的指标语义独立, 不适合批量)
+    # 优化: 表数多时并发, 但限制并发数避免 LLM 限流
+    semaphore = _make_semaphore(max_concurrent=3)
+
+    async def _infer_one(model: Model) -> None:
+        measure_cols = [c for c in model.columns if c.semantic_type == "measure"]
+        dim_cols = [c for c in model.columns if c.semantic_type == "dimension"]
+
+        measure_desc = ", ".join(
+            f"{c.name}({c.display_name}, {c.data_type})" for c in measure_cols
+        )
+        dim_desc = ", ".join(
+            f"{c.name}({c.display_name})" for c in dim_cols[:10]
+        ) if dim_cols else "无"
+
+        prompt = (
+            f"你是 BI 业务指标推断助手。表名: {model.name}\n"
+            f"度量列(可聚合): {measure_desc}\n"
+            f"维度列(可分组): {dim_desc}\n\n"
+            f"基于以上列，推断该表的核心业务指标。规则:\n"
+            f"1. single 指标: 直接聚合，如 SUM(total_amount)\n"
+            f"2. composite 指标: 由子指标组合，如 gmv / order_count，需填 factor_metric_names\n"
+            f"3. 每个指标需有 name(英文标识), display_name(中文名), formula, type(single/composite)\n"
+            f"4. 如有过滤条件填 condition，如 status IN ('paid')\n"
+            f"5. 只推断有业务含义的指标，不要凑数\n\n"
+            f"只返回 JSON 数组，格式:\n"
+            f'[{{"name": "gmv", "display_name": "成交总额", "formula": "SUM(total_amount)", '
+            f'"type": "single", "condition": "status IN (\\"paid\\",\\"shipped\\")"}}]\n'
+            f"不要解释，不要 markdown 包裹。"
+        )
+
+        async with semaphore:
+            try:
+                result_text, _ = await llm_chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                )
+            except Exception as e:
+                logger.warning("enrich_metrics: LLM 调用失败 (表=%s), 跳过: %s", model.name, e)
+                return
+
+        # 解析 LLM 响应
+        parsed = parse_json_response(result_text)
+        if not isinstance(parsed, list):
+            logger.warning("enrich_metrics: LLM 返回非数组 (表=%s), 跳过", model.name)
+            return
+
+        # Pydantic 逐条校验，失败跳过 (宁缺毋滥)
+        metrics: list[Metric] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            try:
+                m = Metric(**item)
+                metrics.append(m)
+            except Exception as e:
+                logger.warning(
+                    "enrich_metrics: 指标校验失败 (表=%s, 数据=%s): %s",
+                    model.name, item, e,
+                )
+
+        if metrics:
+            model.metrics = metrics
+            logger.info(
+                "enrich_metrics: 表 %s 推断出 %d 个指标: %s",
+                model.name, len(metrics), ", ".join(m.name for m in metrics),
+            )
+
+
+    # 并发推断所有候选表
+    import asyncio
+    await asyncio.gather(*[_infer_one(m) for m in candidates], return_exceptions=True)
+
+
+def _make_semaphore(max_concurrent: int):
+    """创建并发信号量 (延迟导入 asyncio)。"""
+    import asyncio
+    return asyncio.Semaphore(max_concurrent)

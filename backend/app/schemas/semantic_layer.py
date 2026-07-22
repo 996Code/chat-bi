@@ -87,6 +87,8 @@ class Metric(BaseModel):
     composite: 由子指标组合，如 gmv / order_count
                composite 必须有 factor_metric_names 指向子指标 (SEM-005)
                子指标只能 single (不支持嵌套复合，对标海泰)
+
+    指标是数据模型的附属品，归表所有。GMV 属于 biz_orders，不属于独立命名空间。
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -102,6 +104,15 @@ class Metric(BaseModel):
     factor_metric_names: list[str] | None = Field(
         default=None,
         description="仅 composite 必填：子指标名列表",
+    )
+    co_occurrence: int = Field(
+        default=0,
+        description="查询命中次数 (运行时反哺递增, 0=未命中)",
+    )
+    source: SourceStr = Field(
+        default="auto_inferred",
+        description="指标来源: auto_inferred=扫描推断, manual=人工校正, "
+                    "metric_suggestion=运行时建议",
     )
 
     @model_validator(mode="after")

@@ -351,7 +351,7 @@ async def chat_stream(
                 return
 
             # ── Stage 3: 预思考 + schema context ────────────────
-            from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns, build_join_path_section, get_schema_graph
+            from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns, build_join_path_section, get_schema_graph, build_metrics_hint
             from app.ai.chat_utils import inherit_prev_tables
             # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
             tables = inherit_prev_tables(state.prev_tables, tables, state.semantic_content)
@@ -374,6 +374,8 @@ async def chat_stream(
             # 只对种子表+1-hop 邻居算路径, 避免社区远亲产生大量无意义路径对
             join_path_section = build_join_path_section(state.semantic_content, tables, graph=sg, seed_names=seed_tables)
             state.join_path_section = join_path_section
+            # 业务指标定义 (从语义层指标区提取, 供 LLM 准确计算指标而非猜测公式)
+            metrics_hint = build_metrics_hint(state.semantic_content, tables)
             # 白名单列: 取整个语义层的全部列 (语义层本身是安全边界)
             allowed_columns = extract_allowed_columns(state.semantic_content)
             if not allowed_columns:
@@ -413,6 +415,7 @@ async def chat_stream(
                 allowed_columns=allowed_columns, history=state.history,
                 thinking_hint=thinking_hint,
                 join_path_section=join_path_section,
+                metrics_hint=metrics_hint,
             )
             state.llm_call_count += 1
 
@@ -880,6 +883,17 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                     "stage": "linkage",
                     "error": "链路经验沉淀失败",
                 })
+
+        # 指标反哺: 成功查询后校验 SQL 与指标关系 (co_occurrence + suggestion)
+        if state.success and state.sql:
+            try:
+                from app.ai.recall import persist_metric_feedback
+                from app.core.agent_memory import AgentMemoryStore
+                mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
+                mem_store = AgentMemoryStore(base_dir=mem_dir)
+                persist_metric_feedback(mem_store, state, state.semantic_content, conv_id=conv_id)
+            except Exception as e:
+                logger.debug("指标反哺失败 (不阻塞): %s", e)
 
     except Exception as e:
         logger.warning("流式 StateStore 持久化失败 (不阻塞): %s", e)

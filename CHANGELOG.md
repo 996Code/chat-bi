@@ -1,5 +1,65 @@
 # 变更记录
 
+## v2.3.0 (2026-07) - 指标识别优化 (方向4)
+
+### 📊 业务指标自动识别 (Metric Inference)
+
+让系统理解业务指标（GMV、客单价、复购率），LLM 生成 SQL 时不再猜测公式。
+
+#### 闭环架构
+
+```
+扫描时 LLM 推断初始指标 (enrich_metrics)
+         ↓
+语义层页面 (表详情下) 人工校正 ← 运行时反哺 (co_occurrence + 新指标建议)
+         ↓
+查询时指标注入 SQL prompt (metrics_hint)
+         ↓
+对话成功 → 反哺指标经验 (persist_metric_feedback)
+```
+
+#### Wave 1: Scanner 推断 + Schema Context 输出
+
+- **Metric schema 扩展**：新增 `co_occurrence`（查询命中次数）和 `source`（来源：auto_inferred/manual/metric_suggestion）字段
+- **异步指标推断**：`enrich_metrics()` 在扫描后 LLM 推断阶段调用，基于 measure 列推断业务指标，Pydantic 校验失败跳过（宁缺毋滥）
+- **无 measure 列跳过**：维度表/系统表不调 LLM，省 token
+- **schema_context 指标行**：`build_schema_context()` 每张表后追加指标定义行，让 LLM 知道业务计算口径
+- **配置开关**：`scan_metric_inference` 环境变量控制是否启用（默认 True）
+
+#### Wave 2: SQL Prompt 注入 + 运行时反哺
+
+- **metrics_hint 注入**：`generate_sql()` 新增 `metrics_hint` 参数，prompt 新增 `【业务指标定义】` 段
+- **build_metrics_hint()**：从语义层提取指标定义，格式化注入 SQL 生成 prompt
+- **persist_metric_feedback()**：成功查询后反哺指标经验
+  - SQL 命中已知指标 → `co_occurrence += 1`（指标越用越可信）
+  - SQL 含新聚合模式（单表）→ 写 `metric_suggestion` 记忆（人工校正入口）
+  - 多表 JOIN 不写建议（避免误判）
+- **chat.py 修复**：`_generate_sql_with_fewshot` 闭包补齐 `join_path_section` + `metrics_hint` 透传（修复历史遗漏）
+
+#### Wave 3: 前端 Metric UI + 图谱展示
+
+- **语义层指标区域**：表详情下新增"指标"区域（和列、关系平级），展示指标名/中文名/公式/类型/条件/使用次数/来源
+- **指标 CRUD**：新增指标编辑对话框（新增/编辑/删除），保存 PATCH → 新版本（append-only）
+- **表列表指标 badge**：表列表显示指标数量 badge（有指标时）
+- **搜索增强**：搜索框支持搜指标名/中文名
+- **图谱节点指标数**：SchemaGraph 节点详情面板新增"指标"统计项
+- **TypeScript 类型**：新增 `SemanticMetric` 接口，`SemanticTableModel.metrics` 从 `any[]` 改为强类型
+
+#### Wave 4: 测试
+
+- **18 个新测试**：覆盖 LLM 推断成功/失败/无 measure 列/composite 校验/配置关闭/系统表跳过；schema_context 指标行输出；build_metrics_hint；metric_feedback 命中/新指标/无聚合/多表；Metric schema 字段校验
+- **全量回归**：616 passed（+18）
+
+### 设计原则
+
+- **指标是数据模型的附属品**，归表所有（GMV 属于 biz_orders，不属于独立命名空间）
+- **不写死列名模式**：完全由 LLM 语义推断，不预过滤
+- **不缝合记忆系统**：指标信息走 schema_context，不走 memory 关键词召回
+- **宁缺毋滥**：LLM 失败降级返回空，不阻塞扫描；多表 JOIN 不写新指标建议（避免误判）
+- **指标不作为独立图谱节点**：是表节点属性（只读展示，编辑入口在语义层）
+
+---
+
 ## v2.2.0 (2026-07) - 记忆溯源 + 图谱交互增强 + 重复记忆修复
 
 ### 🧠 记忆溯源 (Memory Traceability)

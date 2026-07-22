@@ -126,6 +126,18 @@ export interface SemanticModel {
   }
 }
 
+export interface SemanticMetric {
+  name: string
+  display_name: string
+  formula: string
+  type: 'single' | 'composite'
+  condition?: string
+  description?: string
+  factor_metric_names?: string[]
+  co_occurrence: number
+  source: string
+}
+
 export interface SemanticTableModel {
   name: string
   display_name: string
@@ -134,7 +146,7 @@ export interface SemanticTableModel {
   confidence: number
   columns: SemanticColumn[]
   relationships: SemanticRelationship[]
-  metrics?: any[]
+  metrics: SemanticMetric[]
 }
 
 export interface SemanticColumn {
@@ -195,6 +207,20 @@ export const semantic = {
     column_description?: string
   }) {
     return apiClient.patch<SemanticModel>(`/semantic-models/${sm_id}`, data)
+  },
+  /** 指标更新 (编辑/新增/删除 → 新版本, source=manual) */
+  patchMetric(sm_id: string, data: {
+    table_name: string
+    metric_name?: string
+    metric_display_name?: string
+    metric_formula?: string
+    metric_type?: 'single' | 'composite'
+    metric_condition?: string
+    metric_description?: string
+    metric_factor_metric_names?: string[]
+    delete_metric?: boolean
+  }) {
+    return apiClient.patch<SemanticModel>(`/semantic-models/${sm_id}/metric`, data)
   },
 }
 
@@ -445,6 +471,7 @@ export interface GraphNode {
   community: number
   centrality: number
   columnCount: number
+  metricCount: number
   source: string
   degree: number
 }

@@ -352,7 +352,162 @@ async def patch_semantic_model(
     )
 
 
-# ── diff (简单: 对比两个版本的 content JSON) ──────────────────
+# ── 指标局部更新 (编辑/新增/删除 → append-only 新版本) ──────────
+
+class MetricPatch(BaseModel):
+    """指标局部更新 (人工校正 → source=manual)。
+
+    支持: 编辑现有指标 / 新增指标 / 删除指标。
+    编辑后 source 改为 manual (人工校正权威)。
+    """
+    table_name: str
+    metric_name: str | None = None              # 编辑时指定 (新增时为新的 name)
+    metric_display_name: str | None = None
+    metric_formula: str | None = None
+    metric_type: str | None = None               # single / composite
+    metric_condition: str | None = None
+    metric_description: str | None = None
+    metric_factor_metric_names: list[str] | None = None
+    delete_metric: bool = False                  # True = 删除该指标
+
+
+@router.patch("/{sm_id}/metric", response_model=SemanticModelOut)
+async def patch_metric(
+    sm_id: str,
+    body: MetricPatch,
+    user: AuthUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """指标局部更新 — 编辑/新增/删除 → 写成新版本 (append-only)。
+
+    对标 SEM-004: 历史不可变, 编辑 = 复制当前版本 → 改指标 → 存为新版本。
+    指标是数据模型的附属品, 归表所有 (GMV 属于 biz_orders)。
+    """
+    import copy
+    # 校验当前记录归属
+    stmt = select(SemanticModel).where(
+        SemanticModel.id == sm_id,
+        SemanticModel.tenant_filter(user.tenant_id),
+    )
+    current = (await db.execute(stmt)).scalar_one_or_none()
+    if current is None:
+        raise HTTPException(status_code=404, detail="语义层不存在")
+
+    # 深拷贝 content → 修改 (不污染原对象)
+    new_content = copy.deepcopy(current.content)
+    models = new_content.get("models", [])
+    target_model = next((m for m in models if m.get("name") == body.table_name), None)
+    if target_model is None:
+        raise HTTPException(status_code=404, detail=f"表 '{body.table_name}' 不在语义层中")
+
+    metrics = target_model.setdefault("metrics", [])
+
+    # 删除指标
+    if body.delete_metric:
+        if not body.metric_name:
+            raise HTTPException(status_code=400, detail="删除指标需指定 metric_name")
+        before = len(metrics)
+        metrics[:] = [m for m in metrics if m.get("name") != body.metric_name]
+        if len(metrics) == before:
+            raise HTTPException(status_code=404, detail=f"指标 '{body.metric_name}' 不存在")
+    elif body.metric_name and any(m.get("name") == body.metric_name for m in metrics):
+        # 编辑现有指标
+        target_metric = next(m for m in metrics if m.get("name") == body.metric_name)
+        if body.metric_display_name is not None:
+            target_metric["display_name"] = body.metric_display_name
+        if body.metric_formula is not None:
+            target_metric["formula"] = body.metric_formula
+        if body.metric_type is not None:
+            if body.metric_type not in ("single", "composite"):
+                raise HTTPException(status_code=422, detail="metric_type 必须是 single/composite")
+            target_metric["type"] = body.metric_type
+        if body.metric_condition is not None:
+            target_metric["condition"] = body.metric_condition or None
+        if body.metric_description is not None:
+            target_metric["description"] = body.metric_description or None
+        if body.metric_factor_metric_names is not None:
+            target_metric["factor_metric_names"] = body.metric_factor_metric_names
+        # 人工校正 → source=manual
+        target_metric["source"] = "manual"
+    else:
+        # 新增指标 (需提供完整定义)
+        if not body.metric_name:
+            raise HTTPException(status_code=400, detail="新增指标需指定 metric_name")
+        if not body.metric_display_name or not body.metric_formula:
+            raise HTTPException(status_code=400, detail="新增指标需提供 display_name 和 formula")
+        metric_type = body.metric_type or "single"
+        if metric_type not in ("single", "composite"):
+            raise HTTPException(status_code=422, detail="metric_type 必须是 single/composite")
+        new_metric = {
+            "name": body.metric_name,
+            "display_name": body.metric_display_name,
+            "formula": body.metric_formula,
+            "type": metric_type,
+            "condition": body.metric_condition or None,
+            "description": body.metric_description or None,
+            "factor_metric_names": body.metric_factor_metric_names,
+            "co_occurrence": 0,
+            "source": "manual",
+        }
+        # composite 必须有 factor_metric_names (SEM-005)
+        if metric_type == "composite" and not body.metric_factor_metric_names:
+            raise HTTPException(
+                status_code=422,
+                detail="composite 指标必须提供 factor_metric_names (SEM-005)",
+            )
+        metrics.append(new_metric)
+
+    # 旧版本 is_current=False
+    old_currents = (
+        await db.execute(
+            select(SemanticModel).where(
+                SemanticModel.tenant_filter(user.tenant_id),
+                SemanticModel.data_source_id == current.data_source_id,
+                SemanticModel.is_current == True,  # noqa: E712
+            )
+        )
+    ).scalars().all()
+    for old in old_currents:
+        old.is_current = False
+
+    # 新版本号 = 全局 max + 1
+    max_v = (
+        await db.execute(
+            select(SemanticModel.version).where(
+                SemanticModel.tenant_filter(user.tenant_id),
+                SemanticModel.data_source_id == current.data_source_id,
+            ).order_by(SemanticModel.version.desc()).limit(1)
+        )
+    ).scalar_one()
+    new_version = max_v + 1
+
+    new_sm = SemanticModel(
+        tenant_id=user.tenant_id,
+        data_source_id=current.data_source_id,
+        version=new_version,
+        content=new_content,
+        is_current=True,
+    )
+    db.add(new_sm)
+    await db.flush()
+    await write_audit_log(
+        db, tenant_id=user.tenant_id, user_id=user.user_id,
+        resource_type="semantic_model", action="patch_metric", status="success",
+        resource_id=new_sm.id,
+        detail={
+            "table": body.table_name,
+            "metric": body.metric_name,
+            "delete": body.delete_metric,
+            "from_version": current.version,
+        },
+    )
+    await db.commit()
+    await db.refresh(new_sm)
+
+    return SemanticModelOut(
+        id=new_sm.id, tenant_id=new_sm.tenant_id, data_source_id=new_sm.data_source_id,
+        version=new_sm.version, is_current=new_sm.is_current, content=new_sm.content,
+    )
 
 @router.get("/{sm_id}/diff")
 async def diff_versions(

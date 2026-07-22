@@ -81,6 +81,7 @@
           <div class="stat-row">
             <div class="stat-item"><span class="stat-num">{{ selectedNode.columnCount }}</span><span class="stat-label">列</span></div>
             <div class="stat-item"><span class="stat-num">{{ selectedNode.degree }}</span><span class="stat-label">关联</span></div>
+            <div class="stat-item"><span class="stat-num">{{ selectedNode.metricCount || 0 }}</span><span class="stat-label">指标</span></div>
             <div class="stat-item"><span class="stat-num">{{ selectedNode.centrality.toFixed(2) }}</span><span class="stat-label">中心度</span></div>
           </div>
 
@@ -578,6 +579,7 @@ function buildBehaviors() {
             community: d.community ?? 0,
             centrality: d.centrality ?? 0,
             columnCount: d.columnCount ?? 0,
+            metricCount: d.metricCount ?? 0,
             source: d.source ?? 'manual',
             degree: d.degree ?? 0,
           }
@@ -995,16 +997,17 @@ function focusNode(nodeId: string) {
   // 更新详情面板
   const nodeData = g6Instance.getNodeData(nodeId)
   if (nodeData) {
-    const d = nodeData.data || {}
-    selectedNode.value = {
-      id: nodeData.id,
-      label: d.label || nodeData.id,
-      community: d.community ?? 0,
-      centrality: d.centrality ?? 0,
-      columnCount: d.columnCount ?? 0,
-      source: d.source ?? 'manual',
-      degree: d.degree ?? 0,
-    }
+  const d = nodeData.data || {}
+  selectedNode.value = {
+    id: nodeData.id,
+    label: d.label || nodeData.id,
+    community: d.community ?? 0,
+    centrality: d.centrality ?? 0,
+    columnCount: d.columnCount ?? 0,
+    metricCount: d.metricCount ?? 0,
+    source: d.source ?? 'manual',
+    degree: d.degree ?? 0,
+  }
   }
 }
 

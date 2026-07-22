@@ -26,7 +26,7 @@
         <template #header>
           <b>表 ({{ filteredModels.length }})</b>
         </template>
-        <el-input v-model="search" placeholder="搜索表名..." clearable size="small" style="margin-bottom: 12px" />
+        <el-input v-model="search" placeholder="搜索表名/指标名..." clearable size="small" style="margin-bottom: 12px" />
         <div
           v-for="m in filteredModels"
           :key="m.name"
@@ -37,9 +37,10 @@
           <div class="table-name">{{ m.display_name }}</div>
           <div class="table-meta">
             <span>{{ m.name }}</span>
-            <span class="badges">
+              <span class="badges">
               <el-badge :value="m.columns.length" type="primary" />列
               <el-badge :value="getRelationshipCount(m.name)" type="success" />关系
+              <el-badge v-if="m.metrics?.length" :value="m.metrics.length" type="warning" />指标
             </span>
           </div>
         </div>
@@ -149,6 +150,55 @@
         </el-table>
 
         <h4 v-if="reverseRelationships.length" style="margin-top: 20px">
+
+        <!-- 指标区域 (和列、关系平级) -->
+        <h4 style="margin-top: 20px">
+          指标 ({{ selected.metrics?.length || 0 }})
+          <el-button text size="small" type="primary" @click="addMetric" style="margin-left: 8px">+ 新增</el-button>
+        </h4>
+        <el-table v-if="selected.metrics?.length" :data="selected.metrics" size="small" border>
+          <el-table-column prop="name" label="标识" min-width="100">
+            <template #default="{ row }"><code>{{ row.name }}</code></template>
+          </el-table-column>
+          <el-table-column prop="display_name" label="中文名" min-width="100">
+            <template #default="{ row }">
+              <span>{{ row.display_name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="formula" label="公式" min-width="180">
+            <template #default="{ row }">
+              <code style="font-size: 0.85em">{{ row.formula }}</code>
+            </template>
+          </el-table-column>
+          <el-table-column prop="type" label="类型" width="100">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.type === 'composite' ? 'warning' : 'success'">{{ row.type }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="条件" min-width="150">
+            <template #default="{ row }">
+              <code v-if="row.condition" style="font-size: 0.85em">{{ row.condition }}</code>
+              <span v-else style="color: #c0c4cc">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="使用" width="70" align="center">
+            <template #default="{ row }">{{ row.co_occurrence || 0 }}</template>
+          </el-table-column>
+          <el-table-column label="来源" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" :type="metricSourceTag(row.source)">{{ metricSourceLabel(row.source) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120" fixed="right">
+            <template #default="{ row }">
+              <el-button text size="small" type="primary" @click="editMetric(row)">编辑</el-button>
+              <el-button text size="small" type="danger" @click="deleteMetric(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div v-else style="color: #909399; font-size: 0.85rem; padding: 8px 0">暂无指标定义 (扫描时 LLM 会自动推断业务指标)</div>
+
+        <h4 v-if="reverseRelationships.length" style="margin-top: 20px">
           被引用 ({{ reverseRelationships.length }})
           <el-tooltip content="其他表通过外键或推断关系引用了此表" placement="top">
             <el-icon style="color: #909399; margin-left: 4px"><InfoFilled /></el-icon>
@@ -212,6 +262,40 @@
       </div>
     </el-drawer>
 
+    <!-- 指标编辑对话框 -->
+    <el-dialog v-model="metricDialogVisible" :title="metricEditMode === 'add' ? '新增指标' : '编辑指标'" width="500px">
+      <el-form label-width="100px" size="small">
+        <el-form-item label="标识 (name)">
+          <el-input v-model="metricForm.name" placeholder="英文标识, 如 gmv" :disabled="metricEditMode === 'edit'" />
+        </el-form-item>
+        <el-form-item label="中文名">
+          <el-input v-model="metricForm.display_name" placeholder="中文展示名, 如 成交总额" />
+        </el-form-item>
+        <el-form-item label="公式">
+          <el-input v-model="metricForm.formula" placeholder="如 SUM(total_amount)" />
+        </el-form-item>
+        <el-form-item label="类型">
+          <el-select v-model="metricForm.type" style="width: 100%">
+            <el-option label="single (单指标)" value="single" />
+            <el-option label="composite (复合指标)" value="composite" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="metricForm.type === 'composite'" label="子指标名">
+          <el-input v-model="metricForm.factor_metric_names" placeholder="逗号分隔, 如 gmv, order_count" />
+        </el-form-item>
+        <el-form-item label="过滤条件">
+          <el-input v-model="metricForm.condition" placeholder="如 status IN ('paid','shipped'), 可选" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="metricForm.description" type="textarea" :rows="2" placeholder="指标的业务含义, 可选" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="metricDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="metricSaving" @click="saveMetric">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 版本对比抽屉 -->
     <el-drawer v-model="diffDrawer" title="版本对比" size="500px">
       <div v-loading="diffLoading !== null">
@@ -246,7 +330,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Refresh, Clock, Edit, InfoFilled } from '@element-plus/icons-vue'
-import { semantic, datasource, graph, type SemanticModel, type SemanticTableModel, type SemanticColumn, type ReverseRelationship } from '@/api'
+import { semantic, datasource, graph, type SemanticModel, type SemanticTableModel, type SemanticColumn, type SemanticMetric, type ReverseRelationship } from '@/api'
 import { extractErrorDetail } from '@/utils/error'
 import SchemaGraph from '@/components/SchemaGraph.vue'
 
@@ -294,7 +378,9 @@ const filteredModels = computed(() => {
   if (!model.value) return []
   const q = search.value.toLowerCase()
   return model.value.content.models.filter(m =>
-    m.name.toLowerCase().includes(q) || m.display_name.toLowerCase().includes(q)
+    m.name.toLowerCase().includes(q) ||
+    m.display_name.toLowerCase().includes(q) ||
+    (m.metrics || []).some(mt => mt.name.toLowerCase().includes(q) || mt.display_name.toLowerCase().includes(q))
   )
 })
 
@@ -490,6 +576,119 @@ function semanticTag(type: string | null): any {
     key: 'warning',
   }
   return type ? map[type] || '' : 'info'
+}
+
+// ── 指标编辑 (Metric CRUD) ─────────────────────────────────
+const metricDialogVisible = ref(false)
+const metricEditMode = ref<'add' | 'edit'>('add')
+const metricForm = ref({
+  name: '',
+  display_name: '',
+  formula: '',
+  type: 'single' as 'single' | 'composite',
+  condition: '',
+  description: '',
+  factor_metric_names: '',
+})
+const metricSaving = ref(false)
+
+function metricSourceLabel(source: string): string {
+  const map: Record<string, string> = {
+    manual: '📋 人工',
+    auto_inferred: '🤖 推断',
+    metric_suggestion: '💡 建议',
+  }
+  return map[source] || source
+}
+
+function metricSourceTag(source: string): any {
+  const map: Record<string, string> = {
+    manual: 'success',
+    auto_inferred: 'info',
+    metric_suggestion: 'warning',
+  }
+  return map[source] || ''
+}
+
+function addMetric() {
+  metricEditMode.value = 'add'
+  metricForm.value = {
+    name: '', display_name: '', formula: '',
+    type: 'single', condition: '', description: '', factor_metric_names: '',
+  }
+  metricDialogVisible.value = true
+}
+
+function editMetric(row: SemanticMetric) {
+  metricEditMode.value = 'edit'
+  metricForm.value = {
+    name: row.name,
+    display_name: row.display_name,
+    formula: row.formula,
+    type: row.type,
+    condition: row.condition || '',
+    description: row.description || '',
+    factor_metric_names: (row.factor_metric_names || []).join(', '),
+  }
+  metricDialogVisible.value = true
+}
+
+async function saveMetric() {
+  if (!model.value || !selected.value) return
+  if (!metricForm.value.name || !metricForm.value.display_name || !metricForm.value.formula) {
+    ElMessage.warning('请填写标识、中文名和公式')
+    return
+  }
+  if (metricForm.value.type === 'composite' && !metricForm.value.factor_metric_names.trim()) {
+    ElMessage.warning('composite 指标需填写子指标名 (factor_metric_names)')
+    return
+  }
+  metricSaving.value = true
+  try {
+    const factors = metricForm.value.factor_metric_names
+      .split(',').map(s => s.trim()).filter(Boolean)
+    await semantic.patchMetric(model.value.id, {
+      table_name: selected.value.name,
+      metric_name: metricForm.value.name,
+      metric_display_name: metricForm.value.display_name,
+      metric_formula: metricForm.value.formula,
+      metric_type: metricForm.value.type,
+      metric_condition: metricForm.value.condition || undefined,
+      metric_description: metricForm.value.description || undefined,
+      metric_factor_metric_names: factors.length ? factors : undefined,
+    })
+    ElMessage.success('已保存 (创建为新版本)')
+    metricDialogVisible.value = false
+    await fetchData()
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (extractErrorDetail(e)))
+  } finally {
+    metricSaving.value = false
+  }
+}
+
+async function deleteMetric(row: SemanticMetric) {
+  if (!model.value || !selected.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除指标「${row.display_name} (${row.name})」?`,
+      '删除确认',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await semantic.patchMetric(model.value.id, {
+      table_name: selected.value.name,
+      metric_name: row.name,
+      delete_metric: true,
+    })
+    ElMessage.success('已删除 (创建为新版本)')
+    await fetchData()
+  } catch (e: any) {
+    ElMessage.error('删除失败: ' + (extractErrorDetail(e)))
+  }
 }
 
 // 选中表变化时加载反向关系 (被引用)

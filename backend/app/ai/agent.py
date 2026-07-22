@@ -243,7 +243,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
 
         # ── Stage 3: 预思考 ───────────────────────────────────
         # schema context + 白名单列从语义层取 (权威来源, 不靠检索文本正则猜)
-        from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns, build_join_path_section, get_schema_graph
+        from app.ai.schema_utils import build_schema_context, expand_with_relationships, extract_allowed_columns, build_join_path_section, get_schema_graph, build_metrics_hint
         from app.ai.chat_utils import inherit_prev_tables
         from app.ai.intent import safe_normalized_question
         question = safe_normalized_question(state.intent_output, state.question)
@@ -271,6 +271,8 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         # 只对种子表+1-hop 邻居算路径, 避免社区远亲产生大量无意义路径对
         join_path_section = build_join_path_section(state.semantic_content, retrieved_names, graph=sg, seed_names=seed_tables)
         state.join_path_section = join_path_section
+        # 业务指标定义 (从语义层指标区提取, 供 LLM 准确计算指标而非猜测公式)
+        metrics_hint = build_metrics_hint(state.semantic_content, retrieved_names)
         state.thinking = await deps.think(question, schema_context, state.retrieved_models, history=state.history)
         state.llm_call_count += 1
 
@@ -301,6 +303,7 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
             history=state.history,
             thinking_hint=thinking_hint,
             join_path_section=join_path_section,
+            metrics_hint=metrics_hint,
         )
         state.llm_call_count += 1
 
