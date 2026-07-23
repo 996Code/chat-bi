@@ -130,6 +130,7 @@ class Settings(BaseSettings):
     # ── Scan (数据源扫描, 生产运维常调) ──────────────────────
     scan_llm_enrichment_timeout: int = 600  # 扫描 LLM 推断/知识图谱超时 (秒)
     scan_metric_inference: bool = True  # 扫描时是否用 LLM 推断业务指标
+    scan_metric_rule_inference: bool = True  # 简单指标用规则推断 (零 LLM), 关闭则回退纯 LLM
     # ChatBI 系统表 (元数据表), 扫描/问题生成时跳过 (用户不会查, 跳过省 60%+ LLM 调用)
     # 新增系统表时只需改此处, 无需改多处硬编码
     system_tables: list[str] = [

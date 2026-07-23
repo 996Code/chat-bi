@@ -769,7 +769,13 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                     await _persist_co_occurrence(db, user.tenant_id, data_source_id, co_updates)
                 # 传递指标命中信息 (供 SSE complete + 审计日志 + ConversationState)
                 state._metric_hits = [
-                    {"table": u["table_name"], "metric": u["metric_name"], "co_occurrence": u["new_count"]}
+                    {
+                        "table": u["table_name"],
+                        "metric": u["metric_name"],
+                        "co_occurrence": u["new_count"],
+                        "source": u.get("source"),
+                        "type": u.get("type"),
+                    }
                     for u in co_updates
                 ]
             except Exception as e:

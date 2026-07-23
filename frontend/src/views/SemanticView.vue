@@ -204,7 +204,7 @@
 		            </template>
 		          </el-table-column>
 	        </el-table>
-	        <div v-else style="color: #909399; font-size: 0.85rem; padding: 8px 0">暂无指标定义 (扫描时 LLM 会自动推断业务指标)</div>
+	        <div v-else style="color: #909399; font-size: 0.85rem; padding: 8px 0">暂无指标定义 (扫描时规则/LLM 会自动推断业务指标)</div>
 
 	            </el-card>
           </el-tab-pane>
@@ -544,6 +544,7 @@ function sourceLabel(source: string, confidence: number): string {
     auto_inferred: confidence >= 0.8 ? '🤖 LLM' : '⚠️ 退化',
     name_pattern: '🔤 命名',
     ai_inferred: '🤖 LLM',
+    rule_inferred: '⚙️ 规则',
   }
   return map[source] || source
 }
@@ -555,6 +556,7 @@ function sourceTag(source: string): any {
     auto_inferred: 'info',
     name_pattern: 'info',
     ai_inferred: 'info',
+    rule_inferred: '',  // 默认色 (蓝灰)
   }
   return map[source] || ''
 }

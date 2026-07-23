@@ -82,7 +82,7 @@ class ConversationState:
     self_heal_rounds: int = 0          # 自愈轮次
     heal_before_sql: str | None = None # 自愈前的原始 SQL (自愈前后对比)
     ask_user: dict | None = None       # 主动确认内容 (全量落库: 刷新后还原 Agent 的确认问题 + 候选)
-    metric_hits: list[dict] | None = None  # 本次查询命中的业务指标 [{table, metric, co_occurrence}]
+    metric_hits: list[dict] | None = None  # 本次查询命中的业务指标 [{table, metric, co_occurrence, source, type}]
 
     def to_dict(self) -> dict[str, Any]:
         return {

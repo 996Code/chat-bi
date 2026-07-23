@@ -104,7 +104,7 @@
             <div v-for="m in nodeMetrics" :key="m.name" class="metric-item">
               <span class="metric-icon">ƒ</span>
               <div class="metric-main">
-                <span class="metric-name">{{ m.display_name }}</span>
+                <span class="metric-name">{{ m.display_name }}<span v-if="m.source === 'rule_inferred'" class="metric-source rule">⚙️</span><span v-else-if="m.source === 'auto_inferred' || m.source === 'ai_inferred'" class="metric-source ai">🤖</span></span>
                 <span class="metric-meta">{{ m.formula }}<template v-if="m.condition"> WHERE {{ m.condition }}</template></span>
               </div>
             </div>
@@ -1271,6 +1271,17 @@ onBeforeUnmount(() => {
   font-family: 'SF Mono', Consolas, monospace;
   word-break: break-all;
   line-height: 1.4;
+}
+.metric-source {
+  font-size: 10px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.metric-source.rule {
+  color: #409eff;
+}
+.metric-source.ai {
+  color: #e6a23c;
 }
 
 .rel-arrow {

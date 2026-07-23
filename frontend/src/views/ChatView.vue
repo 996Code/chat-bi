@@ -245,7 +245,7 @@
                 <el-tag
                   v-for="h in msg.metricHits.slice(0, 5)" :key="h.metric"
                   size="small" effect="plain" class="metric-hit-tag"
-                >{{ h.metric }}<span class="metric-hit-table">{{ h.table }}</span></el-tag>
+                >{{ h.metric }}<span v-if="h.source === 'rule_inferred'" class="metric-hit-source">⚙️</span><span v-else-if="h.source === 'auto_inferred'" class="metric-hit-source">🤖</span><span class="metric-hit-table">{{ h.table }}</span></el-tag>
                 <span v-if="msg.metricHits.length > 5" class="metric-hit-more">+{{ msg.metricHits.length - 5 }}</span>
               </div>
             </template>
@@ -1816,6 +1816,11 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
   color: #c0c4cc;
   margin-left: 3px;
   font-size: 0.62rem;
+}
+.metric-hit-source {
+  font-size: 0.65rem;
+  margin-left: 2px;
+  vertical-align: middle;
 }
 .metric-hit-more {
   color: #c0c4cc;

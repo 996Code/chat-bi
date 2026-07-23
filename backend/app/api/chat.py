@@ -82,7 +82,7 @@ class ChatResponse(BaseModel):
     token_usage: TokenUsagePayload | None = None  # 对标 F4: 结构化替代 untyped dict
     fewshot_count: int = 0  # 命中的 few-shot 示例数 (RAG-004)
     degraded: bool = False  # 对标 O8: 检索/图表降级标记 (前端可提示用户结果可能不精确)
-    metric_hits: list[dict] | None = None  # 本次查询命中的业务指标 [{table, metric, co_occurrence}]
+    metric_hits: list[dict] | None = None  # 本次查询命中的业务指标 [{table, metric, co_occurrence, source, type}]
 
 
 def _safe_response_question(intent_output, original: str) -> str:
@@ -533,7 +533,13 @@ async def chat(
                 await _persist_co_occurrence(db, user.tenant_id, data_source_id, co_updates)
             # 传递指标命中信息给响应 (供前端展示)
             state._metric_hits = [
-                {"table": u["table_name"], "metric": u["metric_name"], "co_occurrence": u["new_count"]}
+                {
+                    "table": u["table_name"],
+                    "metric": u["metric_name"],
+                    "co_occurrence": u["new_count"],
+                    "source": u.get("source"),
+                    "type": u.get("type"),
+                }
                 for u in co_updates
             ]
         except Exception as e:

@@ -127,6 +127,17 @@
             <div class="section-label">图表</div>
             <div :ref="(el: any) => setChartRef(el, ti)" class="turn-chart"></div>
           </div>
+
+          <!-- 命中指标 -->
+          <div v-if="turn.state?.metric_hits?.length" class="turn-section">
+            <div class="section-label">📊 命中指标</div>
+            <div class="metric-hits-row">
+              <el-tag
+                v-for="h in turn.state.metric_hits" :key="h.metric"
+                size="small" effect="plain"
+              >{{ h.metric }}<span v-if="h.source === 'rule_inferred'">⚙️</span><span v-else-if="h.source === 'auto_inferred'">🤖</span><span v-if="h.table" style="color:#c0c4cc;margin-left:3px;font-size:0.62rem">{{ h.table }}</span></el-tag>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -312,8 +323,9 @@ onBeforeUnmount(() => {
   margin-bottom: 6px;
   cursor: pointer;
 }
-.section-label:hover { color: #667eea; }
+.section-label:hover { color: #667eda; }
 .sample-hint { font-weight: normal; color: #c0c4cc; }
+.metric-hits-row { display: flex; flex-wrap: wrap; gap: 4px; }
 
 .sql-code {
   margin: 0;

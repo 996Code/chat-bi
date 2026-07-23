@@ -2,12 +2,13 @@
 指标识别优化 (方向4) — 测试
 
 测试覆盖:
-  1. LLM 指标推断 (enrich_metrics): 成功/失败/无 measure 列/composite 校验
-  2. schema_context 输出指标行 (build_schema_context)
-  3. build_metrics_hint 单独输出指标定义
-  4. metric_feedback: 命中已知指标/发现新指标
-  5. 指标 PATCH API (新增/编辑/删除)
-  6. SchemaGraph 节点 metricCount
+  1. 规则推断简单指标 (_infer_simple_metrics): 金额/数量/通用/去重/配置关闭
+  2. enrich_metrics 两阶段: 规则推断 simple + LLM 推断 composite
+  3. schema_context 输出指标行 (build_schema_context)
+  4. build_metrics_hint 单独输出指标定义
+  5. metric_feedback: 命中已知指标/发现新指标/source+type 透传
+  6. 指标 PATCH API (新增/编辑/删除)
+  7. SchemaGraph 节点 metricCount
 
 设计原则:
   - 不调真实 LLM (用 mock llm_chat)
@@ -74,49 +75,162 @@ def _make_model_without_measures() -> Model:
     )
 
 
-# ── 1. enrich_metrics 测试 ────────────────────────────────────
+# ── 1. 规则推断 simple 指标测试 ──────────────────────────────────
+
+class TestRuleInference:
+    """规则推断 simple 指标测试 (_infer_simple_metrics)。"""
+
+    def test_amount_column_generates_sum_and_avg(self):
+        """金额列 (total_amount + DECIMAL) → SUM + AVG, source=rule_inferred。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = _make_model_with_measures()
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = True
+            metrics = _infer_simple_metrics(model)
+
+        # total_amount 是金额列 → SUM + AVG
+        amount_metrics = [m for m in metrics if "total_amount" in m.name]
+        assert len(amount_metrics) == 2
+        names = {m.name for m in amount_metrics}
+        assert "total_amount_sum" in names
+        assert "total_amount_avg" in names
+        for m in amount_metrics:
+            assert m.source == "rule_inferred"
+            assert m.type == "single"
+
+    def test_count_column_generates_sum_and_count(self):
+        """数量列 (quantity + INTEGER) → SUM + COUNT, source=rule_inferred。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = _make_model_with_measures()
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = True
+            metrics = _infer_simple_metrics(model)
+
+        qty_metrics = [m for m in metrics if "quantity" in m.name]
+        assert len(qty_metrics) == 2
+        formulas = {m.formula for m in qty_metrics}
+        assert "SUM(quantity)" in formulas
+        assert "COUNT(quantity)" in formulas
+        for m in qty_metrics:
+            assert m.source == "rule_inferred"
+
+    def test_no_measure_columns_returns_empty(self):
+        """无 measure 列 → 空列表。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = _make_model_without_measures()
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = True
+            metrics = _infer_simple_metrics(model)
+
+        assert metrics == []
+
+    def test_config_disabled_returns_empty(self):
+        """配置关闭 (scan_metric_rule_inference=False) → 空列表。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = _make_model_with_measures()
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = False
+            metrics = _infer_simple_metrics(model)
+
+        assert metrics == []
+
+    def test_id_column_excluded(self):
+        """_id 后缀列已被 semantic_type=key 过滤, 不是 measure, 不生成指标。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = Model(
+            name="test_table",
+            display_name="测试表",
+            columns=[
+                _make_column("id", "主键", "BIGINT", "key"),
+                _make_column("user_id", "用户ID", "BIGINT", "key"),
+                _make_column("score", "分数", "INTEGER", "measure"),
+            ],
+            relationships=[],
+            metrics=[],
+            calculated_fields=[],
+        )
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = True
+            metrics = _infer_simple_metrics(model)
+
+        # 只有 score 是 measure, id/user_id 是 key → 不生成 id 相关指标
+        assert all("id" not in m.name or "score" in m.name for m in metrics)
+        # score 是通用 measure → SUM
+        assert len(metrics) >= 1
+        assert any(m.formula == "SUM(score)" for m in metrics)
+
+    def test_display_name_uses_column_display_name(self):
+        """指标 display_name 使用列的 display_name (中文名)。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = Model(
+            name="biz_orders",
+            display_name="订单表",
+            columns=[
+                _make_column("total_amount", "成交金额", "DECIMAL(10,2)", "measure"),
+            ],
+            relationships=[],
+            metrics=[],
+            calculated_fields=[],
+        )
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = True
+            metrics = _infer_simple_metrics(model)
+
+        assert any(m.display_name == "成交金额合计" for m in metrics)
+        assert any(m.display_name == "平均成交金额" for m in metrics)
+
+
+# ── 2. enrich_metrics 两阶段测试 ────────────────────────────────
 
 class TestEnrichMetrics:
-    """LLM 指标推断测试 (enrich_metrics)。"""
+    """指标推断测试 (enrich_metrics): 规则推断 + LLM composite。"""
 
     @pytest.mark.asyncio
-    async def test_enrich_success(self):
-        """有 measure 列 → LLM 推断指标成功。"""
+    async def test_rule_inference_then_llm_composite(self):
+        """规则推断 simple → LLM 推断 composite → 追加到 metrics。"""
         from app.services.semantic_scanner import enrich_metrics
 
         content = SemanticModelContent(
             models=[_make_model_with_measures()],
         )
 
+        # LLM 返回 composite 指标
         mock_response = json.dumps([
-            {
-                "name": "gmv",
-                "display_name": "成交总额",
-                "formula": "SUM(total_amount)",
-                "type": "single",
-                "condition": "status IN ('paid','shipped')",
-            },
             {
                 "name": "avg_order_amount",
                 "display_name": "平均客单价",
-                "formula": "SUM(total_amount) / COUNT(*)",
+                "formula": "total_amount_sum / quantity_count",
                 "type": "composite",
-                "factor_metric_names": ["gmv", "order_count"],
+                "factor_metric_names": ["total_amount_sum", "quantity_count"],
             },
         ])
 
-        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
-            mock_chat.return_value = (mock_response, MagicMock())
-            await enrich_metrics(content)
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.return_value = (mock_response, MagicMock())
+                await enrich_metrics(content)
 
-        assert len(content.models[0].metrics) == 2
-        assert content.models[0].metrics[0].name == "gmv"
-        assert content.models[0].metrics[0].source == "auto_inferred"
-        assert content.models[0].metrics[0].co_occurrence == 0
-        assert content.models[0].metrics[1].type == "composite"
+        metrics = content.models[0].metrics
+        # 应有规则推断的 simple 指标 + LLM 推断的 composite
+        simple_metrics = [m for m in metrics if m.type == "single"]
+        composite_metrics = [m for m in metrics if m.type == "composite"]
+        assert len(simple_metrics) >= 2  # total_amount: SUM+AVG, quantity: SUM+COUNT
+        for m in simple_metrics:
+            assert m.source == "rule_inferred"
+        assert len(composite_metrics) >= 1
+        assert composite_metrics[0].name == "avg_order_amount"
 
     @pytest.mark.asyncio
-    async def test_enrich_no_measure_columns(self):
+    async def test_no_measure_columns_no_inference(self):
         """无 measure 列 → 不调 LLM, metrics 保持空。"""
         from app.services.semantic_scanner import enrich_metrics
 
@@ -124,64 +238,71 @@ class TestEnrichMetrics:
             models=[_make_model_without_measures()],
         )
 
-        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
-            await enrich_metrics(content)
-            mock_chat.assert_not_called()
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                await enrich_metrics(content)
+                mock_chat.assert_not_called()
 
         assert len(content.models[0].metrics) == 0
 
     @pytest.mark.asyncio
-    async def test_enrich_llm_failure_returns_empty(self):
-        """LLM 调用失败 → 降级返回空, 不抛异常 (宁缺毋滥)。"""
+    async def test_llm_failure_keeps_rule_metrics(self):
+        """LLM 调用失败 → 保留规则推断的指标, 不抛异常。"""
         from app.services.semantic_scanner import enrich_metrics
 
         content = SemanticModelContent(
             models=[_make_model_with_measures()],
         )
 
-        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
-            mock_chat.side_effect = Exception("LLM 服务不可用")
-            await enrich_metrics(content)  # 不抛异常
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.side_effect = Exception("LLM 服务不可用")
+                await enrich_metrics(content)
 
-        assert len(content.models[0].metrics) == 0
+        # 规则推断的指标仍然存在
+        assert len(content.models[0].metrics) >= 2
+        assert all(m.source == "rule_inferred" for m in content.models[0].metrics)
 
     @pytest.mark.asyncio
-    async def test_enrich_invalid_metric_skipped(self):
-        """LLM 返回的指标中, 校验失败的条目被跳过 (Pydantic 逐条校验)。"""
+    async def test_invalid_composite_metric_skipped(self):
+        """LLM 返回的 composite 指标校验失败 → 跳过, 保留 simple。"""
         from app.services.semantic_scanner import enrich_metrics
 
         content = SemanticModelContent(
             models=[_make_model_with_measures()],
         )
 
-        # 第二个指标是 composite 但没有 factor_metric_names (违反 SEM-005)
+        # composite 缺 factor_metric_names → Pydantic 校验失败
         mock_response = json.dumps([
-            {
-                "name": "gmv",
-                "display_name": "成交总额",
-                "formula": "SUM(total_amount)",
-                "type": "single",
-            },
             {
                 "name": "bad_composite",
                 "display_name": "坏指标",
                 "formula": "SUM(total_amount) / COUNT(*)",
                 "type": "composite",
-                # 缺少 factor_metric_names → Pydantic 校验失败
             },
         ])
 
-        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
-            mock_chat.return_value = (mock_response, MagicMock())
-            await enrich_metrics(content)
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.return_value = (mock_response, MagicMock())
+                await enrich_metrics(content)
 
-        # 只保留第一个合法的指标
-        assert len(content.models[0].metrics) == 1
-        assert content.models[0].metrics[0].name == "gmv"
+        # 只有规则推断的 single 指标, 坏的 composite 被跳过
+        metrics = content.models[0].metrics
+        assert all(m.type == "single" for m in metrics)
 
     @pytest.mark.asyncio
-    async def test_enrich_config_disabled(self):
-        """配置关闭 (scan_metric_inference=False) → 跳过指标推断。"""
+    async def test_config_disabled_skips_all(self):
+        """配置关闭 (scan_metric_inference=False) → 跳过全部指标推断。"""
         from app.services.semantic_scanner import enrich_metrics
 
         content = SemanticModelContent(
@@ -197,12 +318,35 @@ class TestEnrichMetrics:
         assert len(content.models[0].metrics) == 0
 
     @pytest.mark.asyncio
-    async def test_enrich_skips_system_tables(self):
-        """系统表 (元数据表) 跳过指标推断。"""
+    async def test_rule_inference_disabled_fallback_to_llm(self):
+        """规则推断关闭 → 回退原逻辑: LLM 推断所有指标。"""
+        from app.services.semantic_scanner import enrich_metrics
+
+        content = SemanticModelContent(
+            models=[_make_model_with_measures()],
+        )
+
+        mock_response = json.dumps([
+            {"name": "gmv", "display_name": "成交总额", "formula": "SUM(total_amount)", "type": "single"},
+        ])
+
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = False
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.return_value = (mock_response, MagicMock())
+                await enrich_metrics(content)
+
+        assert len(content.models[0].metrics) >= 1
+
+    @pytest.mark.asyncio
+    async def test_skips_system_tables(self):
+        """系统表跳过指标推断。"""
         from app.services.semantic_scanner import enrich_metrics
 
         system_model = Model(
-            name="users",  # 在 config.system_tables 列表中
+            name="users",
             display_name="用户表",
             columns=[
                 _make_column("id", "主键", "BIGINT", "key"),
@@ -214,12 +358,16 @@ class TestEnrichMetrics:
         )
         content = SemanticModelContent(models=[system_model])
 
-        with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
-            await enrich_metrics(content)
-            mock_chat.assert_not_called()
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = ["users"]
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                await enrich_metrics(content)
+                mock_chat.assert_not_called()
 
 
-# ── 2. schema_context 指标行输出测试 ──────────────────────────
+# ── 3. schema_context 指标行输出测试 ──────────────────────────
 
 class TestSchemaContextMetrics:
     """build_schema_context 输出指标行测试。"""
@@ -277,7 +425,7 @@ class TestSchemaContextMetrics:
         assert "[子指标: gmv, order_count]" in result
 
 
-# ── 3. build_metrics_hint 测试 ────────────────────────────────
+# ── 4. build_metrics_hint 测试 ────────────────────────────────
 
 class TestBuildMetricsHint:
     """build_metrics_hint 独立输出指标定义测试。"""
@@ -311,7 +459,7 @@ class TestBuildMetricsHint:
         assert result == ""
 
 
-# ── 4. metric_feedback 测试 ───────────────────────────────────
+# ── 5. metric_feedback 测试 ───────────────────────────────────
 
 class TestMetricFeedback:
     """运行时指标反哺测试 (persist_metric_feedback)。"""
@@ -353,12 +501,43 @@ class TestMetricFeedback:
 
         assert model.metrics[0].co_occurrence == 3
 
+    def test_hit_known_metric_returns_source_and_type(self):
+        """metric_feedback 返回 source + type (供 metric_hits 透传)。"""
+        from app.ai.recall import persist_metric_feedback
+
+        model = _make_model_with_measures()
+        model.metrics = [
+            Metric(
+                name="total_amount_sum",
+                display_name="总金额合计",
+                formula="SUM(total_amount)",
+                type="single",
+                source="rule_inferred",
+            ),
+        ]
+        content = SemanticModelContent(models=[model])
+
+        state = self._make_state(
+            sql="SELECT SUM(total_amount) FROM biz_orders",
+            tables=["biz_orders"],
+            content=content,
+        )
+        mem_store = MagicMock()
+        mem_store.list_memories.return_value = []
+
+        updates = persist_metric_feedback(mem_store, state, content, conv_id="test-conv")
+
+        assert len(updates) >= 1
+        u = updates[0]
+        assert u["metric_name"] == "total_amount_sum"
+        assert u["source"] == "rule_inferred"
+        assert u["type"] == "single"
+
     def test_new_metric_pattern_writes_suggestion(self):
         """SQL 含未知聚合 → 写 metric_suggestion 记忆。"""
         from app.ai.recall import persist_metric_feedback
 
         model = _make_model_with_measures()
-        # 已有 gmv 指标 (SUM(total_amount)), SQL 用 COUNT(*) 不在已知指标中
         model.metrics = [
             Metric(
                 name="gmv",
@@ -379,7 +558,6 @@ class TestMetricFeedback:
 
         persist_metric_feedback(mem_store, state, content, conv_id="test-conv")
 
-        # 应该写了一条 metric_suggestion 记忆
         assert mem_store.save_memory.called
         call_kwargs = mem_store.save_memory.call_args
         assert call_kwargs.kwargs.get("memory_type") == "metric_suggestion"
@@ -419,8 +597,6 @@ class TestMetricFeedback:
         ]
         content = SemanticModelContent(models=[model])
 
-        # 多表 SQL 通常用表别名, 如 SUM(o.total_amount)
-        # 这与已知 formula "SUM(total_amount)" 不匹配 (带别名前缀)
         state = self._make_state(
             sql="SELECT SUM(o.total_amount) FROM biz_orders o JOIN biz_users u ON o.user_id = u.id",
             tables=["biz_orders", "biz_users"],
@@ -431,11 +607,10 @@ class TestMetricFeedback:
 
         persist_metric_feedback(mem_store, state, content)
 
-        # 多表不写新 suggestion (len(state.current_tables) > 1)
         mem_store.save_memory.assert_not_called()
 
 
-# ── 5. Metric schema 字段测试 ─────────────────────────────────
+# ── 6. Metric schema 字段测试 ─────────────────────────────────
 
 class TestMetricSchema:
     """Metric Pydantic schema 字段测试。"""
@@ -450,6 +625,16 @@ class TestMetricSchema:
         assert m.source == "auto_inferred"
         assert m.co_occurrence == 0
 
+    def test_metric_rule_inferred_source(self):
+        """source=rule_inferred 合法 (SourceStr 是 str 不锁死)。"""
+        m = Metric(
+            name="total_amount_sum",
+            display_name="总金额合计",
+            formula="SUM(total_amount)",
+            source="rule_inferred",
+        )
+        assert m.source == "rule_inferred"
+
     def test_metric_composite_requires_factor_metric_names(self):
         """composite 指标必须提供 factor_metric_names (SEM-005)。"""
         with pytest.raises(Exception):
@@ -458,7 +643,6 @@ class TestMetricSchema:
                 display_name="坏指标",
                 formula="a / b",
                 type="composite",
-                # 缺少 factor_metric_names
             )
 
     def test_metric_composite_with_factors_ok(self):

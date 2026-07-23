@@ -853,6 +853,8 @@ def persist_metric_feedback(
                 "table_name": info["model"],
                 "metric_name": metric_name,
                 "new_count": metric.co_occurrence,
+                "source": metric.source,
+                "type": metric.type,
             })
             logger.info(
                 "metric_feedback: 指标 %s 命中, co_occurrence → %d",
