@@ -114,15 +114,20 @@
                 </div>
               </div>
 
-              <!-- BI 图表 (查询完成后图表为主, 展示在流程前面) -->
-              <div v-if="msg.chart && msg.chart.chart_type !== 'table' && msg.rows?.length" class="chart-box">
-                <div :ref="(el: any) => setChartRef(el, idx)" :style="{ width: '100%', height: msg.chart.chart_type === 'kpi' ? '200px' : '350px' }"></div>
-                <div class="chart-toolbar">
-                  <!-- 左侧: 导出 Excel + 保存到看板 -->
-                  <div class="chart-toolbar-left">
-                    <el-button text size="small" :icon="Download" @click="exportChart(idx)">导出 Excel</el-button>
-                    <el-button text size="small" :icon="Monitor" @click="openSaveToDashboard(idx)">保存到看板</el-button>
-                  </div>
+	              <!-- BI 图表 (查询完成后图表为主, 展示在流程前面) -->
+	              <div v-if="msg.chart && msg.chart.chart_type !== 'table' && msg.rows?.length" class="chart-box">
+	                <div :ref="(el: any) => setChartRef(el, idx)" :style="{ width: '100%', height: msg.chart.chart_type === 'kpi' ? '200px' : '350px' }"></div>
+	                <div class="chart-toolbar">
+	                  <!-- 左侧: 导出 Excel + 保存到看板 + 命中指标 -->
+	                  <div class="chart-toolbar-left">
+	                    <el-button text size="small" :icon="Download" @click="exportChart(idx)">导出 Excel</el-button>
+	                    <el-button text size="small" :icon="Monitor" @click="openSaveToDashboard(idx)">保存到看板</el-button>
+	                    <span v-if="msg.done && msg.metricHits?.length" class="metric-hits-inline">
+	                      <span class="metric-hits-label">📊</span>
+	                      <el-tag v-for="h in msg.metricHits.slice(0, 5)" :key="h.metric" size="small" effect="plain" class="metric-hit-tag">{{ h.metric }}<span v-if="h.source === 'rule_inferred'" class="metric-hit-source">⚙️</span><span v-else-if="h.source === 'auto_inferred' || h.source === 'ai_inferred'" class="metric-hit-source">🤖</span></el-tag>
+	                      <span v-if="msg.metricHits.length > 5" class="metric-hit-more">+{{ msg.metricHits.length - 5 }}</span>
+	                    </span>
+	                  </div>
                   <!-- 右侧: 完整流程 (弹窗) -->
                   <el-button
                     v-if="msg.done && msg.steps?.length"
@@ -131,24 +136,29 @@
                   >完整流程</el-button>
                 </div>
               </div>
-              <!-- TABLE 图表类型: 渲染 HTML 表格 -->
-              <div v-if="msg.chart && msg.chart.chart_type === 'table' && msg.columns?.length && msg.rows?.length" class="chart-box chart-table-box">
-                <div class="chart-table-wrap">
-                  <table class="chart-table">
-                    <thead><tr><th v-for="c in msg.columns" :key="c">{{ c }}</th></tr></thead>
-                    <tbody>
-                      <tr v-for="(row, ri) in (msg.rows || []).slice(0, 20)" :key="ri">
-                        <td v-for="c in msg.columns" :key="c">{{ row[c] ?? '' }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div v-if="((msg.rows?.length || 0) > 20)" class="table-more">共 {{ msg.rows?.length }} 行, 仅展示前 20 行</div>
-                </div>
-                <div class="chart-toolbar">
-                  <div class="chart-toolbar-left">
-                    <el-button text size="small" :icon="Download" @click="exportChart(idx)">导出 Excel</el-button>
-                    <el-button text size="small" :icon="Monitor" @click="openSaveToDashboard(idx)">保存到看板</el-button>
-                  </div>
+	              <!-- TABLE 图表类型: 渲染 HTML 表格 -->
+	              <div v-if="msg.chart && msg.chart.chart_type === 'table' && msg.columns?.length && msg.rows?.length" class="chart-box chart-table-box">
+	                <div class="chart-table-wrap">
+	                  <table class="chart-table">
+	                    <thead><tr><th v-for="c in msg.columns" :key="c">{{ c }}</th></tr></thead>
+	                    <tbody>
+	                      <tr v-for="(row, ri) in (msg.rows || []).slice(0, 20)" :key="ri">
+	                        <td v-for="c in msg.columns" :key="c">{{ row[c] ?? '' }}</td>
+	                      </tr>
+	                    </tbody>
+	                  </table>
+	                  <div v-if="((msg.rows?.length || 0) > 20)" class="table-more">共 {{ msg.rows?.length }} 行, 仅展示前 20 行</div>
+	                </div>
+	                <div class="chart-toolbar">
+	                  <div class="chart-toolbar-left">
+	                    <el-button text size="small" :icon="Download" @click="exportChart(idx)">导出 Excel</el-button>
+	                    <el-button text size="small" :icon="Monitor" @click="openSaveToDashboard(idx)">保存到看板</el-button>
+	                    <span v-if="msg.done && msg.metricHits?.length" class="metric-hits-inline">
+	                      <span class="metric-hits-label">📊</span>
+	                      <el-tag v-for="h in msg.metricHits.slice(0, 5)" :key="h.metric" size="small" effect="plain" class="metric-hit-tag">{{ h.metric }}<span v-if="h.source === 'rule_inferred'" class="metric-hit-source">⚙️</span><span v-else-if="h.source === 'auto_inferred' || h.source === 'ai_inferred'" class="metric-hit-source">🤖</span></el-tag>
+	                      <span v-if="msg.metricHits.length > 5" class="metric-hit-more">+{{ msg.metricHits.length - 5 }}</span>
+	                    </span>
+	                  </div>
                   <el-button
                     v-if="msg.done && msg.steps?.length"
                     text size="small" :icon="QuestionFilled"
@@ -239,15 +249,7 @@
                   </span>
                 </div>
               </div>
-              <!-- 指标命中提示 (完成后显示) -->
-              <div v-if="msg.done && msg.metricHits?.length" class="metric-hits-bar">
-                <span class="metric-hits-label">📊 命中指标</span>
-                <el-tag
-                  v-for="h in msg.metricHits.slice(0, 5)" :key="h.metric"
-                  size="small" effect="plain" class="metric-hit-tag"
-                >{{ h.metric }}<span v-if="h.source === 'rule_inferred'" class="metric-hit-source">⚙️</span><span v-else-if="h.source === 'auto_inferred' || h.source === 'ai_inferred'" class="metric-hit-source">🤖</span><span class="metric-hit-table">{{ h.table }}</span></el-tag>
-                <span v-if="msg.metricHits.length > 5" class="metric-hit-more">+{{ msg.metricHits.length - 5 }}</span>
-              </div>
+              <!-- 指标命中已移至 chart-toolbar 内联显示 -->
             </template>
           </div>
         </div>
@@ -1792,30 +1794,18 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
   color: #909399;
   text-align: right;
 }
-.metric-hits-bar {
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 1px dashed #e4e7ed;
-  font-size: 0.72rem;
-  color: #909399;
-  text-align: right;
-  display: flex;
+.metric-hits-inline {
+  display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 4px;
-  flex-wrap: wrap;
+  margin-left: 8px;
 }
 .metric-hits-label {
   color: #909399;
   margin-right: 2px;
 }
 .metric-hit-tag {
-  font-size: 0.68rem;
-}
-.metric-hit-table {
-  color: #c0c4cc;
-  margin-left: 3px;
-  font-size: 0.62rem;
+  font-size: 0.72rem;
 }
 .metric-hit-source {
   font-size: 0.65rem;
