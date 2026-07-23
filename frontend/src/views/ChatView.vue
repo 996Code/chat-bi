@@ -1020,8 +1020,19 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
       // 继续管线: 推进到 schema 步骤
       steps.push({ label: 'Schema 检索', status: 'running' })
       break
-    case 'schema':
-      updateStep('Schema 检索', 'done', { detail: (data.tables || []).join(', '), duration: data.duration_ms, ...llmInfo(data) })
+    case 'schema': {
+      // Schema 检索: 展示命中的表 + 指标
+      const schemaParts: string[] = []
+      if (data.tables?.length) schemaParts.push(data.tables.join(', '))
+      if (data.metric_hits?.length) {
+        const metricStr = data.metric_hits.slice(0, 5).map((h: any) => {
+          const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
+          return `${icon}${h.display_name || h.name}`
+        }).join(' · ')
+        const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
+        schemaParts.push(`📊 ${metricStr}${more}`)
+      }
+      updateStep('Schema 检索', 'done', { detail: schemaParts.join(' | '), duration: data.duration_ms, ...llmInfo(data) })
       steps.push({ label: '预思考', status: 'running' })
       break
     case 'sql': {
@@ -1032,8 +1043,19 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
       }
       msg.sql = data.sql
       msg.originalSql = data.sql  // 保存初始 SQL, heal 后不覆盖
+      const sqlParts: string[] = []
       const fewshotHint = data.fewshot_count > 0 ? `📚 命中 ${data.fewshot_count} 条相似示例` : ''
-      updateStep('SQL 生成', 'done', { detail: fewshotHint, duration: data.duration_ms, type: 'sql', expandable: true, expanded: false, ...llmInfo(data) })
+      if (fewshotHint) sqlParts.push(fewshotHint)
+      if (data.metric_hits?.length) {
+        const metricStr = data.metric_hits.slice(0, 5).map((h: any) => {
+          const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
+          return `${icon}${h.display_name || h.name}`
+        }).join(' · ')
+        const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
+        sqlParts.push(`📊 ${metricStr}${more}`)
+        msg.metricHits = data.metric_hits
+      }
+      updateStep('SQL 生成', 'done', { detail: sqlParts.join(' | ') || undefined, duration: data.duration_ms, type: 'sql', expandable: true, expanded: false, ...llmInfo(data) })
       steps.push({ label: '执行查询', status: 'running' })
       break
     }
@@ -1125,15 +1147,9 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
     case 'complete':
       // 收尾: 所有 running 步骤标记为 done
       steps.forEach(s => { if (s.status === 'running') s.status = 'done' })
-      // 指标命中: 作为 pipeline 步骤单独一行显示
+      // 指标命中已在 sql 步骤展示, 这里只保存数据 (供对话详情等使用)
       if (data.metric_hits?.length) {
         msg.metricHits = data.metric_hits
-        const hitNames = data.metric_hits.slice(0, 5).map((h: any) => {
-          const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
-          return `${icon}${h.metric}`
-        }).join(' · ')
-        const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
-        steps.push({ label: '指标命中', status: 'done', detail: `${hitNames}${more}` })
       }
       msg.done = true
       // T049: 记录本轮 token 统计 (complete 事件携带)
@@ -1202,9 +1218,20 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
     msg.selfHealRounds = data.self_heal_rounds || 0
     // 非流式降级: 同样构建 pipeline 步骤 (SQL/结果均收进折叠区, 默认展开结果)
     if (msg.sql) {
+      const sqlParts: string[] = []
       const fewshotHint = data.fewshot_count > 0 ? `📚 命中 ${data.fewshot_count} 条相似示例` : ''
+      if (fewshotHint) sqlParts.push(fewshotHint)
+      if (data.metric_hits?.length) {
+        msg.metricHits = data.metric_hits
+        const metricStr = data.metric_hits.slice(0, 5).map((h: any) => {
+          const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
+          return `${icon}${h.display_name || h.metric}`
+        }).join(' · ')
+        const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
+        sqlParts.push(`📊 ${metricStr}${more}`)
+      }
       msg.steps = [
-        { label: 'SQL 生成', status: 'done' as const, detail: fewshotHint, type: 'sql', expandable: true, expanded: false },
+        { label: 'SQL 生成', status: 'done' as const, detail: sqlParts.join(' | ') || undefined, type: 'sql', expandable: true, expanded: false },
       ]
       if (data.columns?.length || data.chart) {
         msg.steps.push({
@@ -1212,18 +1239,8 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
           type: 'result', expandable: true, expanded: false,
         })
       }
-	    }
-	    // 指标命中: 作为 pipeline 步骤单独一行显示
-	    if (data.metric_hits?.length) {
-	      msg.metricHits = data.metric_hits
-	      const hitName = data.metric_hits.slice(0, 5).map((h: any) => {
-	        const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
-	        return `${icon}${h.metric}`
-	      }).join(' · ')
-	      const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
-	      msg.steps.push({ label: '指标命中', status: 'done' as const, detail: `${hitName}${more}` })
-	    }
-			    msg.done = true
+		    }
+				    msg.done = true
 		    await nextTick()
 	    if (msg.chart) nextTick(() => nextTick(() => renderChart(msgIdx)))
 	    // 降级路径也需要刷新对话列表

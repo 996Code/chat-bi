@@ -325,19 +325,29 @@ async def chat_stream(
                 if m.get("name") and m.get("type") != "metric"
             ]
             # 指标命中 → 反查所属表 (用户问"GMV"可能只召回 metric 记录, 需补入所属表)
-            if not tables and state.semantic_content:
-                metric_names = {
-                    m.get("name", "") for m in state.retrieved_models
-                    if m.get("type") == "metric" and m.get("name")
-                }
+            # 同时收集检索命中的指标 (供前端 pipeline 展示)
+            metric_hits_retrieval = []
+            if state.semantic_content:
+                metric_names = set()
+                for m in state.retrieved_models:
+                    if m.get("type") == "metric" and m.get("name"):
+                        metric_names.add(m["name"])
                 if metric_names:
                     for model in state.semantic_content.models:
                         for metric in model.metrics:
-                            if metric.name in metric_names and model.name not in tables:
-                                tables.append(model.name)
-                                break
+                            if metric.name in metric_names:
+                                metric_hits_retrieval.append({
+                                    "name": metric.name,
+                                    "display_name": metric.display_name,
+                                    "table": model.name,
+                                    "source": metric.source,
+                                    "type": metric.type,
+                                })
+                                if model.name not in tables:
+                                    tables.append(model.name)
             yield emit("schema", {
                 "tables": tables,
+                "metric_hits": metric_hits_retrieval,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
             }, node="retrieve")
             _step_durations["schema"] = round((time.monotonic() - t0) * 1000)
@@ -445,6 +455,43 @@ async def chat_stream(
 
             state.sql = gen_result.sql
             state.fewshot_count = gen_result.fewshot_count  # 传播到 AgentState (与 agent.py 一致)
+
+            # 分析 SQL 引用了哪些语义层指标 (供前端 pipeline 展示)
+            sql_metric_hits = []
+            if state.semantic_content and state.sql:
+                import re as _re
+                _agg_re = _re.compile(
+                    r"\b(SUM|COUNT|AVG|MAX|MIN)\s*\(\s*([^)]+)\s*\)", _re.IGNORECASE,
+                )
+                sql_aggs = [
+                    (m.group(1).upper(), m.group(2).strip())
+                    for m in _agg_re.finditer(state.sql)
+                ]
+                if sql_aggs:
+                    for model in state.semantic_content.models:
+                        for metric in model.metrics:
+                            if metric.type == "single" and metric.formula:
+                                formula_upper = metric.formula.upper()
+                                for func, col in sql_aggs:
+                                    agg_expr = f"{func}({col})".upper()
+                                    if agg_expr in formula_upper or f"{func} ( {col} )" in formula_upper:
+                                        sql_metric_hits.append({
+                                            "name": metric.name,
+                                            "display_name": metric.display_name,
+                                            "table": model.name,
+                                            "source": metric.source,
+                                            "type": metric.type,
+                                        })
+                                        break
+
+            yield emit("sql", {
+                "sql": state.sql,
+                "fewshot_count": gen_result.fewshot_count,
+                "metric_hits": sql_metric_hits,
+                "duration_ms": round((time.monotonic() - t0) * 1000),
+            }, node="generate_sql")
+            _step_durations["generate_sql"] = round((time.monotonic() - t0) * 1000)
+
             validation_ok = True
             violated = ""
             violated_layer = ""
@@ -452,13 +499,6 @@ async def chat_stream(
                 validation_ok = False
                 violated = gen_result.validation.reason
                 violated_layer = gen_result.validation.violated_layer
-
-            yield emit("sql", {
-                "sql": state.sql,
-                "fewshot_count": gen_result.fewshot_count,
-                "duration_ms": round((time.monotonic() - t0) * 1000),
-            }, node="generate_sql")
-            _step_durations["generate_sql"] = round((time.monotonic() - t0) * 1000)
 
             last_error = None if validation_ok else f"校验失败 ({violated_layer}): {violated}"
             exec_result = None
