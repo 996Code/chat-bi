@@ -416,40 +416,27 @@ async def patch_metric(
         if body.metric_display_name is not None:
             target_metric["display_name"] = body.metric_display_name
         if body.metric_formula is not None:
-            # F9: 用 Pydantic 校验 formula (注入防御)
-            metric_type_val = body.metric_type or target_metric.get("type", "single")
-            try:
-                from app.schemas.semantic_layer import Metric
-                Metric(
-                    name=target_metric.get("name", ""),
-                    display_name=target_metric.get("display_name", ""),
-                    formula=body.metric_formula,
-                    type=metric_type_val,
-                )
-            except Exception as e:
-                raise HTTPException(status_code=422, detail=f"formula 校验失败: {e}")
+            # F9: 注入防御 — 禁止分号/注释/DDL-DML 语句 (API 层校验, schema 层不校验)
+            from app.schemas.semantic_layer import _METRIC_DANGEROUS, _DDL_DML_KEYWORDS
+            if _METRIC_DANGEROUS.search(body.metric_formula):
+                raise HTTPException(status_code=422, detail="formula 包含危险内容 (分号/注释)")
+            if _DDL_DML_KEYWORDS.search(body.metric_formula):
+                raise HTTPException(status_code=422, detail="formula 包含危险 DDL/DML 语句")
             target_metric["formula"] = body.metric_formula
         if body.metric_type is not None:
             if body.metric_type not in ("single", "composite"):
                 raise HTTPException(status_code=422, detail="metric_type 必须是 single/composite")
             target_metric["type"] = body.metric_type
         if body.metric_condition is not None:
-            # F9: 用 Pydantic 校验 condition (注入防御)
-            # 必须传 type, 否则 composite 的 formula 会被当 single 校验而误拒
-            try:
-                from app.schemas.semantic_layer import Metric
-                metric_type_val = body.metric_type or target_metric.get("type", "single")
-                Metric(
-                    name=target_metric.get("name", ""),
-                    display_name=target_metric.get("display_name", ""),
-                    formula=target_metric.get("formula", "SUM(id)"),
-                    type=metric_type_val,
-                    condition=body.metric_condition or None,
-                    factor_metric_names=target_metric.get("factor_metric_names"),
-                )
-            except Exception as e:
-                raise HTTPException(status_code=422, detail=f"condition 校验失败: {e}")
-            target_metric["condition"] = body.metric_condition or None
+            # F9: 注入防御 — 禁止分号/注释/DDL-DML 语句
+            from app.schemas.semantic_layer import _METRIC_DANGEROUS, _DDL_DML_KEYWORDS
+            cond = body.metric_condition or None
+            if cond is not None:
+                if _METRIC_DANGEROUS.search(cond):
+                    raise HTTPException(status_code=422, detail="condition 包含危险内容 (分号/注释)")
+                if _DDL_DML_KEYWORDS.search(cond):
+                    raise HTTPException(status_code=422, detail="condition 包含危险 DDL/DML 语句")
+            target_metric["condition"] = cond
         if body.metric_description is not None:
             target_metric["description"] = body.metric_description or None
         if body.metric_factor_metric_names is not None:
@@ -475,18 +462,17 @@ async def patch_metric(
         metric_type = body.metric_type or "single"
         if metric_type not in ("single", "composite"):
             raise HTTPException(status_code=422, detail="metric_type 必须是 single/composite")
-        # F9: 用 Pydantic 校验 formula + condition (注入防御)
-        try:
-            from app.schemas.semantic_layer import Metric
-            Metric(
-                name=body.metric_name,
-                display_name=body.metric_display_name,
-                formula=body.metric_formula,
-                type=metric_type,
-                condition=body.metric_condition or None,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=422, detail=f"指标校验失败: {e}")
+        # F9: 注入防御 — 禁止分号/注释/DDL-DML 语句 (API 层校验)
+        from app.schemas.semantic_layer import _METRIC_DANGEROUS, _DDL_DML_KEYWORDS
+        if _METRIC_DANGEROUS.search(body.metric_formula):
+            raise HTTPException(status_code=422, detail="formula 包含危险内容 (分号/注释)")
+        if _DDL_DML_KEYWORDS.search(body.metric_formula):
+            raise HTTPException(status_code=422, detail="formula 包含危险 DDL/DML 语句")
+        if body.metric_condition:
+            if _METRIC_DANGEROUS.search(body.metric_condition):
+                raise HTTPException(status_code=422, detail="condition 包含危险内容 (分号/注释)")
+            if _DDL_DML_KEYWORDS.search(body.metric_condition):
+                raise HTTPException(status_code=422, detail="condition 包含危险 DDL/DML 语句")
         new_metric = {
             "name": body.metric_name,
             "display_name": body.metric_display_name,

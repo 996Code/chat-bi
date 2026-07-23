@@ -1015,72 +1015,72 @@ class TestFactorMetricNamesCrossValidation:
 # ── 9. F9: formula/condition 注入防御测试 ────────────────────────
 
 class TestFormulaConditionValidation:
-    """F9: formula/condition 注入防御测试。"""
+    """F9: formula/condition 注入防御测试。
 
-    def test_single_formula_valid_agg(self):
-        """single 指标 formula 匹配 AGG_FUNC(col_name) → 通过。"""
-        for formula in ["SUM(total_amount)", "COUNT(id)", "AVG(score)", "MAX(price)", "MIN(fee)"]:
+    策略: schema 层不校验 (兼容已有数据), API 层用正则校验用户提交内容。
+    执行层 sql_validator.py 三层 AST 是终极防线。
+    """
+
+    def test_schema_accepts_all_formulas(self):
+        """schema 层不校验 formula 格式 — 所有合法/非法格式都能构造 Metric。"""
+        # 这些是已有数据中出现的合法格式, schema 层不应拒绝
+        valid_formulas = [
+            "SUM(total_amount)", "COUNT(id)", "AVG(score)",
+            "COUNT(DISTINCT id)",  # DISTINCT
+            "AVG(DATEDIFF(CURRENT_DATE, created_at))",  # 嵌套函数
+            "AVG(UNIX_TIMESTAMP(reply_time) - UNIX_TIMESTAMP(created_at)) / 60",  # 算术后缀
+            "gmv / order_count",  # composite 算术
+        ]
+        for formula in valid_formulas:
             m = Metric(name="test", display_name="测试", formula=formula)
             assert m.formula == formula
 
-    def test_single_formula_invalid_format_rejected(self):
-        """single 指标 formula 不匹配 AGG_FUNC(col_name) → 拒绝。"""
-        invalid_formulas = [
-            "SUM(total_amount) WHERE status='paid'",  # WHERE 不属于 formula
-            "total_amount + 1",  # 算术表达式
-            "SELECT * FROM users",  # SQL 语句
-            "SUM(oi.total_amount)",  # 带表别名
+    def test_schema_accepts_all_conditions(self):
+        """schema 层不校验 condition — 合法 condition (含引号内关键字) 都能通过。"""
+        conditions = [
+            "status IN ('paid','shipped')",
+            'action = "create"',  # 引号内的 create 不应误杀
+            'action = "update"',
+            'action = "delete"',
         ]
-        for formula in invalid_formulas:
-            with pytest.raises(Exception, match="single 指标 formula"):
-                Metric(name="test", display_name="测试", formula=formula, type="single")
+        for cond in conditions:
+            m = Metric(name="test", display_name="测试", formula="SUM(id)", condition=cond)
+            assert m.condition == cond
 
-    def test_composite_formula_allows_arithmetic(self):
-        """composite 指标 formula 允许算术表达式 formula (如 gmv / order_count)。"""
-        m = Metric(
-            name="avg_price",
-            display_name="平均价格",
-            formula="gmv / order_count",
-            type="composite",
-            factor_metric_names=["gmv", "order_count"],
-        )
-        assert m.formula == "gmv / order_count"
+    def test_dangerous_regex_catches_semicolon(self):
+        """_METRIC_DANGEROUS 正则捕获分号。"""
+        from app.schemas.semantic_layer import _METRIC_DANGEROUS
+        assert _METRIC_DANGEROUS.search("SUM(id); DROP TABLE users")
+        assert _METRIC_DANGEROUS.search("1=1; DELETE FROM users")
 
-    def test_formula_semicolon_rejected(self):
-        """formula 含分号 → 拒绝 (注入防御)。"""
-        with pytest.raises(Exception, match="危险内容"):
-            Metric(name="test", display_name="测试", formula="SUM(id); DROP TABLE users")
+    def test_dangerous_regex_catches_comment(self):
+        """_METRIC_DANGEROUS 正则捕获 SQL 注释。"""
+        from app.schemas.semantic_layer import _METRIC_DANGEROUS
+        assert _METRIC_DANGEROUS.search("SUM(id)--comment")
+        assert _METRIC_DANGEROUS.search("SUM(id)/*comment*/")
 
-    def test_formula_sql_comment_rejected(self):
-        """formula 含 SQL 注释 → 拒绝 (注入防御)。"""
-        with pytest.raises(Exception, match="危险内容"):
-            Metric(name="test", display_name="测试", formula="SUM(id)--comment")
+    def test_dangerous_regex_passes_valid_content(self):
+        """_METRIC_DANGEROUS 正则不误杀合法内容。"""
+        from app.schemas.semantic_layer import _METRIC_DANGEROUS
+        assert not _METRIC_DANGEROUS.search("SUM(total_amount)")
+        assert not _METRIC_DANGEROUS.search('action = "create"')
+        assert not _METRIC_DANGEROUS.search("AVG(UNIX_TIMESTAMP(x) - UNIX_TIMESTAMP(y)) / 60")
 
-    def test_formula_ddl_keyword_rejected(self):
-        """formula 含 DDL 关键字 → 拒绝 (注入防御)。"""
-        with pytest.raises(Exception, match="危险内容"):
-            Metric(name="test", display_name="测试", formula="DROP TABLE users", type="composite",
-                   factor_metric_names=["a"])
+    def test_ddl_dml_regex_catches_dangerous_statements(self):
+        """_DDL_DML_KEYWORDS 正则捕获 DDL/DML 语句 (非裸关键字)。"""
+        from app.schemas.semantic_layer import _DDL_DML_KEYWORDS
+        assert _DDL_DML_KEYWORDS.search("DROP TABLE users")
+        assert _DDL_DML_KEYWORDS.search("DELETE FROM users WHERE 1=1")
+        assert _DDL_DML_KEYWORDS.search("INSERT INTO users VALUES(1)")
+        assert _DDL_DML_KEYWORDS.search("TRUNCATE TABLE users")
 
-    def test_condition_semicolon_rejected(self):
-        """condition 含分号 → 拒绝 (注入防御)。"""
-        with pytest.raises(Exception, match="危险内容"):
-            Metric(name="test", display_name="测试", formula="SUM(id)", condition="1=1; DROP TABLE users")
-
-    def test_condition_ddl_keyword_rejected(self):
-        """condition 含 DDL 关键字 → 拒绝 (注入防御)。"""
-        with pytest.raises(Exception, match="危险内容"):
-            Metric(name="test", display_name="测试", formula="SUM(id)", condition="DELETE FROM users WHERE 1=1")
-
-    def test_condition_valid_in_clause_passes(self):
-        """condition 含合法 IN 子句 → 通过。"""
-        m = Metric(
-            name="paid_gmv",
-            display_name="已付GMV",
-            formula="SUM(total_amount)",
-            condition="status IN ('paid','shipped')",
-        )
-        assert "status IN" in m.condition
+    def test_ddl_dml_regex_passes_quoted_values(self):
+        """_DDL_DML_KEYWORDS 正则不误杀引号内的值。"""
+        from app.schemas.semantic_layer import _DDL_DML_KEYWORDS
+        assert not _DDL_DML_KEYWORDS.search('action = "create"')
+        assert not _DDL_DML_KEYWORDS.search('action = "update"')
+        assert not _DDL_DML_KEYWORDS.search('action = "delete"')
+        assert not _DDL_DML_KEYWORDS.search("status IN ('paid','shipped')")
 
     def test_condition_none_passes(self):
         """condition=None → 通过 (默认值)。"""
