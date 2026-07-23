@@ -319,7 +319,23 @@ async def chat_stream(
             # 对标 O8: 传播降级标记
             if retrieval.degraded:
                 state.degraded = True
-            tables = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
+            # 只取 type=model 的记录作为表名; type=metric 的命中由 build_metrics_hint 处理
+            tables = [
+                m.get("name", "") for m in state.retrieved_models
+                if m.get("name") and m.get("type") != "metric"
+            ]
+            # 指标命中 → 反查所属表 (用户问"GMV"可能只召回 metric 记录, 需补入所属表)
+            if not tables and state.semantic_content:
+                metric_names = {
+                    m.get("name", "") for m in state.retrieved_models
+                    if m.get("type") == "metric" and m.get("name")
+                }
+                if metric_names:
+                    for model in state.semantic_content.models:
+                        for metric in model.metrics:
+                            if metric.name in metric_names and model.name not in tables:
+                                tables.append(model.name)
+                                break
             yield emit("schema", {
                 "tables": tables,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
@@ -652,6 +668,8 @@ async def chat_stream(
                 "stage": state.stage.value if hasattr(state.stage, "value") else str(state.stage),
                 "llm_calls": state.llm_call_count,
                 "self_heal_rounds": state.self_heal_rounds,
+                # 指标命中: 告知前端本次查询命中了哪些业务指标
+                "metric_hits": getattr(state, "_metric_hits", None) or [],
             })
 
     return StreamingResponse(
@@ -736,6 +754,27 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                 [normalize_value(v) for v in r] for r in (exec_result.rows or [])[:_row_limit]
             ]
             cols = list(exec_result.columns) if hasattr(exec_result, "columns") else []
+
+        # 指标反哺: 提前执行, 结果写入 state._metric_hits 供 ConversationState 构造使用
+        if state.success and state.sql:
+            try:
+                from app.ai.recall import persist_metric_feedback
+                from app.core.agent_memory import AgentMemoryStore
+                mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
+                mem_store = AgentMemoryStore(base_dir=mem_dir)
+                co_updates = persist_metric_feedback(mem_store, state, state.semantic_content, conv_id=conv_id)
+                # 持久化 co_occurrence 增量 (不走版本化, 直接原地更新 content JSON)
+                if co_updates:
+                    from app.api.chat import _persist_co_occurrence
+                    await _persist_co_occurrence(db, user.tenant_id, data_source_id, co_updates)
+                # 传递指标命中信息 (供 SSE complete + 审计日志 + ConversationState)
+                state._metric_hits = [
+                    {"table": u["table_name"], "metric": u["metric_name"], "co_occurrence": u["new_count"]}
+                    for u in co_updates
+                ]
+            except Exception as e:
+                logger.debug("指标反哺失败 (不阻塞): %s", e)
+
         conv_state = ConversationState(
             current_tables=state.current_tables,
             current_sql=state.sql or "",
@@ -772,6 +811,8 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                     if hasattr(state.ask_user_request.reason, "value")
                     else str(state.ask_user_request.reason),
             } if state.ask_user_request else None,
+            # 指标命中 (历史对话恢复展示)
+            metric_hits=getattr(state, "_metric_hits", None),
         )
         # turn 推算: 优先复用本轮骨架行的 turn 号 (start 事件落的, 避免重复轮次);
         # 无骨架则取 max(行数, 最大turn值) + 1 (防御自愈历史脏数据)
@@ -884,17 +925,6 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                     "error": "链路经验沉淀失败",
                 })
 
-        # 指标反哺: 成功查询后校验 SQL 与指标关系 (co_occurrence + suggestion)
-        if state.success and state.sql:
-            try:
-                from app.ai.recall import persist_metric_feedback
-                from app.core.agent_memory import AgentMemoryStore
-                mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
-                mem_store = AgentMemoryStore(base_dir=mem_dir)
-                persist_metric_feedback(mem_store, state, state.semantic_content, conv_id=conv_id)
-            except Exception as e:
-                logger.debug("指标反哺失败 (不阻塞): %s", e)
-
     except Exception as e:
         logger.warning("流式 StateStore 持久化失败 (不阻塞): %s", e)
         persist_warnings.append({
@@ -918,6 +948,9 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
             exec_duration is not None
             and exec_duration >= _settings.sql_slow_query_threshold * 1000
         )
+        # 指标命中信息写入审计日志 detail
+        _metric_hits = getattr(state, "_metric_hits", None)
+        _audit_detail = {"metric_hits": _metric_hits} if _metric_hits else None
         await write_audit_log(
             db, tenant_id=user.tenant_id, user_id=user.user_id,
             resource_type="chat",
@@ -928,6 +961,7 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
             duration_ms=exec_duration,
             is_slow=is_slow,
             data_source_id=data_source_id,
+            detail=_audit_detail,
         )
         await db.commit()
     except Exception as e:

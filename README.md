@@ -39,6 +39,8 @@
 
 🧠 **记忆溯源** — 对话创建的记忆自动关联来源对话，点击可查看原始对话详情；每条记忆显示创建时间
 
+📊 **指标闭环** — 扫描时 LLM 推断业务指标（GMV、客单价），查询时注入 SQL prompt，成功后反哺共现经验；命中指标实时通知用户（SSE + 审计日志 + 历史恢复）
+
 🔐 **企业级安全** — JWT 认证、Fernet 加密、SQL 注入三层拦截、多租户隔离、审计日志
 
 ---
@@ -72,7 +74,7 @@
   </tr>
   <tr>
     <td>
-      自动扫描数据源生成语义模型，支持表/列语义编辑、关系图谱、版本对比与一键回滚。扫描时 LLM 自动推断业务指标（GMV、客单价等），可在语义层页面人工校正，查询时指标定义注入 SQL prompt。
+      自动扫描数据源生成语义模型，支持表/列语义编辑、关系图谱、版本对比与一键回滚。扫描时 LLM 自动推断业务指标（GMV、客单价等），可在语义层页面人工校正，查询时指标定义注入 SQL prompt。查询成功后命中指标实时通知用户，反哺共现经验。
     </td>
     <td>
       审计日志、Token 用量统计、Prompt 调试、慢查询监控、数据源健康检查，运维全景可观测。
@@ -104,7 +106,7 @@ SchemaGraph 基于 G6 v5 渲染，自动从语义层构建关系图谱，支持�
     <td colspan="2" align="center"><img src="doc/screenshots/graph-detail-panel.png" alt="节点详情面板" width="100%"/></td>
   </tr>
   <tr>
-    <td colspan="2" align="center">点击节点弹出详情面板，展示表名、列数、来源、中心度、连接数、社区归属等元信息。支持移动/连线双模式切换。</td>
+    <td colspan="2" align="center">点击节点弹出详情面板，展示表名、列数、指标数、来源、中心度、连接数、社区归属等元信息。支持移动/连线双模式切换。</td>
   </tr>
 </table>
 
@@ -176,12 +178,14 @@ ChatBI 支持连续追问，自动继承上文查询维度，无需重复描述�
                │                               │ + Skills + Memory        │  │
                │                               │ + fewshot + thinking     │  │
                │                               │ + 🕸️JOIN 路径 (图谱预算) │  │
+               │                               │ + 📊metrics_hint (指标)  │  │
                │                               │ → 白名单校验 → 执行 → 自愈│  │
                │                               └──────────────────────────┘  │
                │                                                             │
                │  辅助模块:  Skills 业务规则 │ Few-shot 示例 │ Memory 记忆   │
                │             上下文压缩     │ 多轮对话管理                  │
                │             🕸️SchemaGraph (NetworkX 关系图谱)              │
+               │             📊指标反哺 (co_occurrence + metric_suggestion) │
                └─────────────────────────────────────────────────────────────┘
                                              │
                ┌─────────────────────────────▼─────────────────────────────┐
@@ -216,7 +220,7 @@ ChatBI 支持连续追问，自动继承上文查询维度，无需重复描述�
 
 | 场景 | 落库内容 | 刷新后能看到 |
 |------|----------|------------|
-| ✅ 查询成功 | 问题 + SQL + 结果采样 + 图表 + 预思考 + 各步耗时 | 完整对话 |
+| ✅ 查询成功 | 问题 + SQL + 结果采样 + 图表 + 预思考 + 各步耗时 + **metric_hits** | 完整对话 + 命中指标 |
 | 💬 闲聊 (GENERAL) | 问题 + Agent 自然语言回复 | 完整对话 |
 | 🤔 需要确认 | 问题 + **Agent 的确认问题 + 候选选项** | 当时让你澄清什么 |
 | ⚡ 中途刷新/断流 | 骨架行（只有问题） | "问过这个问题"（无结果） |
@@ -232,7 +236,68 @@ ChatBI 支持连续追问，自动继承上文查询维度，无需重复描述�
 
 ---
 
+## 📊 指标反馈闭环
 
+业务指标（GMV、客单价、复购率等）是数据模型的附属品，归表所有。系统从扫描到查询到反哺形成完整闭环，让指标定义越用越准确。
+
+### 闭环架构
+
+```
+  ① 扫描时: LLM 推断初始指标
+     enrich_metrics() → 基于 measure 列推断, Pydantic 校验, 失败返回 []
+              │
+              ▼
+  ② 语义层页面: 人工校正
+     编辑指标 (公式/条件/类型) ← 运行时反哺 (co_occurrence + metric_suggestion)
+     source 标记: auto_inferred → manual → metric_suggestion (一键采纳)
+              │
+              ▼
+  ③ 查询时: 指标注入 SQL prompt
+     build_metrics_hint() → 【业务指标定义】段注入 generate_sql()
+              │
+              ▼
+  ④ 对话成功 → 反哺指标经验
+     persist_metric_feedback():
+       - SQL 命中已知指标 → co_occurrence += 1 (指标越用越可信)
+       - SQL 含新聚合模式 (单表) → 写 metric_suggestion 记忆 (人工校正入口)
+       - 多表 JOIN 不写建议 (避免误判)
+              │
+              └──→ 回到 ②, 循环优化
+```
+
+### 指标命中通知链
+
+查询成功后，命中指标信息贯穿全链路，让用户知道"这次查询用到了哪些业务指标"：
+
+```
+persist_metric_feedback() 执行
+         │
+         ├─ co_occurrence 更新
+         │
+         └─ state._metric_hits = [{table, metric, co_occurrence}]
+                │
+                ├──→ SSE complete 事件: metric_hits 字段
+                │      └─→ 前端 ChatView: 📊 命中指标 标签栏
+                │            el-tag 展示 (最多 5 个 + "+N" 折叠)
+                │
+                ├──→ 审计日志: detail.metric_hits
+                │      └─→ 可观测性页面可追溯
+                │
+                └──→ ConversationState: metric_hits 持久化
+                       └─→ 历史恢复: loadConversation
+                             → metricHits 还原展示
+```
+
+### 设计原则
+
+- **指标是数据模型的附属品**，归表所有（GMV 属于 biz_orders，不属于独立命名空间）
+- **不写死列名模式**：完全由 LLM 语义推断，不预过滤
+- **宁缺毋滥**：LLM 失败降级返回空，不阻塞扫描；多表 JOIN 不写新指标建议
+- **指标不作为独立图谱节点**：是表节点属性（只读展示，编辑入口在语义层）
+
+---
+
+## 🛠️ 技术栈
 
 ### 后端
 
@@ -365,13 +430,13 @@ chat-bi/
 │   │   │   ├── agent.py         # 状态机主循环 (7 步)
 │   │   │   ├── intent.py        # 意图识别
 │   │   │   ├── thinking.py      # 预思考 (选表理由+陷阱)
-│   │   │   ├── sql_agent.py     # SQL 生成 (Prompt 分层)
+│   │   │   ├── sql_agent.py     # SQL 生成 (Prompt 分层 + metrics_hint 注入)
 │   │   │   ├── sql_healer.py    # SQL 自愈
 │   │   │   ├── chart_agent.py   # 图表生成
 │   │   │   ├── compressor.py    # 上下文压缩
-│   │   │   ├── schema_utils.py  # Schema 上下文 + 🕸️图谱驱动扩展/JOIN路径
-│   │   │   ├── state_store.py   # 对话状态持久化 (JSONL, 骨架行+完整行+ask_user)
-│   │   │   ├── recall.py        # Agent 记忆召回
+│   │   │   ├── schema_utils.py  # Schema 上下文 + 🕸️图谱驱动扩展/JOIN路径 + 指标定义行
+│   │   │   ├── state_store.py   # 对话状态持久化 (JSONL, 骨架行+完整行+ask_user+metric_hits)
+│   │   │   ├── recall.py        # Agent 记忆召回 + 指标反哺 (persist_metric_feedback)
 │   │   │   └── ...
 │   │   ├── api/                 # 🌐 API 端点
 │   │   │   ├── chat.py          # 同步问答
@@ -492,10 +557,10 @@ cp deploy/.env.example deploy/.env
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/chat` | 同步问答 |
-| POST | `/chat/stream` | SSE 流式问答 |
+| POST | `/chat` | 同步问答（返回 `metric_hits` 命中指标） |
+| POST | `/chat/stream` | SSE 流式问答（complete 事件含 `metric_hits`） |
 | GET/POST | `/data-sources` | 数据源管理 |
-| GET | `/semantic-models` | 语义层查看 |
+| GET | `/semantic-models` | 语义层查看（含指标定义） |
 | GET | `/graph` | 🕸️知识图谱 (全图/子图/社区/枢纽/JOIN路径) |
 | GET | `/dashboards` | 看板管理 |
 | GET | `/conversations` | 对话列表 |

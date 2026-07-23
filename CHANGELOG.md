@@ -1,5 +1,56 @@
 # 变更记录
 
+## v2.3.1 (2026-07) - 指标命中通知 + 检索修复 + UI 优化
+
+### 📊 指标命中通知链 (metric_hits Notification)
+
+查询成功后，用户能实时看到本次查询命中了哪些业务指标，命中信息贯穿 SSE → 审计日志 → 状态持久化 → 前端展示 → 历史恢复全链路。
+
+#### 通知链路图
+
+```
+persist_metric_feedback()
+         │
+         ├─ co_occurrence 更新 → state._metric_hits = [{table, metric, co_occurrence}]
+         │
+         ├─→ SSE complete 事件: metric_hits 字段
+         │     └─→ 前端 ChatView: 📊 命中指标 标签栏 (el-tag 展示, 最多5个+折叠)
+         │
+         ├─→ 审计日志: detail.metric_hits
+         │
+         └─→ ConversationState: metric_hits 字段持久化
+               └─→ 历史恢复: loadConversation → metricHits 还原展示
+```
+
+#### 后端改动
+
+- **chat_stream.py `_persist()`**：metric_feedback 执行提前到 ConversationState 构造之前，确保 `_metric_hits` 可供状态持久化使用
+- **SSE complete 事件**：新增 `metric_hits` 字段（`[{table, metric, co_occurrence}]`）
+- **审计日志**：`detail` 字段新增 `metric_hits`，记录本次查询命中的指标及共现次数
+- **ConversationState**：新增 `metric_hits: list[dict] | None` 字段，`to_dict()`/`from_dict()` 完整支持
+- **chat.py 同步端点**：ChatResponse 新增 `metric_hits` 字段，与流式端点对齐
+
+### 🐛 关键 Bug 修复
+
+- **chat_stream.py 检索类型过滤**：Milvus 同时索引 model（表）和 metric（指标）记录，原代码未过滤 type，导致指标名（如 `gmv`）被当作表名传入 SQL 生成，查询不存在的表。修复：只取 `type != "metric"` 的记录作为表名；当检索只返回 metric 记录时，反查 `semantic_content` 找到指标所属表补入
+- **`_persist()` 执行顺序**：metric_feedback 原在 `store.save()` 之后执行，导致 `state._metric_hits` 为 None，ConversationState 无法持久化命中信息。修复：将 metric_feedback 移到 ConversationState 构造之前
+- **重复 metric_feedback 调用**：移动后原位置的调用块未删除，导致重复执行。已移除
+
+### 🎨 UI 优化
+
+- **ChatView 指标命中展示**：查询完成后底部展示 `📊 命中指标` 标签栏，每个指标显示名称和所属表，超过 5 个折叠显示 `+N`
+- **SemanticView 指标区域重排**：指标从第 2 位置移至最后（列 → 关系 → 被引用 → 指标），符合"指标是表的附属品"定位
+- **SemanticView 指标表格化**：从自定义 flex 布局改为 `el-table`，列：指标、公式、条件、类型（基础/复合）、操作
+- **SemanticView 图标按钮**：编辑/删除从文字按钮改为彩色图标（蓝色编辑 ✏️ / 红色删除 🗑️），hover 变深
+- **SchemaGraph 指标项重设计**：从单行溢出改为 icon + 两行布局（指标名 + 公式/条件），与关联关系区域风格统一，消除横向滚动条
+
+### 🧪 测试
+
+- **全量回归**：616 passed
+- **E2E 接口验证**：SSE 8 事件流（含 metric_hits）、历史记录恢复（metricHits 还原）、图谱 121 节点/190 边、记忆 CRUD + 整理（9 consolidated）+ 图谱同步（boosted=1）
+
+---
+
 ## v2.3.0 (2026-07) - 指标识别优化 (方向4)
 
 ### 📊 业务指标自动识别 (Metric Inference)

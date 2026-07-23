@@ -81,7 +81,7 @@
           <div class="stat-row">
             <div class="stat-item"><span class="stat-num">{{ selectedNode.columnCount }}</span><span class="stat-label">列</span></div>
             <div class="stat-item"><span class="stat-num">{{ selectedNode.degree }}</span><span class="stat-label">关联</span></div>
-            <div class="stat-item"><span class="stat-num">{{ selectedNode.metricCount || 0 }}</span><span class="stat-label">指标</span></div>
+            <div class="stat-item"><span class="stat-num">{{ nodeMetrics.length || selectedNode.metricCount || 0 }}</span><span class="stat-label">指标</span></div>
             <div class="stat-item"><span class="stat-num">{{ selectedNode.centrality.toFixed(2) }}</span><span class="stat-label">中心度</span></div>
           </div>
 
@@ -102,10 +102,11 @@
           <div class="rel-section" v-if="nodeMetrics.length > 0">
             <div class="section-title">业务指标</div>
             <div v-for="m in nodeMetrics" :key="m.name" class="metric-item">
-              <code class="metric-name">{{ m.name }}</code>
-              <span class="metric-display">{{ m.display_name }}</span>
-              <code class="metric-formula">{{ m.formula }}</code>
-              <el-tag v-if="m.condition" size="small" type="info" effect="plain" style="margin-left: 4px">WHERE {{ m.condition }}</el-tag>
+              <span class="metric-icon">ƒ</span>
+              <div class="metric-main">
+                <span class="metric-name">{{ m.display_name }}</span>
+                <span class="metric-meta">{{ m.formula }}<template v-if="m.condition"> WHERE {{ m.condition }}</template></span>
+              </div>
             </div>
           </div>
         </div>
@@ -726,6 +727,7 @@ function transformData(data: GraphData) {
         community: n.community,
         centrality: n.centrality,
         columnCount: n.columnCount,
+        metricCount: n.metricCount,
         source: n.source,
         degree: n.degree,
       },
@@ -1232,29 +1234,43 @@ onBeforeUnmount(() => {
 
 .metric-item {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  line-height: 1.6;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  margin-bottom: 2px;
 }
-.metric-item:hover {
-  background: #f5f7fa;
+.metric-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: #ecf5ff;
+  color: #409eff;
+  font-size: 11px;
+  font-weight: 600;
+  font-style: italic;
+}
+.metric-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 .metric-name {
-  color: #e6a23c;
-  font-weight: 600;
-  font-size: 11px;
-}
-.metric-display {
   color: #303030;
   font-weight: 500;
+  font-size: 12px;
 }
-.metric-formula {
-  color: #67c23a;
+.metric-meta {
+  color: #909399;
   font-size: 11px;
+  font-family: 'SF Mono', Consolas, monospace;
+  word-break: break-all;
+  line-height: 1.4;
 }
 
 .rel-arrow {

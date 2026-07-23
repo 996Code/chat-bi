@@ -82,6 +82,7 @@ class ChatResponse(BaseModel):
     token_usage: TokenUsagePayload | None = None  # 对标 F4: 结构化替代 untyped dict
     fewshot_count: int = 0  # 命中的 few-shot 示例数 (RAG-004)
     degraded: bool = False  # 对标 O8: 检索/图表降级标记 (前端可提示用户结果可能不精确)
+    metric_hits: list[dict] | None = None  # 本次查询命中的业务指标 [{table, metric, co_occurrence}]
 
 
 def _safe_response_question(intent_output, original: str) -> str:
@@ -90,6 +91,45 @@ def _safe_response_question(intent_output, original: str) -> str:
         return original
     nq = (getattr(intent_output, "normalized_question", None) or "").strip()
     return nq if nq else original
+
+
+async def _persist_co_occurrence(
+    db: AsyncSession, tenant_id: str, data_source_id: str,
+    updates: list[dict],
+) -> None:
+    """将 co_occurrence 增量原地写入当前语义层 content JSON (不走版本化)。
+
+    co_occurrence 是统计信息而非语义定义, 不触发 append-only 版本。
+    """
+    if not updates:
+        return
+    stmt = select(SemanticModel).where(
+        SemanticModel.tenant_filter(tenant_id),
+        SemanticModel.data_source_id == data_source_id,
+        SemanticModel.is_current == True,  # noqa: E712
+    )
+    sm = (await db.execute(stmt)).scalar_one_or_none()
+    if not sm:
+        return
+    content = sm.content  # dict
+    for upd in updates:
+        table_name = upd["table_name"]
+        metric_name = upd["metric_name"]
+        new_count = upd["new_count"]
+        # 在 content JSON 中找到对应表的对应指标, 更新 co_occurrence
+        for model in content.get("models", []):
+            if model.get("name") == table_name:
+                for m in model.get("metrics", []):
+                    if m.get("name") == metric_name:
+                        m["co_occurrence"] = new_count
+                        break
+                break
+    # SQLAlchemy 检测 mutable dict 变更需要 flag_modified
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(sm, "content")
+    await db.flush()
+    await db.commit()
+    logger.info("co_occurrence 持久化: %d 条更新", len(updates))
 
 
 def _build_thinking_with_graph(state) -> dict:
@@ -464,6 +504,8 @@ async def chat(
         exec_duration is not None
         and exec_duration >= get_settings().sql_slow_query_threshold * 1000
     )
+    _metric_hits = getattr(state, "_metric_hits", None)
+    _audit_detail = {"metric_hits": _metric_hits} if _metric_hits else None
     await write_audit_log(
         db, tenant_id=user.tenant_id, user_id=user.user_id,
         resource_type="chat",
@@ -474,8 +516,28 @@ async def chat(
         duration_ms=exec_duration,
         is_slow=is_slow,
         data_source_id=data_source_id,
+        detail=_audit_detail,
     )
     await db.commit()
+
+    # 指标反哺: 成功查询后校验 SQL 与指标关系 (co_occurrence + suggestion)
+    if state.success and state.sql:
+        try:
+            from app.ai.recall import persist_metric_feedback
+            from app.core.agent_memory import AgentMemoryStore
+            mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
+            mem_store = AgentMemoryStore(base_dir=mem_dir)
+            co_updates = persist_metric_feedback(mem_store, state, content, conv_id=conversation_id)
+            # 持久化 co_occurrence 增量 (不走版本化, 直接原地更新 content JSON)
+            if co_updates:
+                await _persist_co_occurrence(db, user.tenant_id, data_source_id, co_updates)
+            # 传递指标命中信息给响应 (供前端展示)
+            state._metric_hits = [
+                {"table": u["table_name"], "metric": u["metric_name"], "co_occurrence": u["new_count"]}
+                for u in co_updates
+            ]
+        except Exception as e:
+            logger.debug("指标反哺失败 (不阻塞): %s", e)
 
     # 客户端安全: 内部异常不泄露详情, 业务错误保留原文
     _client_error = "服务内部错误, 请稍后重试" if state.error_is_internal else state.error
@@ -507,4 +569,5 @@ async def chat(
         token_usage=TokenUsagePayload(**token_stats) if token_stats else None,
         fewshot_count=state.fewshot_count,
         degraded=state.degraded,
+        metric_hits=getattr(state, "_metric_hits", None),
     )

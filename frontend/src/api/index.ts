@@ -258,6 +258,7 @@ export interface ChatResponse {
   } | null
   fewshot_count: number  // 命中的 few-shot 示例数 (RAG-004)
   degraded: boolean  // 检索/图表降级标记 (结果可能不精确)
+  metric_hits: { table: string; metric: string; co_occurrence: number }[] | null  // 命中的业务指标
 }
 
 export const chat = {

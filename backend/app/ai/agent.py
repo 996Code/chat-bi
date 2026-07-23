@@ -247,7 +247,23 @@ async def run_agent(state: AgentState, deps: AgentDeps) -> AgentState:
         from app.ai.chat_utils import inherit_prev_tables
         from app.ai.intent import safe_normalized_question
         question = safe_normalized_question(state.intent_output, state.question)
-        retrieved_names = [m.get("name", "") for m in state.retrieved_models if m.get("name")]
+        # 只取 type=model 的记录作为表名; type=metric 的命中由 build_metrics_hint 处理
+        retrieved_names = [
+            m.get("name", "") for m in state.retrieved_models
+            if m.get("name") and m.get("type") != "metric"
+        ]
+        # 指标命中 → 反查所属表 (用户问"GMV"可能只召回 metric 记录, 需补入所属表)
+        if not retrieved_names and state.semantic_content:
+            metric_names = {
+                m.get("name", "") for m in state.retrieved_models
+                if m.get("type") == "metric" and m.get("name")
+            }
+            if metric_names:
+                for model in state.semantic_content.models:
+                    for metric in model.metrics:
+                        if metric.name in metric_names and model.name not in retrieved_names:
+                            retrieved_names.append(model.name)
+                            break
         # 追问表继承: 检索结果 ∪ 上轮表 (追问时上轮表必然相关, 补齐检索可能遗漏的表)
         retrieved_names = inherit_prev_tables(state.prev_tables, retrieved_names, state.semantic_content)
         logger.info("Stage3 预思考: 检索命中表 %s", retrieved_names)

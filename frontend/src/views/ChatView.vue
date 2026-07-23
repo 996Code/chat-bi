@@ -239,6 +239,15 @@
                   </span>
                 </div>
               </div>
+              <!-- 指标命中提示 (完成后显示) -->
+              <div v-if="msg.done && msg.metricHits?.length" class="metric-hits-bar">
+                <span class="metric-hits-label">📊 命中指标</span>
+                <el-tag
+                  v-for="h in msg.metricHits.slice(0, 5)" :key="h.metric"
+                  size="small" effect="plain" class="metric-hit-tag"
+                >{{ h.metric }}<span class="metric-hit-table">{{ h.table }}</span></el-tag>
+                <span v-if="msg.metricHits.length > 5" class="metric-hit-more">+{{ msg.metricHits.length - 5 }}</span>
+              </div>
             </template>
           </div>
         </div>
@@ -728,8 +737,9 @@ async function loadConversation(convId: string) {
           chart: st.chart_option || undefined,
           // 全量回放: 主动确认内容 (刷新后还原 Agent 的确认问题 + 候选)
           askUser: st.ask_user ? { question: st.ask_user.question, options: st.ask_user.options || null } : null,
-          done: true,
-          steps: [
+	          done: true,
+	          metricHits: st.metric_hits || undefined,
+	          steps: [
             {
               label: '意图识别', status: 'done' as const,
               detail: st.intent || undefined,
@@ -1135,7 +1145,11 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
         }
       }
 	      if (data.conversation_id) conversationId.value = data.conversation_id
-      if (!data.success && data.error && !msg.error && !msg.reply) {
+	      // 指标命中: 记录本次查询命中的业务指标
+	      if (data.metric_hits?.length) {
+	        msg.metricHits = data.metric_hits
+	      }
+	      if (!data.success && data.error && !msg.error && !msg.reply) {
         msg.error = data.error
       }
       break
@@ -1777,6 +1791,35 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
   font-size: 0.72rem;
   color: #909399;
   text-align: right;
+}
+.metric-hits-bar {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed #e4e7ed;
+  font-size: 0.72rem;
+  color: #909399;
+  text-align: right;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.metric-hits-label {
+  color: #909399;
+  margin-right: 2px;
+}
+.metric-hit-tag {
+  font-size: 0.68rem;
+}
+.metric-hit-table {
+  color: #c0c4cc;
+  margin-left: 3px;
+  font-size: 0.62rem;
+}
+.metric-hit-more {
+  color: #c0c4cc;
+  font-size: 0.68rem;
 }
 .token-nodes {
   display: flex;

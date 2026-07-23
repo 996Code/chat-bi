@@ -82,6 +82,7 @@ class ConversationState:
     self_heal_rounds: int = 0          # 自愈轮次
     heal_before_sql: str | None = None # 自愈前的原始 SQL (自愈前后对比)
     ask_user: dict | None = None       # 主动确认内容 (全量落库: 刷新后还原 Agent 的确认问题 + 候选)
+    metric_hits: list[dict] | None = None  # 本次查询命中的业务指标 [{table, metric, co_occurrence}]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +110,7 @@ class ConversationState:
             "self_heal_rounds": self.self_heal_rounds,
             "heal_before_sql": self.heal_before_sql,
             "ask_user": self.ask_user,
+            "metric_hits": self.metric_hits,
         }
 
     @classmethod
@@ -138,6 +140,7 @@ class ConversationState:
             self_heal_rounds=d.get("self_heal_rounds", 0),
             heal_before_sql=d.get("heal_before_sql"),
             ask_user=d.get("ask_user"),
+            metric_hits=d.get("metric_hits"),
         )
 
     def inherit_filters(self, new_filters: dict[str, Any]) -> dict[str, Any]:

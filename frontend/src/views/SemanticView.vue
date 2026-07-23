@@ -36,11 +36,11 @@
         >
           <div class="table-name">{{ m.display_name }}</div>
           <div class="table-meta">
-            <span>{{ m.name }}</span>
-            <span class="stat-chips">
-              <el-tag size="small" type="primary" effect="plain">{{ m.columns.length }} 列</el-tag>
-              <el-tag size="small" type="success" effect="plain">{{ getRelationshipCount(m.name) }} 关系</el-tag>
-              <el-tag v-if="m.metrics?.length" size="small" type="warning" effect="plain">{{ m.metrics.length }} 指标</el-tag>
+            <span class="table-id">{{ m.name }}</span>
+            <span class="table-stats">
+              <span class="stat"><span class="stat-num">{{ m.columns.length }}</span>列</span>
+              <span class="stat"><span class="stat-num">{{ getRelationshipCount(m.name) }}</span>关系</span>
+              <span v-if="m.metrics?.length" class="stat"><span class="stat-num">{{ m.metrics.length }}</span>指标</span>
             </span>
           </div>
         </div>
@@ -149,53 +149,6 @@
           </el-table-column>
         </el-table>
 
-        <!-- 指标区域 (和列、关系平级) -->
-        <h4 style="margin-top: 20px">
-          指标 ({{ selected.metrics?.length || 0 }})
-          <el-button text size="small" type="primary" @click="addMetric" style="margin-left: 8px">+ 新增</el-button>
-        </h4>
-        <el-table v-if="selected.metrics?.length" :data="selected.metrics" size="small" border>
-          <el-table-column prop="name" label="标识" min-width="100">
-            <template #default="{ row }"><code>{{ row.name }}</code></template>
-          </el-table-column>
-          <el-table-column prop="display_name" label="中文名" min-width="100">
-            <template #default="{ row }">
-              <span>{{ row.display_name }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="formula" label="公式" min-width="180">
-            <template #default="{ row }">
-              <code style="font-size: 0.85em">{{ row.formula }}</code>
-            </template>
-          </el-table-column>
-          <el-table-column prop="type" label="类型" width="100">
-            <template #default="{ row }">
-              <el-tag size="small" :type="row.type === 'composite' ? 'warning' : 'success'">{{ row.type }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="条件" min-width="150">
-            <template #default="{ row }">
-              <code v-if="row.condition" style="font-size: 0.85em">{{ row.condition }}</code>
-              <span v-else style="color: #c0c4cc">-</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="使用" width="70" align="center">
-            <template #default="{ row }">{{ row.co_occurrence || 0 }}</template>
-          </el-table-column>
-          <el-table-column label="来源" width="110">
-            <template #default="{ row }">
-              <el-tag size="small" :type="metricSourceTag(row.source)">{{ metricSourceLabel(row.source) }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="120" fixed="right">
-            <template #default="{ row }">
-              <el-button text size="small" type="primary" @click="editMetric(row)">编辑</el-button>
-              <el-button text size="small" type="danger" @click="deleteMetric(row)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-        <div v-else style="color: #909399; font-size: 0.85rem; padding: 8px 0">暂无指标定义 (扫描时 LLM 会自动推断业务指标)</div>
-
         <h4 v-if="reverseRelationships.length" style="margin-top: 20px">
           被引用 ({{ reverseRelationships.length }})
           <el-tooltip content="其他表通过外键或推断关系引用了此表" placement="top">
@@ -213,8 +166,47 @@
               <el-tag size="small" :type="sourceTag(row.relSource)">{{ sourceLabel(row.relSource, row.confidence) }}</el-tag>
             </template>
           </el-table-column>
-        </el-table>
-            </el-card>
+	        </el-table>
+
+	        <!-- 指标区域 (最后一个区域, 和列、关系平级) -->
+	        <h4 style="margin-top: 20px">
+	          指标 ({{ selected.metrics?.length || 0 }})
+	          <el-button text size="small" type="primary" @click="addMetric" style="margin-left: 8px">+ 新增</el-button>
+	        </h4>
+	        <el-table v-if="selected.metrics?.length" :data="selected.metrics" size="small" border>
+	          <el-table-column prop="display_name" label="指标" min-width="120">
+	            <template #default="{ row }">
+	              <span style="font-weight: 500">{{ row.display_name }}</span>
+	            </template>
+	          </el-table-column>
+	          <el-table-column prop="formula" label="公式" min-width="200">
+	            <template #default="{ row }">
+	              <code style="font-size: 0.85em">{{ row.formula }}</code>
+	            </template>
+	          </el-table-column>
+	          <el-table-column label="条件" min-width="180">
+	            <template #default="{ row }">
+	              <code v-if="row.condition" style="font-size: 0.85em">{{ row.condition }}</code>
+	              <span v-else style="color: #c0c4cc">-</span>
+	            </template>
+	          </el-table-column>
+	          <el-table-column label="类型" width="90">
+	            <template #default="{ row }">
+	              <el-tag size="small" :type="row.type === 'composite' ? 'warning' : 'info'">{{ row.type === 'composite' ? '复合' : '基础' }}</el-tag>
+	            </template>
+	          </el-table-column>
+		          <el-table-column label="" width="64" fixed="right" align="center">
+		            <template #default="{ row }">
+		              <div style="display: inline-flex; align-items: center; gap: 4px">
+		                <el-icon class="action-icon" @click="editMetric(row)"><Edit /></el-icon>
+		                <el-icon class="action-icon action-icon--danger" @click="deleteMetric(row)"><Delete /></el-icon>
+		              </div>
+		            </template>
+		          </el-table-column>
+	        </el-table>
+	        <div v-else style="color: #909399; font-size: 0.85rem; padding: 8px 0">暂无指标定义 (扫描时 LLM 会自动推断业务指标)</div>
+
+	            </el-card>
           </el-tab-pane>
           <el-tab-pane label="图谱" name="graph">
             <div class="graph-panel" v-show="activeTab === 'graph'">
@@ -327,7 +319,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Refresh, Clock, Edit, InfoFilled } from '@element-plus/icons-vue'
+import { ArrowLeft, Refresh, Clock, Edit, Delete, InfoFilled } from '@element-plus/icons-vue'
 import { semantic, datasource, graph, type SemanticModel, type SemanticTableModel, type SemanticColumn, type SemanticMetric, type ReverseRelationship } from '@/api'
 import { extractErrorDetail } from '@/utils/error'
 import SchemaGraph from '@/components/SchemaGraph.vue'
@@ -590,24 +582,6 @@ const metricForm = ref({
 })
 const metricSaving = ref(false)
 
-function metricSourceLabel(source: string): string {
-  const map: Record<string, string> = {
-    manual: '📋 人工',
-    auto_inferred: '🤖 推断',
-    metric_suggestion: '💡 建议',
-  }
-  return map[source] || source
-}
-
-function metricSourceTag(source: string): any {
-  const map: Record<string, string> = {
-    manual: 'success',
-    auto_inferred: 'info',
-    metric_suggestion: 'warning',
-  }
-  return map[source] || ''
-}
-
 function addMetric() {
   metricEditMode.value = 'add'
   metricForm.value = {
@@ -760,6 +734,10 @@ onMounted(fetchData)
   font-size: 0.8rem; color: #999; margin-top: 4px;
   display: flex; justify-content: space-between;
 }
+.table-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table-stats { display: flex; gap: 8px; flex-shrink: 0; }
+.table-stats .stat { font-size: 0.75rem; color: #b0b0b0; font-variant-numeric: tabular-nums; }
+.table-stats .stat-num { color: #606266; font-weight: 500; margin-right: 1px; }
 .badges span { margin-left: 8px; }
 .desc { color: #666; margin: 0 0 16px; }
 .desc-edit-row { margin-bottom: 12px; }
@@ -771,6 +749,14 @@ h4 { margin: 16px 0 8px; color: #303030; }
   padding-bottom: 1px;
 }
 .editable-cell:hover { border-bottom-color: #409eff; color: #409eff; }
+.action-icon {
+  font-size: 14px; cursor: pointer;
+  transition: color 0.15s;
+  color: #409eff;
+}
+.action-icon:hover { color: #66b1ff; }
+.action-icon--danger { color: #f56c6c; }
+.action-icon--danger:hover { color: #f78989; }
 .version-item {
   padding: 12px 0; border-bottom: 1px solid #ebeef5;
 }
@@ -788,4 +774,5 @@ h4 { margin: 16px 0 8px; color: #303030; }
 .diff-col { display: block; margin-top: 2px; margin-left: 8px; }
 .diff-col.add { color: #67c23a; }
 .diff-col.remove { color: #f56c6c; }
+
 </style>

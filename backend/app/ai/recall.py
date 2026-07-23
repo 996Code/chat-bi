@@ -807,7 +807,7 @@ def persist_metric_feedback(
     import re as _re
 
     if not state.sql or not state.current_tables:
-        return
+        return []
 
     # 收集当前查询涉及的表的所有已知指标
     known_metrics: dict[str, dict] = {}  # metric_name → {model, metric}
@@ -828,7 +828,10 @@ def persist_metric_feedback(
         sql_aggs.append((match.group(1).upper(), match.group(2).strip()))
 
     if not sql_aggs:
-        return
+        return []
+
+    # 记录 co_occurrence 变更 (供调用方持久化)
+    co_occurrence_updates: list[dict] = []  # [{table_name, metric_name, new_count}]
 
     # 1. SQL 命中已知 metric → co_occurrence += 1
     # 匹配逻辑: SQL 的聚合函数+列名与 metric 的 formula 有交集
@@ -846,6 +849,11 @@ def persist_metric_feedback(
         if matched:
             # 更新语义层中该 metric 的 co_occurrence
             metric.co_occurrence = metric.co_occurrence + 1
+            co_occurrence_updates.append({
+                "table_name": info["model"],
+                "metric_name": metric_name,
+                "new_count": metric.co_occurrence,
+            })
             logger.info(
                 "metric_feedback: 指标 %s 命中, co_occurrence → %d",
                 metric_name, metric.co_occurrence,
@@ -893,3 +901,5 @@ def persist_metric_feedback(
                     )
                 except Exception as e:
                     logger.warning("metric_feedback: 写 suggestion 失败: %s", e)
+
+    return co_occurrence_updates
