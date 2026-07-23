@@ -492,6 +492,32 @@ async def chat(
             logger.warning("StateStore 持久化失败 (不阻塞): %s", e)
 
     # 审计
+    # 指标反哺: 成功查询后校验 SQL 与指标关系 (co_occurrence + suggestion)
+    # 注意: 必须在审计日志之前执行, 这样 _metric_hits 才能写入审计日志 detail
+    if state.success and state.sql:
+        try:
+            from app.ai.recall import persist_metric_feedback
+            from app.core.agent_memory import AgentMemoryStore
+            mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
+            mem_store = AgentMemoryStore(base_dir=mem_dir)
+            co_updates = persist_metric_feedback(mem_store, state, content, conv_id=conversation_id)
+            # 持久化 co_occurrence 增量 (不走版本化, 直接原地更新 content JSON)
+            if co_updates:
+                await _persist_co_occurrence(db, user.tenant_id, data_source_id, co_updates)
+            # 传递指标命中信息给响应 (供前端展示)
+            state._metric_hits = [
+                {
+                    "table": u["table_name"],
+                    "metric": u["metric_name"],
+                    "co_occurrence": u["new_count"],
+                    "source": u.get("source"),
+                    "type": u.get("type"),
+                }
+                for u in co_updates
+            ]
+        except Exception as e:
+            logger.debug("指标反哺失败 (不阻塞): %s", e)
+
     # SEC-006: SQL 注入拦截专项标识 — Layer 1(AST/多语句/写操作) 或 Layer 2(危险函数) 失败
     # 视为注入拦截, 用 action="sql_injection_blocked" 单独标记便于检索
     _INJECTION_LAYERS = ("AST", "dangerous_function")
@@ -519,31 +545,6 @@ async def chat(
         detail=_audit_detail,
     )
     await db.commit()
-
-    # 指标反哺: 成功查询后校验 SQL 与指标关系 (co_occurrence + suggestion)
-    if state.success and state.sql:
-        try:
-            from app.ai.recall import persist_metric_feedback
-            from app.core.agent_memory import AgentMemoryStore
-            mem_dir = f"memory/{user.tenant_id}/{data_source_id}"
-            mem_store = AgentMemoryStore(base_dir=mem_dir)
-            co_updates = persist_metric_feedback(mem_store, state, content, conv_id=conversation_id)
-            # 持久化 co_occurrence 增量 (不走版本化, 直接原地更新 content JSON)
-            if co_updates:
-                await _persist_co_occurrence(db, user.tenant_id, data_source_id, co_updates)
-            # 传递指标命中信息给响应 (供前端展示)
-            state._metric_hits = [
-                {
-                    "table": u["table_name"],
-                    "metric": u["metric_name"],
-                    "co_occurrence": u["new_count"],
-                    "source": u.get("source"),
-                    "type": u.get("type"),
-                }
-                for u in co_updates
-            ]
-        except Exception as e:
-            logger.debug("指标反哺失败 (不阻塞): %s", e)
 
     # 客户端安全: 内部异常不泄露详情, 业务错误保留原文
     _client_error = "服务内部错误, 请稍后重试" if state.error_is_internal else state.error

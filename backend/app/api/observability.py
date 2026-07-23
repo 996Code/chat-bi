@@ -44,6 +44,8 @@ class AuditLogOut(BaseModel):
     # DSO-07: 慢查询标记
     duration_ms: int | None = None
     is_slow: bool = False
+    # 指标命中信息 (含 source + type)
+    detail: dict | None = None
 
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])
@@ -74,6 +76,7 @@ async def list_audit_logs(
             created_at=log.created_at.isoformat() if log.created_at else None,
             duration_ms=log.duration_ms,
             is_slow=log.is_slow,
+            detail=log.detail,
         )
         for log in result.scalars()
     ]
@@ -108,6 +111,7 @@ async def list_slow_queries(
             created_at=log.created_at.isoformat() if log.created_at else None,
             duration_ms=log.duration_ms,
             is_slow=log.is_slow,
+            detail=log.detail,
         )
         for log in result.scalars()
     ]
