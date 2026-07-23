@@ -190,6 +190,7 @@ async def chat_stream(
         _pc_token = start_prompt_capture()
         # 各步骤耗时收集 (历史对话回放用)
         _step_durations: dict[str, int] = {}
+        metric_hits_retrieval: list[dict] = []  # 指标命中 (schema 步骤填充, 供 ConversationState 使用)
         try:
             # ── Stage 0: 首事件 — 立刻发 conversation_id ──────────
             # 本地 LLM 慢, 完整 pipeline 要 1-2 分钟; 让前端尽早拿到 conv_id
@@ -324,18 +325,37 @@ async def chat_stream(
                 m.get("name", "") for m in state.retrieved_models
                 if m.get("name") and m.get("type") != "metric"
             ]
-            # 指标命中 → 反查所属表 (用户问"GMV"可能只召回 metric 记录, 需补入所属表)
+            # 指标命中 → 两个来源:
+            # 1. Milvus 直接命中 type=metric 的记录 (用户问"GMV"可能只召回 metric)
+            # 2. 已选中表关联的指标 (LLM 精筛通常只选表名, 不选指标名)
             # 同时收集检索命中的指标 (供前端 pipeline 展示)
-            metric_hits_retrieval = []
             if state.semantic_content:
-                metric_names = set()
+                # 来源1: Milvus 直接命中的 metric 记录
+                metric_names_from_search = set()
                 for m in state.retrieved_models:
                     if m.get("type") == "metric" and m.get("name"):
-                        metric_names.add(m["name"])
-                if metric_names:
+                        metric_names_from_search.add(m["name"])
+                # 来源2: 已选中表关联的指标
+                table_set = set(tables)
+                for model in state.semantic_content.models:
+                    if model.name not in table_set:
+                        continue
+                    for metric in model.metrics:
+                        # 去重: 同名指标只记录一次
+                        if any(h["name"] == metric.name for h in metric_hits_retrieval):
+                            continue
+                        metric_hits_retrieval.append({
+                            "name": metric.name,
+                            "display_name": metric.display_name,
+                            "table": model.name,
+                            "source": metric.source,
+                            "type": metric.type,
+                        })
+                # 来源1 补充: Milvus 命中但不在已选表中的指标 → 反查所属表
+                if metric_names_from_search:
                     for model in state.semantic_content.models:
                         for metric in model.metrics:
-                            if metric.name in metric_names:
+                            if metric.name in metric_names_from_search and not any(h["name"] == metric.name for h in metric_hits_retrieval):
                                 metric_hits_retrieval.append({
                                     "name": metric.name,
                                     "display_name": metric.display_name,
@@ -345,6 +365,12 @@ async def chat_stream(
                                 })
                                 if model.name not in tables:
                                     tables.append(model.name)
+                # 截断: 最多展示 20 个指标 (前端只显示前5, 但完整数据供对话详情)
+                if len(metric_hits_retrieval) > 20:
+                    # 优先保留 Milvus 直接命中的
+                    direct = [h for h in metric_hits_retrieval if h["name"] in metric_names_from_search]
+                    indirect = [h for h in metric_hits_retrieval if h["name"] not in metric_names_from_search]
+                    metric_hits_retrieval = (direct + indirect)[:20]
             yield emit("schema", {
                 "tables": tables,
                 "metric_hits": metric_hits_retrieval,
@@ -456,33 +482,11 @@ async def chat_stream(
             state.sql = gen_result.sql
             state.fewshot_count = gen_result.fewshot_count  # 传播到 AgentState (与 agent.py 一致)
 
-            # 分析 SQL 引用了哪些语义层指标 (供前端 pipeline 展示)
-            sql_metric_hits = []
-            if state.semantic_content and state.sql:
-                import re as _re
-                _agg_re = _re.compile(
-                    r"\b(SUM|COUNT|AVG|MAX|MIN)\s*\(\s*([^)]+)\s*\)", _re.IGNORECASE,
-                )
-                sql_aggs = [
-                    (m.group(1).upper(), m.group(2).strip())
-                    for m in _agg_re.finditer(state.sql)
-                ]
-                if sql_aggs:
-                    for model in state.semantic_content.models:
-                        for metric in model.metrics:
-                            if metric.type == "single" and metric.formula:
-                                formula_upper = metric.formula.upper()
-                                for func, col in sql_aggs:
-                                    agg_expr = f"{func}({col})".upper()
-                                    if agg_expr in formula_upper or f"{func} ( {col} )" in formula_upper:
-                                        sql_metric_hits.append({
-                                            "name": metric.name,
-                                            "display_name": metric.display_name,
-                                            "table": model.name,
-                                            "source": metric.source,
-                                            "type": metric.type,
-                                        })
-                                        break
+            # SQL 步骤的指标命中: 复用 schema 检索命中的指标
+            # (检索命中的指标就是 LLM 生成 SQL 时参考的指标, 无需从 SQL 文本反向匹配)
+            sql_metric_hits = metric_hits_retrieval if metric_hits_retrieval else []
+            if sql_metric_hits:
+                logger.info("SQL 步骤指标命中: %s", [h["name"] for h in sql_metric_hits])
 
             yield emit("sql", {
                 "sql": state.sql,
@@ -682,7 +686,7 @@ async def chat_stream(
                 # 传递各步骤耗时 (历史对话回放用)
                 state._step_durations = _step_durations
                 try:
-                    persist_warnings = await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps)
+                    persist_warnings = await _persist(db, user, state, conv_id, conversation_id, data_source_id, deps, metric_hits_retrieval)
                     # E1 Task 2.3: 反哺失败通过 persist_warning SSE 事件告知前端 (Fail-Closed, 不静默)
                     for warn in persist_warnings:
                         yield emit("persist_warning", {
@@ -753,7 +757,7 @@ async def _persist_skeleton(user, question: str, conv_id: str, is_new: bool) -> 
         return None
 
 
-async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) -> list[dict]:
+async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps, metric_hits_retrieval: list[dict] | None = None) -> list[dict]:
     """持久化对话状态 + 标题 + 审计 (流式版, 复用 chat.py 同款逻辑)。
     
     Returns:
@@ -858,8 +862,9 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                     if hasattr(state.ask_user_request.reason, "value")
                     else str(state.ask_user_request.reason),
             } if state.ask_user_request else None,
-            # 指标命中 (历史对话恢复展示)
-            metric_hits=getattr(state, "_metric_hits", None),
+	            # 指标命中 (历史对话恢复展示) — 优先用 schema 检索命中的指标 (格式含 name/display_name)
+	            # _metric_hits 是反哺结果 (格式为 {table, metric, ...}), 仅作 fallback
+	            metric_hits=metric_hits_retrieval if metric_hits_retrieval else getattr(state, "_metric_hits", None),
         )
         # turn 推算: 优先复用本轮骨架行的 turn 号 (start 事件落的, 避免重复轮次);
         # 无骨架则取 max(行数, 最大turn值) + 1 (防御自愈历史脏数据)

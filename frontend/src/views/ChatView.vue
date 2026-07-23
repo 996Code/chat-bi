@@ -181,7 +181,7 @@
                         {{ s.label }}
                         <el-icon v-if="s.expandable" class="expand-icon"><ArrowDown :class="{ rotated: !s.expanded }" /></el-icon>
                       </div>
-                      <div v-if="s.detail && !s.expandable" class="step-detail">{{ s.detail }}</div>
+                      <div v-if="s.detail && !s.expandable" class="step-detail" style="white-space: pre-line">{{ s.detail }}</div>
                     </div>
                     <span v-if="s.duration" class="step-dur">{{ s.duration }}ms</span>
                     <span v-if="s.llmCalls" class="step-llm">🤖 ×{{ s.llmCalls }}<template v-if="s.llmTokens"> · {{ s.llmTokens }} tokens</template></span>
@@ -289,8 +289,11 @@
 	          <el-table-column type="expand" width="36">
 	            <template #default="{ row }">
 	              <div style="padding: 8px 12px;">
-	                <!-- SQL -->
-	                <pre v-if="row.type === 'sql' && traceSql" class="sql-inline">{{ traceSql }}</pre>
+		                <!-- SQL -->
+		                <template v-if="row.type === 'sql' && traceSql">
+		                  <div v-if="row.detail" style="white-space: pre-line; color: #909399; font-size: 12px; margin-bottom: 6px;">{{ row.detail }}</div>
+		                  <pre class="sql-inline">{{ traceSql }}</pre>
+		                </template>
 	                <!-- 预思考 -->
 	                <div v-else-if="row.type === 'thinking' && row.thinkingData" class="trace-thinking">
 	                  <div v-if="row.thinkingData.tables.length">选表: {{ row.thinkingData.tables.join('、') }}</div>
@@ -328,7 +331,8 @@
 	                    共 {{ traceRowCount }} 行, 仅展示前 100 行
 	                  </div>
 	                </div>
-	                <span v-else>{{ row.detail || '暂无详情' }}</span>
+		                <div v-else-if="row.detail" style="white-space: pre-line">{{ row.detail }}</div>
+		                <span v-else>暂无详情</span>
 	              </div>
 	            </template>
 	          </el-table-column>
@@ -400,7 +404,7 @@ import * as echarts from 'echarts'
 interface TraceStep {
   label: string
   status: 'running' | 'done' | 'failed'
-  detail?: string
+  detail?: string  // 多行用 || 分隔, 模板自动 split 渲染
   duration?: number
   type?: 'sql' | 'result' | 'thinking' | 'heal'  // 步骤类型 (决定折叠内容)
   expandable?: boolean          // 是否可点击展开
@@ -448,6 +452,16 @@ interface Message {
     nodes?: Record<string, { total_tokens: number; prompt_tokens: number; completion_tokens: number; call_count: number }>  // H5: per-node 分段
   } | null
   selfHealRounds?: number       // 本轮自愈次数 (T049 trace)
+  metricHits?: { name: string; display_name?: string; table: string; source?: string; type?: string; co_occurrence?: number }[] | null  // 命中的业务指标
+}
+
+/** 格式化指标命中列表为展示字符串 (图标 + 名称) */
+function formatMetricHits(hits: any[], max = 5): string {
+  return hits.slice(0, max).map((h: any) => {
+    const label = h.display_name || h.name || h.metric || ''
+    const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : h.source === 'manual' ? '✏️' : ''
+    return `${icon}${label}`
+  }).join('、') + (hits.length > max ? ` 等${hits.length}个` : '')
 }
 
 const input = ref('')
@@ -670,8 +684,8 @@ async function fetchConversations() {
 function startNewConversation() {
   // 释放 ECharts 实例, 防止内存泄漏
   Object.values(chartInstances).forEach(c => { try { c.dispose() } catch { /* ignore */ } })
-  Object.keys(chartInstances).forEach(k => delete chartInstances[k])
-  Object.keys(chartRefs).forEach(k => delete chartRefs[k])
+  Object.keys(chartInstances).forEach(k => delete chartInstances[Number(k)])
+  Object.keys(chartRefs).forEach(k => delete chartRefs[Number(k)])
   conversationId.value = null
   messages.value = []
 }
@@ -679,8 +693,8 @@ function startNewConversation() {
 async function loadConversation(convId: string) {
   // 释放旧图表实例, 防止切换对话时残留实例绑定已移除 DOM 导致新图表无法渲染
   Object.values(chartInstances).forEach(c => { try { c.dispose() } catch { /* ignore */ } })
-  Object.keys(chartInstances).forEach(k => delete chartInstances[k])
-  Object.keys(chartRefs).forEach(k => delete chartRefs[k])
+  Object.keys(chartInstances).forEach(k => delete chartInstances[Number(k)])
+  Object.keys(chartRefs).forEach(k => delete chartRefs[Number(k)])
 
   conversationId.value = convId
   messages.value = []
@@ -728,7 +742,7 @@ async function loadConversation(convId: string) {
           rowCount: st.result_summary?.row_count,
           chart: st.chart_option || undefined,
           // 全量回放: 主动确认内容 (刷新后还原 Agent 的确认问题 + 候选)
-          askUser: st.ask_user ? { question: st.ask_user.question, options: st.ask_user.options || null } : null,
+	          askUser: st.ask_user ? { question: st.ask_user.question, options: st.ask_user.options || null } : null,
 	          done: true,
 	          metricHits: st.metric_hits || undefined,
 	          steps: [
@@ -738,16 +752,19 @@ async function loadConversation(convId: string) {
               duration: dur.intent ?? undefined,
               ...llmOf('intent'),
             },
-            {
-              label: 'Schema 检索', status: 'done' as const,
-              detail: (st.current_tables || []).join(', ') || undefined,
-              duration: dur.schema ?? undefined,
-            },
+				            {
+				              label: 'Schema 检索', status: 'done' as const,
+				              detail: [
+				                (st.current_tables || []).length ? `命中表: ${(st.current_tables || []).join('、')}` : '',
+				                (st.metric_hits || []).length ? `指标命中: ${formatMetricHits(st.metric_hits || [])}` : '',
+				              ].filter(Boolean).join('\n') || undefined,
+				              duration: dur.schema ?? undefined,
+				            },
             {
               label: '预思考', status: 'done' as const, type: 'thinking',
               expandable: true, expanded: false,
               duration: dur.thinking ?? undefined,
-              ...llmOf('thinking'),
+	              ...llmOf('thinking'),
 	              thinkingData: {
 	                tables: st.thinking?.tables || [],
 	                aggregation: st.thinking?.aggregation || '',
@@ -758,12 +775,13 @@ async function loadConversation(convId: string) {
 	                joinPathSection: st.thinking?.join_path_section || '',
 	              },
             },
-            {
-              label: 'SQL 生成', status: 'done' as const, type: 'sql',
-              expandable: true, expanded: false,
-              duration: dur.generate_sql ?? undefined,
-              ...llmOf('generate_sql'),
-            },
+		            {
+		              label: 'SQL 生成', status: 'done' as const, type: 'sql',
+		              expandable: true, expanded: false,
+		              detail: (st.metric_hits || []).length ? `指标命中: ${formatMetricHits(st.metric_hits || [])}` : undefined,
+		              duration: dur.generate_sql ?? undefined,
+		              ...llmOf('generate_sql'),
+	            },
             {
               label: '执行查询', status: 'done' as const,
               detail: `${st.result_summary?.row_count ?? 0} 行`,
@@ -775,11 +793,10 @@ async function loadConversation(convId: string) {
               duration: dur.generate_chart ?? undefined,
               ...llmOf('generate_chart'),
             }] : []),
-          ],
-		          done: true,
-		        })
-      }
-    }
+	          ],
+	        })
+	      }
+	    }
     await scrollToBottom()
     // 渲染历史图表
     await nextTick()
@@ -1020,45 +1037,39 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
       // 继续管线: 推进到 schema 步骤
       steps.push({ label: 'Schema 检索', status: 'running' })
       break
-    case 'schema': {
-      // Schema 检索: 展示命中的表 + 指标
-      const schemaParts: string[] = []
-      if (data.tables?.length) schemaParts.push(data.tables.join(', '))
-      if (data.metric_hits?.length) {
-        const metricStr = data.metric_hits.slice(0, 5).map((h: any) => {
-          const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
-          return `${icon}${h.display_name || h.name}`
-        }).join(' · ')
-        const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
-        schemaParts.push(`📊 ${metricStr}${more}`)
-      }
-      updateStep('Schema 检索', 'done', { detail: schemaParts.join(' | '), duration: data.duration_ms, ...llmInfo(data) })
-      steps.push({ label: '预思考', status: 'running' })
-      break
-    case 'sql': {
-      if (data.error) {
-        updateStep('SQL 生成', 'failed', { detail: data.error, ...llmInfo(data) })
-        msg.error = data.error
-        break
-      }
-      msg.sql = data.sql
-      msg.originalSql = data.sql  // 保存初始 SQL, heal 后不覆盖
-      const sqlParts: string[] = []
-      const fewshotHint = data.fewshot_count > 0 ? `📚 命中 ${data.fewshot_count} 条相似示例` : ''
-      if (fewshotHint) sqlParts.push(fewshotHint)
-      if (data.metric_hits?.length) {
-        const metricStr = data.metric_hits.slice(0, 5).map((h: any) => {
-          const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
-          return `${icon}${h.display_name || h.name}`
-        }).join(' · ')
-        const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
-        sqlParts.push(`📊 ${metricStr}${more}`)
-        msg.metricHits = data.metric_hits
-      }
-      updateStep('SQL 生成', 'done', { detail: sqlParts.join(' | ') || undefined, duration: data.duration_ms, type: 'sql', expandable: true, expanded: false, ...llmInfo(data) })
-      steps.push({ label: '执行查询', status: 'running' })
-      break
-    }
+	    case 'schema': {
+	      // Schema 检索: 展示命中的表 + 指标 (分两行显示)
+	      const schemaLines: string[] = []
+	      if (data.tables?.length) {
+	        schemaLines.push(`命中表: ${data.tables.join('、')}`)
+	      }
+		      if (data.metric_hits?.length) {
+		        schemaLines.push(`指标命中: ${formatMetricHits(data.metric_hits)}`)
+		      }
+	      updateStep('Schema 检索', 'done', { detail: schemaLines.join('\n'), duration: data.duration_ms, ...llmInfo(data) })
+	      steps.push({ label: '预思考', status: 'running' })
+	      break
+	    }
+	    case 'sql': {
+	      if (data.error) {
+	        updateStep('SQL 生成', 'failed', { detail: data.error, ...llmInfo(data) })
+	        msg.error = data.error
+	        break
+	      }
+	      msg.sql = data.sql
+	      msg.originalSql = data.sql  // 保存初始 SQL, heal 后不覆盖
+	      const sqlLines: string[] = []
+	      if (data.fewshot_count > 0) {
+	        sqlLines.push(`📚 命中 ${data.fewshot_count} 条相似示例`)
+	      }
+		      if (data.metric_hits?.length) {
+		        sqlLines.push(`指标命中: ${formatMetricHits(data.metric_hits)}`)
+		        msg.metricHits = data.metric_hits
+		      }
+	      updateStep('SQL 生成', 'done', { detail: sqlLines.length ? sqlLines.join('\n') : undefined, duration: data.duration_ms, type: 'sql', expandable: true, expanded: false, ...llmInfo(data) })
+	      steps.push({ label: '执行查询', status: 'running' })
+	      break
+	    }
     case 'data':
       msg.columns = data.columns
       msg.rows = (data.rows || []).map((row: any[]) => {
@@ -1161,16 +1172,12 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
           llm_calls: data.token_usage.llm_calls || 0,
           nodes: data.token_usage.nodes,
         }
-      }
-	      if (data.conversation_id) conversationId.value = data.conversation_id
-	      // 指标命中: 记录本次查询命中的业务指标
-	      if (data.metric_hits?.length) {
-	        msg.metricHits = data.metric_hits
 	      }
+	      if (data.conversation_id) conversationId.value = data.conversation_id
 	      if (!data.success && data.error && !msg.error && !msg.reply) {
-        msg.error = data.error
-      }
-      break
+	        msg.error = data.error
+	      }
+	      break
     case 'error':
       steps.forEach(s => { if (s.status === 'running') s.status = 'failed' })
       msg.done = true
@@ -1217,22 +1224,18 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
     }
     msg.selfHealRounds = data.self_heal_rounds || 0
     // 非流式降级: 同样构建 pipeline 步骤 (SQL/结果均收进折叠区, 默认展开结果)
-    if (msg.sql) {
-      const sqlParts: string[] = []
-      const fewshotHint = data.fewshot_count > 0 ? `📚 命中 ${data.fewshot_count} 条相似示例` : ''
-      if (fewshotHint) sqlParts.push(fewshotHint)
-      if (data.metric_hits?.length) {
-        msg.metricHits = data.metric_hits
-        const metricStr = data.metric_hits.slice(0, 5).map((h: any) => {
-          const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
-          return `${icon}${h.display_name || h.metric}`
-        }).join(' · ')
-        const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
-        sqlParts.push(`📊 ${metricStr}${more}`)
-      }
-      msg.steps = [
-        { label: 'SQL 生成', status: 'done' as const, detail: sqlParts.join(' | ') || undefined, type: 'sql', expandable: true, expanded: false },
-      ]
+	    if (msg.sql) {
+	      const sqlLines: string[] = []
+	      if (data.fewshot_count > 0) {
+	        sqlLines.push(`📚 命中 ${data.fewshot_count} 条相似示例`)
+	      }
+		      if (data.metric_hits?.length) {
+		        msg.metricHits = data.metric_hits
+		        sqlLines.push(`指标命中: ${formatMetricHits(data.metric_hits)}`)
+		      }
+	      msg.steps = [
+	        { label: 'SQL 生成', status: 'done' as const, detail: sqlLines.length ? sqlLines.join('\n') : undefined, type: 'sql', expandable: true, expanded: false },
+	      ]
       if (data.columns?.length || data.chart) {
         msg.steps.push({
           label: '执行查询', status: 'done' as const, detail: `${data.row_count} 行`,
@@ -1690,12 +1693,16 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
   color: #303133;
   line-height: 1.4;
 }
+.step-detail-wrap {
+  margin-top: 2px;
+}
 .step-detail {
   color: #909399;
   font-size: 12px;
   margin-top: 2px;
   line-height: 1.4;
   word-break: break-all;
+  white-space: pre-line;
 }
 .step-dur {
   color: #c0c4cc;
