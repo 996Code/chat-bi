@@ -135,7 +135,7 @@
               <el-tag
                 v-for="h in turn.state.metric_hits" :key="h.metric"
                 size="small" effect="plain"
-              >{{ h.metric }}<span v-if="h.source === 'rule_inferred'">⚙️</span><span v-else-if="h.source === 'auto_inferred'">🤖</span><span v-if="h.table" style="color:#c0c4cc;margin-left:3px;font-size:0.62rem">{{ h.table }}</span></el-tag>
+              >{{ h.metric }}<span v-if="h.source === 'rule_inferred'">⚙️</span><span v-else-if="h.source === 'auto_inferred' || h.source === 'ai_inferred'">🤖</span><span v-if="h.table" style="color:#c0c4cc;margin-left:3px;font-size:0.62rem">{{ h.table }}</span></el-tag>
             </div>
           </div>
         </div>

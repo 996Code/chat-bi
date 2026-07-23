@@ -12,9 +12,10 @@ T012: 语义层 JSON Schema 定义 (Pydantic v2)
 """
 from __future__ import annotations
 
+import re as _re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ── source 枚举（关系/字段的来源，影响人工复核优先级）─────────
@@ -79,6 +80,22 @@ class Relationship(_Inferred):
 
 MetricType = Literal["single", "composite"]
 
+# F9: formula/condition 注入防御 — 禁止的危险模式
+_FORMULA_DANGEROUS = _re.compile(
+    r";|--|/\*|\*/|\b(DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b",
+    _re.IGNORECASE,
+)
+# single 指标 formula 必须匹配: AGG_FUNC(col_name) 格式
+_SINGLE_FORMULA = _re.compile(
+    r"^\s*(SUM|COUNT|AVG|MAX|MIN)\s*\(\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\)\s*$",
+    _re.IGNORECASE,
+)
+# condition 禁止的危险模式 (同 formula, 额外禁止分号和注释)
+_CONDITION_DANGEROUS = _re.compile(
+    r";|--|/\*|\*/|\b(DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b",
+    _re.IGNORECASE,
+)
+
 
 class Metric(BaseModel):
     """指标定义。
@@ -115,14 +132,46 @@ class Metric(BaseModel):
                     "metric_suggestion=运行时建议",
     )
 
+    @field_validator("formula")
+    @classmethod
+    def _validate_formula(cls, v: str) -> str:
+        """F9: formula 注入防御 — 禁止分号、注释符、DDL/DML 关键字。
+
+        single 格式校验 (AGG_FUNC(col_name)) 放在 model_validator 中,
+        因为 field_validator 执行时 type 尚未赋值。
+        """
+        if _FORMULA_DANGEROUS.search(v):
+            raise ValueError(
+                "formula 包含危险内容 (分号/注释/DDL/DML 关键字), 已拒绝"
+            )
+        return v
+
+    @field_validator("condition")
+    @classmethod
+    def _validate_condition(cls, v: str | None) -> str | None:
+        """F9: condition 注入防御 — 禁止分号、注释符、DDL/DML 关键字。"""
+        if v is not None and _CONDITION_DANGEROUS.search(v):
+            raise ValueError(
+                "condition 包含危险内容 (分号/注释/DDL/DML 关键字), 已拒绝"
+            )
+        return v
+
     @model_validator(mode="after")
     def _composite_requires_factors(self) -> Metric:
-        """SEM-005: composite 必须有 factor_metric_names。"""
+        """SEM-005: composite 必须有 factor_metric_names。
+        F9: single 指标 formula 必须匹配 AGG_FUNC(col_name) 格式。
+        """
         if self.type == "composite":
             if not self.factor_metric_names:
                 raise ValueError(
                     "composite metric 必须提供 factor_metric_names "
                     "(指向子指标名)，SEM-005"
+                )
+        elif self.type == "single":
+            if not _SINGLE_FORMULA.match(self.formula):
+                raise ValueError(
+                    f"single 指标 formula 必须为 AGG_FUNC(col_name) 格式, "
+                    f"如 SUM(total_amount), 实际: {self.formula!r}"
                 )
         return self
 

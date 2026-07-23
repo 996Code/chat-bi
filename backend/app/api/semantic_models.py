@@ -416,16 +416,49 @@ async def patch_metric(
         if body.metric_display_name is not None:
             target_metric["display_name"] = body.metric_display_name
         if body.metric_formula is not None:
+            # F9: 用 Pydantic 校验 formula (注入防御)
+            metric_type_val = body.metric_type or target_metric.get("type", "single")
+            try:
+                from app.schemas.semantic_layer import Metric
+                Metric(
+                    name=target_metric.get("name", ""),
+                    display_name=target_metric.get("display_name", ""),
+                    formula=body.metric_formula,
+                    type=metric_type_val,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"formula 校验失败: {e}")
             target_metric["formula"] = body.metric_formula
         if body.metric_type is not None:
             if body.metric_type not in ("single", "composite"):
                 raise HTTPException(status_code=422, detail="metric_type 必须是 single/composite")
             target_metric["type"] = body.metric_type
         if body.metric_condition is not None:
+            # F9: 用 Pydantic 校验 condition (注入防御)
+            try:
+                from app.schemas.semantic_layer import Metric
+                Metric(
+                    name=target_metric.get("name", ""),
+                    display_name=target_metric.get("display_name", ""),
+                    formula=target_metric.get("formula", "SUM(id)"),
+                    condition=body.metric_condition or None,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"condition 校验失败: {e}")
             target_metric["condition"] = body.metric_condition or None
         if body.metric_description is not None:
             target_metric["description"] = body.metric_description or None
         if body.metric_factor_metric_names is not None:
+            # F4: composite 指标的 factor_metric_names 必须引用同表已有指标名
+            metric_type_val = body.metric_type or target_metric.get("type", "single")
+            if metric_type_val == "composite" and body.metric_factor_metric_names:
+                existing_names = {m.get("name") for m in metrics if m.get("name") != body.metric_name}
+                invalid = [n for n in body.metric_factor_metric_names if n not in existing_names]
+                if invalid:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"factor_metric_names 引用了不存在的指标: {invalid}",
+                    )
             target_metric["factor_metric_names"] = body.metric_factor_metric_names
         # 人工校正 → source=manual
         target_metric["source"] = "manual"
@@ -438,6 +471,18 @@ async def patch_metric(
         metric_type = body.metric_type or "single"
         if metric_type not in ("single", "composite"):
             raise HTTPException(status_code=422, detail="metric_type 必须是 single/composite")
+        # F9: 用 Pydantic 校验 formula + condition (注入防御)
+        try:
+            from app.schemas.semantic_layer import Metric
+            Metric(
+                name=body.metric_name,
+                display_name=body.metric_display_name,
+                formula=body.metric_formula,
+                type=metric_type,
+                condition=body.metric_condition or None,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"指标校验失败: {e}")
         new_metric = {
             "name": body.metric_name,
             "display_name": body.metric_display_name,
@@ -455,6 +500,15 @@ async def patch_metric(
                 status_code=422,
                 detail="composite 指标必须提供 factor_metric_names (SEM-005)",
             )
+        # F4: composite 的 factor_metric_names 必须引用同表已有指标名
+        if metric_type == "composite" and body.metric_factor_metric_names:
+            existing_names = {m.get("name") for m in metrics}
+            invalid = [n for n in body.metric_factor_metric_names if n not in existing_names]
+            if invalid:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"factor_metric_names 引用了不存在的指标: {invalid}",
+                )
         metrics.append(new_metric)
 
     # 旧版本 is_current=False

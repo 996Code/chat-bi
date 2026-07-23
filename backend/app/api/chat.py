@@ -97,9 +97,13 @@ async def _persist_co_occurrence(
     db: AsyncSession, tenant_id: str, data_source_id: str,
     updates: list[dict],
 ) -> None:
-    """将 co_occurrence 增量原地写入当前语义层 content JSON (不走版本化)。
+    """将 co_occurrence 增量原子写入当前语义层 content JSON (不走版本化)。
 
     co_occurrence 是统计信息而非语义定义, 不触发 append-only 版本。
+
+    使用 SELECT ... FOR UPDATE 锁行避免并发竞态,
+    在 JSON 中原子递增 co_occurrence (delta 模式, 非绝对值)。
+    只 flush 不 commit, 由调用方统一 commit 保证事务原子性。
     """
     if not updates:
         return
@@ -107,7 +111,7 @@ async def _persist_co_occurrence(
         SemanticModel.tenant_filter(tenant_id),
         SemanticModel.data_source_id == data_source_id,
         SemanticModel.is_current == True,  # noqa: E712
-    )
+    ).with_for_update()  # 行锁, 防止并发丢失更新
     sm = (await db.execute(stmt)).scalar_one_or_none()
     if not sm:
         return
@@ -115,21 +119,21 @@ async def _persist_co_occurrence(
     for upd in updates:
         table_name = upd["table_name"]
         metric_name = upd["metric_name"]
-        new_count = upd["new_count"]
-        # 在 content JSON 中找到对应表的对应指标, 更新 co_occurrence
+        delta = upd.get("delta", 1)  # 增量, 默认 1
+        # 在 content JSON 中找到对应表的对应指标, 原子递增 co_occurrence
         for model in content.get("models", []):
             if model.get("name") == table_name:
                 for m in model.get("metrics", []):
                     if m.get("name") == metric_name:
-                        m["co_occurrence"] = new_count
+                        old_count = m.get("co_occurrence", 0)
+                        m["co_occurrence"] = old_count + delta
                         break
                 break
     # SQLAlchemy 检测 mutable dict 变更需要 flag_modified
     from sqlalchemy.orm.attributes import flag_modified
     flag_modified(sm, "content")
-    await db.flush()
-    await db.commit()
-    logger.info("co_occurrence 持久化: %d 条更新", len(updates))
+    await db.flush()  # 只 flush, 不 commit — 由调用方统一 commit
+    logger.info("co_occurrence 持久化: %d 条更新 (delta 模式)", len(updates))
 
 
 def _build_thinking_with_graph(state) -> dict:
@@ -505,11 +509,12 @@ async def chat(
             if co_updates:
                 await _persist_co_occurrence(db, user.tenant_id, data_source_id, co_updates)
             # 传递指标命中信息给响应 (供前端展示)
+            # co_occurrence 用 delta 模式, 前端展示用 delta 标记命中
             state._metric_hits = [
                 {
                     "table": u["table_name"],
                     "metric": u["metric_name"],
-                    "co_occurrence": u["new_count"],
+                    "co_occurrence": u.get("delta", 1),
                     "source": u.get("source"),
                     "type": u.get("type"),
                 }

@@ -465,18 +465,39 @@ async def enrich_metrics(content: SemanticModelContent) -> None:
             return
 
         # Pydantic 逐条校验，失败跳过 (宁缺毋滥)
+        # 交叉校验: factor_metric_names 必须引用已有 simple 指标名
+        existing_names = {m.name for m in model.metrics}
         composite_metrics: list[Metric] = []
         for item in parsed:
             if not isinstance(item, dict):
                 continue
             try:
                 m = Metric(**item)
-                composite_metrics.append(m)
             except Exception as e:
                 logger.warning(
                     "enrich_metrics: 指标校验失败 (表=%s, 数据=%s): %s",
                     model.name, item, e,
                 )
+                continue
+            # F4: 过滤 factor_metric_names 中不存在的名字
+            if m.factor_metric_names:
+                valid = [n for n in m.factor_metric_names if n in existing_names]
+                invalid = [n for n in m.factor_metric_names if n not in existing_names]
+                if invalid:
+                    logger.warning(
+                        "enrich_metrics: composite 指标 %s 的 factor_metric_names "
+                        "引用了不存在的子指标 %s, 已过滤 (表=%s)",
+                        m.name, invalid, model.name,
+                    )
+                if not valid:
+                    # 过滤后为空 → composite 无有效子指标, 丢弃
+                    logger.warning(
+                        "enrich_metrics: composite 指标 %s 无有效 factor_metric_names, 丢弃 (表=%s)",
+                        m.name, model.name,
+                    )
+                    continue
+                m.factor_metric_names = valid
+            composite_metrics.append(m)
 
         if composite_metrics:
             # 追加到已有 simple 指标后
@@ -533,6 +554,9 @@ async def enrich_metrics(content: SemanticModelContent) -> None:
             return
 
         # Pydantic 逐条校验，失败跳过 (宁缺毋滥)
+        # 交叉校验: composite 的 factor_metric_names 必须引用同批次已有指标名
+        # _infer_all 是 LLM 全量推断, single 和 composite 在同一批次,
+        # 所以先收集所有 single 指标名, 再校验 composite 的引用
         llm_metrics: list[Metric] = []
         for item in parsed:
             if not isinstance(item, dict):
@@ -546,11 +570,33 @@ async def enrich_metrics(content: SemanticModelContent) -> None:
                     model.name, item, e,
                 )
 
-        if llm_metrics:
-            model.metrics = llm_metrics
+        # F4: 交叉校验 composite 的 factor_metric_names
+        single_names = {m.name for m in llm_metrics if m.type == "single"}
+        validated: list[Metric] = []
+        for m in llm_metrics:
+            if m.type == "composite" and m.factor_metric_names:
+                valid = [n for n in m.factor_metric_names if n in single_names]
+                invalid = [n for n in m.factor_metric_names if n not in single_names]
+                if invalid:
+                    logger.warning(
+                        "enrich_metrics: composite 指标 %s 的 factor_metric_names "
+                        "引用了不存在的子指标 %s, 已过滤 (表=%s)",
+                        m.name, invalid, model.name,
+                    )
+                if not valid:
+                    logger.warning(
+                        "enrich_metrics: composite 指标 %s 无有效 factor_metric_names, 丢弃 (表=%s)",
+                        m.name, model.name,
+                    )
+                    continue
+                m.factor_metric_names = valid
+            validated.append(m)
+
+        if validated:
+            model.metrics = validated
             logger.info(
                 "enrich_metrics (LLM 回退): 表 %s 推断出 %d 个指标: %s",
-                model.name, len(llm_metrics),
+                model.name, len(validated),
                 ", ".join(m.name for m in llm_metrics),
             )
 

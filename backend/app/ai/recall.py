@@ -847,18 +847,18 @@ def persist_metric_feedback(
                 matched = True
                 break
         if matched:
-            # 更新语义层中该 metric 的 co_occurrence
-            metric.co_occurrence = metric.co_occurrence + 1
+            # 不再在内存中 +1 (避免并发竞态丢失更新),
+            # 改为返回 delta=1, 由 _persist_co_occurrence 在 DB 层原子递增
             co_occurrence_updates.append({
                 "table_name": info["model"],
                 "metric_name": metric_name,
-                "new_count": metric.co_occurrence,
+                "delta": 1,
                 "source": metric.source,
                 "type": metric.type,
             })
             logger.info(
-                "metric_feedback: 指标 %s 命中, co_occurrence → %d",
-                metric_name, metric.co_occurrence,
+                "metric_feedback: 指标 %s 命中, delta=1",
+                metric_name,
             )
 
     # 2. 发现新指标模式: SQL 含聚合但不在已知指标中

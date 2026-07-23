@@ -768,11 +768,12 @@ async def _persist(db, user, state, conv_id, req_conv_id, data_source_id, deps) 
                     from app.api.chat import _persist_co_occurrence
                     await _persist_co_occurrence(db, user.tenant_id, data_source_id, co_updates)
                 # 传递指标命中信息 (供 SSE complete + 审计日志 + ConversationState)
+                # co_occurrence 用 delta 模式, 前端展示用 delta 标记命中
                 state._metric_hits = [
                     {
                         "table": u["table_name"],
                         "metric": u["metric_name"],
-                        "co_occurrence": u["new_count"],
+                        "co_occurrence": u.get("delta", 1),
                         "source": u.get("source"),
                         "type": u.get("type"),
                     }

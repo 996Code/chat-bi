@@ -190,11 +190,16 @@
 	              <span v-else style="color: #c0c4cc">-</span>
 	            </template>
 	          </el-table-column>
-	          <el-table-column label="类型" width="90">
-	            <template #default="{ row }">
-	              <el-tag size="small" :type="row.type === 'composite' ? 'warning' : 'info'">{{ row.type === 'composite' ? '复合' : '基础' }}</el-tag>
-	            </template>
-	          </el-table-column>
+		          <el-table-column label="类型" width="90">
+		            <template #default="{ row }">
+		              <el-tag size="small" :type="row.type === 'composite' ? 'warning' : 'info'">{{ row.type === 'composite' ? '复合' : '基础' }}</el-tag>
+		            </template>
+		          </el-table-column>
+		          <el-table-column label="来源" width="90">
+		            <template #default="{ row }">
+		              <el-tag size="small" :type="sourceTag(row.source)">{{ sourceLabel(row.source, row.confidence) }}</el-tag>
+		            </template>
+		          </el-table-column>
 		          <el-table-column label="" width="64" fixed="right" align="center">
 		            <template #default="{ row }">
 		              <div style="display: inline-flex; align-items: center; gap: 4px">

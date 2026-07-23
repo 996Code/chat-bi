@@ -473,8 +473,8 @@ class TestMetricFeedback:
         state.question = "测试问题"
         return state
 
-    def test_hit_known_metric_increments_co_occurrence(self):
-        """SQL 命中已知指标 → co_occurrence += 1。"""
+    def test_hit_known_metric_returns_delta(self):
+        """SQL 命中已知指标 → 返回 delta=1 (不再在内存中 +1, 避免竞态)。"""
         from app.ai.recall import persist_metric_feedback
 
         model = _make_model_with_measures()
@@ -497,9 +497,13 @@ class TestMetricFeedback:
         mem_store = MagicMock()
         mem_store.list_memories.return_value = []
 
-        persist_metric_feedback(mem_store, state, content, conv_id="test-conv")
+        updates = persist_metric_feedback(mem_store, state, content, conv_id="test-conv")
 
-        assert model.metrics[0].co_occurrence == 3
+        # F2: 不再在内存中 +1, 改为返回 delta=1
+        assert len(updates) >= 1
+        assert updates[0]["delta"] == 1
+        # 内存中的 co_occurrence 不变 (由 _persist_co_occurrence 在 DB 层原子递增)
+        assert model.metrics[0].co_occurrence == 2
 
     def test_hit_known_metric_returns_source_and_type(self):
         """metric_feedback 返回 source + type (供 metric_hits 透传)。"""
@@ -532,6 +536,7 @@ class TestMetricFeedback:
         assert u["metric_name"] == "total_amount_sum"
         assert u["source"] == "rule_inferred"
         assert u["type"] == "single"
+        assert u["delta"] == 1
 
     def test_new_metric_pattern_writes_suggestion(self):
         """SQL 含未知聚合 → 写 metric_suggestion 记忆。"""
@@ -805,7 +810,7 @@ class TestManualMetricPreservation:
         manual_metric = Metric(
             name="custom_gmv",
             display_name="自定义GMV",
-            formula="SUM(total_amount) WHERE status='paid'",
+            formula="SUM(total_amount)",
             type="single",
             source="manual",
             condition="status='paid'",
@@ -898,3 +903,186 @@ class TestInferAllFallback:
         valid_names = [m.name for m in metrics]
         assert "gmv" in valid_names
         assert "bad_composite" not in valid_names
+
+
+# ── 8. F4: factor_metric_names 交叉校验测试 ──────────────────────
+
+class TestFactorMetricNamesCrossValidation:
+    """F4: composite 指标的 factor_metric_names 必须引用已有指标名。"""
+
+    @pytest.mark.asyncio
+    async def test_infer_composite_hallucinated_names_filtered(self):
+        """LLM 幻觉出不存在的子指标名 → 过滤掉, 保留有效的。"""
+        from app.services.semantic_scanner import enrich_metrics
+
+        content = SemanticModelContent(
+            models=[_make_model_with_measures()],
+        )
+
+        # LLM 返回 composite, 其中 factor_metric_names 包含一个存在 + 一个不存在的
+        mock_response = json.dumps([
+            {
+                "name": "avg_order_amount",
+                "display_name": "平均客单价",
+                "formula": "total_amount_sum / nonexistent_metric",
+                "type": "composite",
+                "factor_metric_names": ["total_amount_sum", "nonexistent_metric"],
+            },
+        ])
+
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.return_value = (mock_response, MagicMock())
+                await enrich_metrics(content)
+
+        metrics = content.models[0].metrics
+        composite = [m for m in metrics if m.type == "composite"]
+        if composite:
+            # nonexistent_metric 被过滤, 只保留 total_amount_sum
+            assert "nonexistent_metric" not in composite[0].factor_metric_names
+            assert "total_amount_sum" in composite[0].factor_metric_names
+
+    @pytest.mark.asyncio
+    async def test_infer_composite_all_invalid_names_dropped(self):
+        """LLM 返回的 composite 所有 factor_metric_names 都不存在 → 整个指标丢弃。"""
+        from app.services.semantic_scanner import enrich_metrics
+
+        content = SemanticModelContent(
+            models=[_make_model_with_measures()],
+        )
+
+        mock_response = json.dumps([
+            {
+                "name": "bad_ratio",
+                "display_name": "坏比率",
+                "formula": "fake_a / fake_b",
+                "type": "composite",
+                "factor_metric_names": ["fake_a", "fake_b"],
+            },
+        ])
+
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.return_value = (mock_response, MagicMock())
+                await enrich_metrics(content)
+
+        metrics = content.models[0].metrics
+        composite = [m for m in metrics if m.type == "composite"]
+        assert len(composite) == 0  # 全部丢弃
+
+    @pytest.mark.asyncio
+    async def test_infer_all_cross_validates_factors(self):
+        """_infer_all 路径也做交叉校验: composite 引用不存在的 single → 过滤。"""
+        from app.services.semantic_scanner import enrich_metrics
+
+        content = SemanticModelContent(
+            models=[_make_model_with_measures()],
+        )
+
+        # LLM 返回 single + composite, composite 引用了不存在的 single
+        mock_response = json.dumps([
+            {"name": "gmv", "display_name": "成交总额", "formula": "SUM(total_amount)", "type": "single"},
+            {
+                "name": "bad_ratio",
+                "display_name": "坏比率",
+                "formula": "gmv / phantom_metric",
+                "type": "composite",
+                "factor_metric_names": ["gmv", "phantom_metric"],
+            },
+        ])
+
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = False  # 回退路径
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.return_value = (mock_response, MagicMock())
+                await enrich_metrics(content)
+
+        metrics = content.models[0].metrics
+        composite = [m for m in metrics if m.type == "composite"]
+        if composite:
+            # phantom_metric 被过滤
+            assert "phantom_metric" not in composite[0].factor_metric_names
+
+
+# ── 9. F9: formula/condition 注入防御测试 ────────────────────────
+
+class TestFormulaConditionValidation:
+    """F9: formula/condition 注入防御测试。"""
+
+    def test_single_formula_valid_agg(self):
+        """single 指标 formula 匹配 AGG_FUNC(col_name) → 通过。"""
+        for formula in ["SUM(total_amount)", "COUNT(id)", "AVG(score)", "MAX(price)", "MIN(fee)"]:
+            m = Metric(name="test", display_name="测试", formula=formula)
+            assert m.formula == formula
+
+    def test_single_formula_invalid_format_rejected(self):
+        """single 指标 formula 不匹配 AGG_FUNC(col_name) → 拒绝。"""
+        invalid_formulas = [
+            "SUM(total_amount) WHERE status='paid'",  # WHERE 不属于 formula
+            "total_amount + 1",  # 算术表达式
+            "SELECT * FROM users",  # SQL 语句
+            "SUM(oi.total_amount)",  # 带表别名
+        ]
+        for formula in invalid_formulas:
+            with pytest.raises(Exception, match="single 指标 formula"):
+                Metric(name="test", display_name="测试", formula=formula, type="single")
+
+    def test_composite_formula_allows_arithmetic(self):
+        """composite 指标 formula 允许算术表达式 formula (如 gmv / order_count)。"""
+        m = Metric(
+            name="avg_price",
+            display_name="平均价格",
+            formula="gmv / order_count",
+            type="composite",
+            factor_metric_names=["gmv", "order_count"],
+        )
+        assert m.formula == "gmv / order_count"
+
+    def test_formula_semicolon_rejected(self):
+        """formula 含分号 → 拒绝 (注入防御)。"""
+        with pytest.raises(Exception, match="危险内容"):
+            Metric(name="test", display_name="测试", formula="SUM(id); DROP TABLE users")
+
+    def test_formula_sql_comment_rejected(self):
+        """formula 含 SQL 注释 → 拒绝 (注入防御)。"""
+        with pytest.raises(Exception, match="危险内容"):
+            Metric(name="test", display_name="测试", formula="SUM(id)--comment")
+
+    def test_formula_ddl_keyword_rejected(self):
+        """formula 含 DDL 关键字 → 拒绝 (注入防御)。"""
+        with pytest.raises(Exception, match="危险内容"):
+            Metric(name="test", display_name="测试", formula="DROP TABLE users", type="composite",
+                   factor_metric_names=["a"])
+
+    def test_condition_semicolon_rejected(self):
+        """condition 含分号 → 拒绝 (注入防御)。"""
+        with pytest.raises(Exception, match="危险内容"):
+            Metric(name="test", display_name="测试", formula="SUM(id)", condition="1=1; DROP TABLE users")
+
+    def test_condition_ddl_keyword_rejected(self):
+        """condition 含 DDL 关键字 → 拒绝 (注入防御)。"""
+        with pytest.raises(Exception, match="危险内容"):
+            Metric(name="test", display_name="测试", formula="SUM(id)", condition="DELETE FROM users WHERE 1=1")
+
+    def test_condition_valid_in_clause_passes(self):
+        """condition 含合法 IN 子句 → 通过。"""
+        m = Metric(
+            name="paid_gmv",
+            display_name="已付GMV",
+            formula="SUM(total_amount)",
+            condition="status IN ('paid','shipped')",
+        )
+        assert "status IN" in m.condition
+
+    def test_condition_none_passes(self):
+        """condition=None → 通过 (默认值)。"""
+        m = Metric(name="test", display_name="测试", formula="SUM(id)")
+        assert m.condition is None
