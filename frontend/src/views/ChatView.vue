@@ -122,20 +122,15 @@
 	                  <div class="chart-toolbar-left">
 	                    <el-button text size="small" :icon="Download" @click="exportChart(idx)">导出 Excel</el-button>
 	                    <el-button text size="small" :icon="Monitor" @click="openSaveToDashboard(idx)">保存到看板</el-button>
-	                    <span v-if="msg.done && msg.metricHits?.length" class="metric-hits-inline">
-	                      <span class="metric-hits-label">📊</span>
-	                      <el-tag v-for="h in msg.metricHits.slice(0, 5)" :key="h.metric" size="small" effect="plain" class="metric-hit-tag">{{ h.metric }}<span v-if="h.source === 'rule_inferred'" class="metric-hit-source">⚙️</span><span v-else-if="h.source === 'auto_inferred' || h.source === 'ai_inferred'" class="metric-hit-source">🤖</span></el-tag>
-	                      <span v-if="msg.metricHits.length > 5" class="metric-hit-more">+{{ msg.metricHits.length - 5 }}</span>
-	                    </span>
 	                  </div>
-                  <!-- 右侧: 完整流程 (弹窗) -->
-                  <el-button
-                    v-if="msg.done && msg.steps?.length"
-                    text size="small" :icon="QuestionFilled"
-                    @click="openTraceDialog(msg)"
-                  >完整流程</el-button>
-                </div>
-              </div>
+	                  <!-- 右侧: 完整流程 (弹窗) -->
+	                  <el-button
+	                    v-if="msg.done && msg.steps?.length"
+	                    text size="small" :icon="QuestionFilled"
+	                    @click="openTraceDialog(msg)"
+	                  >完整流程</el-button>
+	                </div>
+	              </div>
 	              <!-- TABLE 图表类型: 渲染 HTML 表格 -->
 	              <div v-if="msg.chart && msg.chart.chart_type === 'table' && msg.columns?.length && msg.rows?.length" class="chart-box chart-table-box">
 	                <div class="chart-table-wrap">
@@ -153,11 +148,6 @@
 	                  <div class="chart-toolbar-left">
 	                    <el-button text size="small" :icon="Download" @click="exportChart(idx)">导出 Excel</el-button>
 	                    <el-button text size="small" :icon="Monitor" @click="openSaveToDashboard(idx)">保存到看板</el-button>
-	                    <span v-if="msg.done && msg.metricHits?.length" class="metric-hits-inline">
-	                      <span class="metric-hits-label">📊</span>
-	                      <el-tag v-for="h in msg.metricHits.slice(0, 5)" :key="h.metric" size="small" effect="plain" class="metric-hit-tag">{{ h.metric }}<span v-if="h.source === 'rule_inferred'" class="metric-hit-source">⚙️</span><span v-else-if="h.source === 'auto_inferred' || h.source === 'ai_inferred'" class="metric-hit-source">🤖</span></el-tag>
-	                      <span v-if="msg.metricHits.length > 5" class="metric-hit-more">+{{ msg.metricHits.length - 5 }}</span>
-	                    </span>
 	                  </div>
                   <el-button
                     v-if="msg.done && msg.steps?.length"
@@ -1135,6 +1125,16 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
     case 'complete':
       // 收尾: 所有 running 步骤标记为 done
       steps.forEach(s => { if (s.status === 'running') s.status = 'done' })
+      // 指标命中: 作为 pipeline 步骤单独一行显示
+      if (data.metric_hits?.length) {
+        msg.metricHits = data.metric_hits
+        const hitNames = data.metric_hits.slice(0, 5).map((h: any) => {
+          const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
+          return `${icon}${h.metric}`
+        }).join(' · ')
+        const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
+        steps.push({ label: '指标命中', status: 'done', detail: `${hitNames}${more}` })
+      }
       msg.done = true
       // T049: 记录本轮 token 统计 (complete 事件携带)
       if (data.token_usage) {
@@ -1213,7 +1213,17 @@ async function sendFallback(q: string, msgIdx: number, streamErr: any) {
         })
       }
 	    }
-		    msg.done = true
+	    // 指标命中: 作为 pipeline 步骤单独一行显示
+	    if (data.metric_hits?.length) {
+	      msg.metricHits = data.metric_hits
+	      const hitName = data.metric_hits.slice(0, 5).map((h: any) => {
+	        const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : ''
+	        return `${icon}${h.metric}`
+	      }).join(' · ')
+	      const more = data.metric_hits.length > 5 ? ` +${data.metric_hits.length - 5}` : ''
+	      msg.steps.push({ label: '指标命中', status: 'done' as const, detail: `${hitName}${more}` })
+	    }
+			    msg.done = true
 		    await nextTick()
 	    if (msg.chart) nextTick(() => nextTick(() => renderChart(msgIdx)))
 	    // 降级路径也需要刷新对话列表
@@ -1793,16 +1803,6 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
   font-size: 0.72rem;
   color: #909399;
   text-align: right;
-}
-.metric-hits-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 8px;
-}
-.metric-hits-label {
-  color: #909399;
-  margin-right: 2px;
 }
 .metric-hit-tag {
   font-size: 0.72rem;
