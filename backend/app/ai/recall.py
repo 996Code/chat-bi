@@ -831,7 +831,7 @@ def persist_metric_feedback(
         return []
 
     # 记录 co_occurrence 变更 (供调用方持久化)
-    co_occurrence_updates: list[dict] = []  # [{table_name, metric_name, new_count}]
+    co_occurrence_updates: list[dict] = []  # [{table_name, metric_name, delta, source, type}]
 
     # 1. SQL 命中已知 metric → co_occurrence += 1
     # 匹配逻辑: SQL 的聚合函数+列名与 metric 的 formula 有交集

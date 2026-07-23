@@ -263,7 +263,7 @@ def build_metrics_hint(
 
     格式:
       biz_orders: gmv(成交总额) = SUM(total_amount) WHERE status IN ('paid','shipped')
-                  order_count(订单数) = COUNT(*)
+                  order_count(订单数) = COUNT(id)
 
     Args:
         content: 语义层内容

@@ -435,13 +435,17 @@ async def patch_metric(
             target_metric["type"] = body.metric_type
         if body.metric_condition is not None:
             # F9: 用 Pydantic 校验 condition (注入防御)
+            # 必须传 type, 否则 composite 的 formula 会被当 single 校验而误拒
             try:
                 from app.schemas.semantic_layer import Metric
+                metric_type_val = body.metric_type or target_metric.get("type", "single")
                 Metric(
                     name=target_metric.get("name", ""),
                     display_name=target_metric.get("display_name", ""),
                     formula=target_metric.get("formula", "SUM(id)"),
+                    type=metric_type_val,
                     condition=body.metric_condition or None,
+                    factor_metric_names=target_metric.get("factor_metric_names"),
                 )
             except Exception as e:
                 raise HTTPException(status_code=422, detail=f"condition 校验失败: {e}")
