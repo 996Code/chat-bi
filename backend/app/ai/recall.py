@@ -785,7 +785,7 @@ def persist_metric_feedback(
     state,
     semantic_content,
     conv_id: str | None = None,
-) -> None:
+) -> list[dict]:
     """运行时指标反哺 — 查询成功后校验 SQL 与指标的关系。
 
     闭环逻辑:

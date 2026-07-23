@@ -203,14 +203,43 @@ def _scan_relationships(
 
 # ── 规则推断简单指标 (零 LLM) ──────────────────────────────────────
 
-# 金额类列名关键词 (→ SUM + AVG)
+import re as _re
+
+# 金额类列名关键词 (→ SUM + AVG); 匹配时用单词边界, 避免 discount 匹配 count
 _AMOUNT_KEYWORDS = frozenset(("amount", "price", "fee", "cost", "revenue", "salary", "income", "payment"))
-# 数量类列名关键词 (→ SUM + COUNT)
-_COUNT_KEYWORDS = frozenset(("count", "num", "qty", "quantity", "cnt", "number", "total"))
-# 金额类数据类型
+# 数量类列名关键词 (→ SUM + COUNT); 后缀优先: _count > _total
+_COUNT_KEYWORDS = frozenset(("count", "num", "qty", "quantity", "cnt", "number"))
+# 金额类数据类型 (用单词边界匹配, 避免 INTERVAL 匹配 INT)
 _AMOUNT_TYPES = frozenset(("DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "MONEY", "REAL"))
 # 数量类数据类型
 _COUNT_TYPES = frozenset(("INT", "BIGINT", "SERIAL", "SMALLINT", "INTEGER", "BIGSERIAL"))
+
+
+def _type_matches(data_type: str, type_set: frozenset[str]) -> bool:
+    """检查 data_type 是否匹配 type_set 中的任一类型 (单词边界, 避免误匹配)。
+
+    例: "INTEGER" 匹配 "INT" (前缀), "INTERVAL" 不匹配 "INT" (非单词边界)。
+    """
+    type_upper = data_type.upper()
+    for t in type_set:
+        # 精确匹配或前缀匹配 (DECIMAL(10,2) 匹配 DECIMAL)
+        if type_upper == t or type_upper.startswith(t + "(") or type_upper.startswith(t + " "):
+            return True
+    return False
+
+
+def _name_matches_keyword(name: str, keywords: frozenset[str]) -> bool:
+    """检查列名是否包含关键词 (单词边界, 避免 discount 匹配 count)。
+
+    例: "order_count" 匹配 "count", "discount_amount" 匹配 "amount" (amount 是独立词),
+    "discount" 不匹配 "count" (count 不是独立词)。
+    """
+    name_lower = name.lower()
+    for kw in keywords:
+        # 用正则单词边界匹配
+        if _re.search(rf"(?:^|[_\b]){_re.escape(kw)}(?:[_\b]|$)", name_lower):
+            return True
+    return False
 
 
 def _infer_simple_metrics(model: Model) -> list[Metric]:
@@ -246,14 +275,14 @@ def _infer_simple_metrics(model: Model) -> list[Metric]:
         type_upper = (col.data_type or "").upper()
         name_lower = col_name.lower()
 
-        # 判断列类别
+        # 判断列类别 (关键词 + 数据类型 双重匹配, 避免误判)
         is_amount = (
-            any(kw in name_lower for kw in _AMOUNT_KEYWORDS)
-            and any(t in type_upper for t in _AMOUNT_TYPES)
+            _name_matches_keyword(col_name, _AMOUNT_KEYWORDS)
+            and _type_matches(type_upper, _AMOUNT_TYPES)
         )
         is_count = (
-            any(kw in name_lower for kw in _COUNT_KEYWORDS)
-            and any(t in type_upper for t in _COUNT_TYPES)
+            _name_matches_keyword(col_name, _COUNT_KEYWORDS)
+            and _type_matches(type_upper, _COUNT_TYPES)
         )
 
         if is_amount:
@@ -344,17 +373,25 @@ async def enrich_metrics(content: SemanticModelContent) -> None:
     _system_tables = frozenset(get_settings().system_tables)
 
     # ── 阶段 1: 规则推断 simple 指标 (零 LLM) ──────────────────
+    # 保留已有 manual 指标, 只追加规则推断的新指标 (同名不覆盖)
     for model in content.models:
         if model.name in _system_tables:
             continue
         simple_metrics = _infer_simple_metrics(model)
         if simple_metrics:
-            model.metrics = simple_metrics
-            logger.info(
-                "enrich_metrics (规则): 表 %s 推断出 %d 个 simple 指标: %s",
-                model.name, len(simple_metrics),
-                ", ".join(m.name for m in simple_metrics),
-            )
+            existing_names = {m.name for m in model.metrics}
+            new_count = 0
+            for m in simple_metrics:
+                if m.name not in existing_names:
+                    model.metrics.append(m)
+                    existing_names.add(m.name)
+                    new_count += 1
+            if new_count:
+                logger.info(
+                    "enrich_metrics (规则): 表 %s 追加 %d 个 simple 指标 (已有 %d 个): %s",
+                    model.name, new_count, len(model.metrics) - new_count,
+                    ", ".join(m.name for m in simple_metrics[:5]),
+                )
 
     # ── 阶段 2: LLM 推断指标 ──────────────────────────────────────
     if not get_settings().scan_metric_rule_inference:

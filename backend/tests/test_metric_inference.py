@@ -656,3 +656,245 @@ class TestMetricSchema:
         )
         assert m.type == "composite"
         assert len(m.factor_metric_names) == 2
+
+
+# ── 7. 代码走查补充测试 ──────────────────────────────────────
+
+class TestRuleInferenceEdgeCases:
+    """规则推断边界场景测试 (代码走查补充)。"""
+
+    def test_type_matches_interval_not_count(self):
+        """INTERVAL 类型不应匹配 INT (F7: 单词边界)。"""
+        from app.services.semantic_scanner import _type_matches, _COUNT_TYPES
+        assert not _type_matches("INTERVAL", _COUNT_TYPES)
+        # 但 INTEGER 应该匹配
+        assert _type_matches("INTEGER", _COUNT_TYPES)
+        # INT 精确匹配
+        assert _type_matches("INT", _COUNT_TYPES)
+        # DECIMAL(10,2) 应匹配 DECIMAL
+        from app.services.semantic_scanner import _AMOUNT_TYPES
+        assert _type_matches("DECIMAL(10,2)", _AMOUNT_TYPES)
+
+    def test_name_matches_keyword_word_boundary(self):
+        """discount 不匹配 count, discount_amount 匹配 amount (F8: 单词边界)。"""
+        from app.services.semantic_scanner import _name_matches_keyword, _COUNT_KEYWORDS, _AMOUNT_KEYWORDS
+        # discount 不匹配 count (count 不是独立词)
+        assert not _name_matches_keyword("discount", _COUNT_KEYWORDS)
+        # order_count 匹配 count
+        assert _name_matches_keyword("order_count", _COUNT_KEYWORDS)
+        # discount_amount 匹配 amount
+        assert _name_matches_keyword("discount_amount", _AMOUNT_KEYWORDS)
+        # payment_count 同时匹配 payment(金额) 和 count(数量)
+        assert _name_matches_keyword("payment_count", _AMOUNT_KEYWORDS)
+        assert _name_matches_keyword("payment_count", _COUNT_KEYWORDS)
+
+    def test_empty_model_list_no_error(self):
+        """空模型列表 → enrich_metrics 不报错 (F14)。"""
+        from app.services.semantic_scanner import enrich_metrics
+
+        content = SemanticModelContent(models=[])
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            # 不应抛异常
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(enrich_metrics(content))
+
+    def test_key_only_model_no_metrics(self):
+        """仅含 key 列的模型 → 不生成指标 (F15)。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = Model(
+            name="link_table",
+            display_name="关联表",
+            columns=[
+                _make_column("id", "主键", "BIGINT", "key"),
+                _make_column("user_id", "用户ID", "BIGINT", "key"),
+                _make_column("order_id", "订单ID", "BIGINT", "key"),
+            ],
+            relationships=[],
+            metrics=[],
+            calculated_fields=[],
+        )
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = True
+            metrics = _infer_simple_metrics(model)
+
+        assert metrics == []
+
+    def test_mixed_measure_types_correct_aggregation(self):
+        """混合 measure 列: 金额列→SUM+AVG, 数量列→SUM+COUNT (F16)。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = Model(
+            name="biz_orders",
+            display_name="订单表",
+            columns=[
+                _make_column("id", "主键", "BIGINT", "key"),
+                _make_column("total_amount", "总金额", "DECIMAL(10,2)", "measure"),
+                _make_column("quantity", "数量", "INTEGER", "measure"),
+                _make_column("score", "评分", "FLOAT", "measure"),  # 通用 measure
+            ],
+            relationships=[],
+            metrics=[],
+            calculated_fields=[],
+        )
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = True
+            metrics = _infer_simple_metrics(model)
+
+        # total_amount (金额) → SUM + AVG
+        amount_metrics = [m for m in metrics if "total_amount" in m.name]
+        assert len(amount_metrics) == 2
+        assert any(m.formula == "SUM(total_amount)" for m in amount_metrics)
+        assert any(m.formula == "AVG(total_amount)" for m in amount_metrics)
+
+        # quantity (数量) → SUM + COUNT
+        qty_metrics = [m for m in metrics if "quantity" in m.name]
+        assert len(qty_metrics) == 2
+        assert any(m.formula == "SUM(quantity)" for m in qty_metrics)
+        assert any(m.formula == "COUNT(quantity)" for m in qty_metrics)
+
+        # score (通用) → SUM only
+        score_metrics = [m for m in metrics if "score" in m.name]
+        assert len(score_metrics) == 1
+        assert score_metrics[0].formula == "SUM(score)"
+
+    def test_empty_display_name_fallback_to_col_name(self):
+        """display_name 为空字符串 → 回退到列名 (F19)。"""
+        from app.services.semantic_scanner import _infer_simple_metrics
+
+        model = Model(
+            name="test_table",
+            display_name="测试表",
+            columns=[
+                Column(
+                    name="total_amount",
+                    display_name="",  # 空字符串 (falsy)
+                    data_type="DECIMAL(10,2)",
+                    semantic_type="measure",
+                    source="manual",
+                    confidence=1.0,
+                ),
+            ],
+            relationships=[],
+            metrics=[],
+            calculated_fields=[],
+        )
+        with patch("app.core.config.get_settings") as mock_s:
+            mock_s.return_value.scan_metric_rule_inference = True
+            metrics = _infer_simple_metrics(model)
+
+        # display_name 为空 → 回退到列名 "total_amount"
+        assert len(metrics) >= 1
+        # SUM 的 display_name 应该是 "total_amount合计" (回退到列名)
+        sum_metric = next(m for m in metrics if m.formula == "SUM(total_amount)")
+        assert "total_amount" in sum_metric.display_name
+
+
+class TestManualMetricPreservation:
+    """手动指标保留测试 (F1: 重新扫描不覆盖 manual 指标)。"""
+
+    @pytest.mark.asyncio
+    async def test_rescan_preserves_manual_metrics(self):
+        """重新扫描时, manual 指标不被规则推断覆盖。"""
+        from app.services.semantic_scanner import enrich_metrics
+
+        # 模拟用户已手动添加的指标
+        manual_metric = Metric(
+            name="custom_gmv",
+            display_name="自定义GMV",
+            formula="SUM(total_amount) WHERE status='paid'",
+            type="single",
+            source="manual",
+            condition="status='paid'",
+        )
+        model = _make_model_with_measures()
+        model.metrics = [manual_metric]
+
+        content = SemanticModelContent(models=[model])
+
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                # LLM 返回空 (不推 composite)
+                mock_chat.return_value = ("[]", MagicMock())
+                await enrich_metrics(content)
+
+        metrics = content.models[0].metrics
+        # manual 指标应保留
+        manual_names = [m.name for m in metrics if m.source == "manual"]
+        assert "custom_gmv" in manual_names
+        # 规则推断的指标也应追加
+        rule_names = [m.name for m in metrics if m.source == "rule_inferred"]
+        assert len(rule_names) >= 2  # total_amount: SUM+AVG, quantity: SUM+COUNT
+
+    @pytest.mark.asyncio
+    async def test_same_name_rule_metric_not_duplicate(self):
+        """规则推断的同名指标不重复追加 (已有 manual 同名指标时跳过)。"""
+        from app.services.semantic_scanner import enrich_metrics
+
+        # 用户手动创建了 total_amount_sum (与规则推断同名)
+        manual_metric = Metric(
+            name="total_amount_sum",
+            display_name="手动GMV",
+            formula="SUM(total_amount)",
+            type="single",
+            source="manual",
+        )
+        model = _make_model_with_measures()
+        model.metrics = [manual_metric]
+
+        content = SemanticModelContent(models=[model])
+
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = True
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.return_value = ("[]", MagicMock())
+                await enrich_metrics(content)
+
+        metrics = content.models[0].metrics
+        # 不应有重复的 total_amount_sum
+        names = [m.name for m in metrics]
+        assert names.count("total_amount_sum") == 1
+        # 且保留 manual source
+        tam = next(m for m in metrics if m.name == "total_amount_sum")
+        assert tam.source == "manual"
+
+
+class TestInferAllFallback:
+    """_infer_all 回退路径测试 (F18: composite 校验)。"""
+
+    @pytest.mark.asyncio
+    async def test_infer_all_invalid_composite_skipped(self):
+        """_infer_all 路径: LLM 返回的 composite 缺 factor_metric_names → 跳过。"""
+        from app.services.semantic_scanner import enrich_metrics
+
+        content = SemanticModelContent(
+            models=[_make_model_with_measures()],
+        )
+
+        # LLM 返回 single + 无效 composite
+        mock_response = json.dumps([
+            {"name": "gmv", "display_name": "成交总额", "formula": "SUM(total_amount)", "type": "single"},
+            {"name": "bad_composite", "display_name": "坏复合", "formula": "a / b", "type": "composite"},
+        ])
+
+        with patch("app.core.config.get_settings") as mock_settings:
+            mock_settings.return_value.scan_metric_inference = True
+            mock_settings.return_value.scan_metric_rule_inference = False  # 回退路径
+            mock_settings.return_value.system_tables = []
+            with patch("app.core.llm_client.llm_chat", new_callable=AsyncMock) as mock_chat:
+                mock_chat.return_value = (mock_response, MagicMock())
+                await enrich_metrics(content)
+
+        metrics = content.models[0].metrics
+        # single 应保留, bad composite 应跳过
+        valid_names = [m.name for m in metrics]
+        assert "gmv" in valid_names
+        assert "bad_composite" not in valid_names
