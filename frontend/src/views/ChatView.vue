@@ -282,86 +282,102 @@
       </div>
     </div>
 
-	    <!-- 完整流程弹窗 (步骤表格, 整行点击展开/收起看详情) -->
-	    <el-dialog v-model="showTraceDialog" title="查询执行记录" width="800px">
-	      <div v-if="traceSteps.length" class="trace-table">
-	        <el-table ref="traceTableRef" :data="traceSteps" stripe size="small" style="width: 100%" @row-click="toggleTraceRow">
-	          <el-table-column type="expand" width="36">
-	            <template #default="{ row }">
-	              <div style="padding: 8px 12px;">
-		                <!-- SQL -->
-		                <template v-if="row.type === 'sql' && traceSql">
-		                  <div v-if="row.detail" style="white-space: pre-line; color: #909399; font-size: 12px; margin-bottom: 6px;">{{ row.detail }}</div>
-		                  <pre class="sql-inline">{{ traceSql }}</pre>
-		                </template>
-	                <!-- 预思考 -->
-	                <div v-else-if="row.type === 'thinking' && row.thinkingData" class="trace-thinking">
-	                  <div v-if="row.thinkingData.tables.length">选表: {{ row.thinkingData.tables.join('、') }}</div>
-	                  <div v-if="row.thinkingData.expandedTables?.length">
-	                    🕸️图谱扩展: {{ row.thinkingData.seedTables?.join('、') || '-' }} →
-	                    <el-tag v-for="t in row.thinkingData.expandedTables" :key="t" size="small" type="success" style="margin: 0 2px">+{{ t }}</el-tag>
-	                  </div>
-	                  <div v-if="row.thinkingData.joinPathSection" class="trace-join-path">
-	                    🕸️JOIN 路径:<pre class="join-path-pre">{{ row.thinkingData.joinPathSection }}</pre>
-	                  </div>
-	                  <div v-if="row.thinkingData.aggregation">聚合: {{ row.thinkingData.aggregation }}</div>
-	                  <div v-for="c in row.thinkingData.caveats" :key="c" class="trace-caveat">⚠ {{ c }}</div>
-	                </div>
-	                <!-- 自愈对比 -->
-	                <div v-else-if="row.type === 'heal' && row.healData" class="trace-heal">
-	                  <div class="trace-heal-err">错误: {{ row.healData.error }}</div>
-	                  <pre>{{ row.healData.after }}</pre>
-	                </div>
-	                <!-- 查询结果数据表格 -->
-	                <div v-else-if="row.type === 'result' && traceColumns?.length" class="trace-result-table">
-	                  <el-table
-	                    :data="traceRows.slice(0, 100)"
-	                    size="small" stripe border
-	                    max-height="360"
-	                    style="width: 100%"
-	                  >
-	                    <el-table-column
-	                      v-for="col in traceColumns"
-	                      :key="col"
-	                      :prop="col" :label="col" min-width="100"
-	                      show-overflow-tooltip
-	                    />
-	                  </el-table>
-	                  <div v-if="traceRowCount > 100" class="result-more">
-	                    共 {{ traceRowCount }} 行, 仅展示前 100 行
-	                  </div>
-	                </div>
-		                <div v-else-if="row.detail" style="white-space: pre-line">{{ row.detail }}</div>
-		                <span v-else>暂无详情</span>
-	              </div>
-	            </template>
-	          </el-table-column>
-	          <el-table-column label="#" width="40" align="center">
-	            <template #default="{ $index }">{{ $index + 1 }}</template>
-	          </el-table-column>
-	          <el-table-column label="步骤" prop="label" />
-	          <el-table-column label="状态" width="70" align="center">
-	            <template #default="{ row }">
-	              <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
-	              <el-tag v-else-if="row.status === 'failed'" type="danger" size="small">失败</el-tag>
-	              <el-tag v-else type="info" size="small">进行中</el-tag>
-	            </template>
-	          </el-table-column>
-		          <el-table-column label="耗时" width="80" align="center">
+		    <!-- 完整流程弹窗 (步骤表格, 整行点击展开/收起看详情) -->
+		    <el-dialog v-model="showTraceDialog" title="查询执行记录" width="720px">
+		      <div v-if="traceSteps.length" class="trace-table">
+		        <el-table ref="traceTableRef" :data="traceSteps" stripe size="small" style="width: 100%" @row-click="toggleTraceRow">
+		          <el-table-column type="expand" width="36">
 		            <template #default="{ row }">
-		              <span v-if="row.duration">{{ row.duration }}ms</span>
-		              <span v-else style="color:#c0c4cc">-</span>
+			              <div class="trace-expand-content">
+						                <!-- SQL -->
+						                <template v-if="row.type === 'sql' && traceSql">
+						                  <template v-if="row.detail">
+						                    <div v-for="(kv, ki) in parseDetailKv(row.detail)" :key="ki" class="trace-kv">
+						                      <span v-if="kv.key" class="trace-k">{{ kv.key }}</span>
+						                      <span class="trace-v" :style="kv.key ? '' : 'flex:1'">{{ kv.value }}</span>
+						                    </div>
+						                  </template>
+						                  <div class="trace-kv"><span class="trace-k">SQL</span><span class="trace-v"><pre class="sql-inline" style="margin:0">{{ traceSql }}</pre></span></div>
+						                </template>
+				                <!-- 意图识别 -->
+				                <div v-else-if="row.type === 'intent'" class="trace-section-block">
+				                  <div class="trace-kv"><span class="trace-k">意图</span><span class="trace-v">{{ row.detail }}</span></div>
+				                </div>
+			                <!-- 预思考 -->
+			                <div v-else-if="row.type === 'thinking' && row.thinkingData" class="trace-section-block">
+			                  <div v-if="row.thinkingData.tables.length" class="trace-kv"><span class="trace-k">选表</span><span class="trace-v">{{ row.thinkingData.tables.join('、') }}</span></div>
+			                  <div v-if="row.thinkingData.expandedTables?.length" class="trace-kv">
+			                    <span class="trace-k">图谱扩展</span>
+			                    <span class="trace-v">{{ row.thinkingData.seedTables?.join('、') || '-' }} → <el-tag v-for="t in row.thinkingData.expandedTables" :key="t" size="small" type="success" style="margin: 0 2px">+{{ t }}</el-tag></span>
+			                  </div>
+			                  <div v-if="row.thinkingData.joinPathSection" class="trace-kv trace-join-path">
+			                    <span class="trace-k">JOIN 路径</span>
+			                    <span class="trace-v"><pre class="join-path-pre">{{ row.thinkingData.joinPathSection }}</pre></span>
+			                  </div>
+			                  <div v-if="row.thinkingData.aggregation" class="trace-kv"><span class="trace-k">聚合</span><span class="trace-v">{{ row.thinkingData.aggregation }}</span></div>
+			                  <div v-for="c in row.thinkingData.caveats" :key="c" class="trace-kv"><span class="trace-k" style="color: #e6a23c;">注意</span><span class="trace-v" style="color: #e6a23c;">⚠ {{ c }}</span></div>
+			                </div>
+			                <!-- 自愈对比 -->
+			                <div v-else-if="row.type === 'heal' && row.healData" class="trace-section-block">
+			                  <div class="trace-kv"><span class="trace-k" style="color: #f56c6c;">错误</span><span class="trace-v" style="color: #f56c6c;">{{ row.healData.error }}</span></div>
+			                  <div class="trace-kv"><span class="trace-k">修复后</span><span class="trace-v"><pre style="margin:0;padding:6px 10px;background:#1e1e1e;color:#a5d6ff;font-size:12px;border-radius:6px;white-space:pre-wrap;word-break:break-all;">{{ row.healData.after }}</pre></span></div>
+			                </div>
+			                <!-- 查询结果数据表格 -->
+			                <div v-else-if="row.type === 'result' && traceColumns?.length" class="trace-result-table">
+			                  <el-table
+			                    :data="traceRows.slice(0, 100)"
+			                    size="small" stripe border
+			                    max-height="360"
+			                    style="width: 100%"
+			                  >
+			                    <el-table-column
+			                      v-for="col in traceColumns"
+			                      :key="col"
+			                      :prop="col" :label="col" min-width="100"
+			                      show-overflow-tooltip
+			                    />
+			                  </el-table>
+			                  <div v-if="traceRowCount > 100" class="result-more">
+			                    共 {{ traceRowCount }} 行, 仅展示前 100 行
+			                  </div>
+			                </div>
+					                <!-- 通用: 命中表/指标命中等, 按 \n 分行渲染为 kv -->
+					                <div v-else-if="row.detail" class="trace-section-block">
+					                  <div v-for="(kv, ki) in parseDetailKv(row.detail)" :key="ki" class="trace-kv">
+					                    <span v-if="kv.key" class="trace-k">{{ kv.key }}</span>
+					                    <span class="trace-v" :style="kv.key ? '' : 'flex:1'">{{ kv.value }}</span>
+					                  </div>
+					                </div>
+				                <div v-else class="trace-empty">暂无详情</div>
+			              </div>
 		            </template>
 		          </el-table-column>
-		          <el-table-column label="LLM" width="120" align="center">
+		          <el-table-column label="#" width="40" align="center">
+		            <template #default="{ $index }">{{ $index + 1 }}</template>
+		          </el-table-column>
+		          <el-table-column label="步骤" prop="label" min-width="100" />
+		          <el-table-column label="状态" width="70" align="center">
 		            <template #default="{ row }">
-		              <span v-if="row.llmCalls" class="trace-llm">🤖 ×{{ row.llmCalls }}<template v-if="row.llmTokens"> · {{ row.llmTokens }} tokens</template></span>
-		              <span v-else style="color:#c0c4cc">-</span>
+		              <el-tag v-if="row.status === 'done'" type="success" size="small">完成</el-tag>
+		              <el-tag v-else-if="row.status === 'failed'" type="danger" size="small">失败</el-tag>
+		              <el-tag v-else type="info" size="small">进行中</el-tag>
 		            </template>
 		          </el-table-column>
-	        </el-table>
-	      </div>
-	    </el-dialog>
+			          <el-table-column label="耗时" width="80" align="center">
+			            <template #default="{ row }">
+			              <span v-if="row.duration">{{ row.duration }}ms</span>
+			              <span v-else style="color:#c0c4cc">-</span>
+			            </template>
+		          </el-table-column>
+			          <el-table-column label="LLM" width="120" align="center">
+			            <template #default="{ row }">
+			              <span v-if="row.llmCalls" class="trace-llm">🤖 ×{{ row.llmCalls }}<template v-if="row.llmTokens"> · {{ row.llmTokens }} tokens</template></span>
+			              <span v-else style="color:#c0c4cc">-</span>
+			            </template>
+		          </el-table-column>
+		        </el-table>
+		      </div>
+		    </el-dialog>
 
     <!-- 保存到看板弹窗 (V1 风格: 选择/新建看板 + 组件名) -->
     <el-dialog v-model="showSaveDashboard" title="保存到看板" width="480px" @open="loadDashboardList">
@@ -406,7 +422,7 @@ interface TraceStep {
   status: 'running' | 'done' | 'failed'
   detail?: string  // 多行用 || 分隔, 模板自动 split 渲染
   duration?: number
-  type?: 'sql' | 'result' | 'thinking' | 'heal'  // 步骤类型 (决定折叠内容)
+  type?: 'intent' | 'sql' | 'result' | 'thinking' | 'heal'  // 步骤类型 (决定折叠内容)
   expandable?: boolean          // 是否可点击展开
   expanded?: boolean            // 当前是否展开
   llmCalls?: number             // 该步骤的 LLM 调用次数
@@ -462,6 +478,17 @@ function formatMetricHits(hits: any[], max = 5): string {
     const icon = h.source === 'rule_inferred' ? '⚙️' : (h.source === 'auto_inferred' || h.source === 'ai_inferred') ? '🤖' : h.source === 'manual' ? '✏️' : ''
     return `${icon}${label}`
   }).join('、') + (hits.length > max ? ` 等${hits.length}个` : '')
+}
+
+/** 将 detail 字符串按 \n 拆分为 kv 行, 格式: "标签: 值" → { key, value } */
+function parseDetailKv(detail: string): { key: string; value: string }[] {
+  return detail.split('\n').filter(Boolean).map(line => {
+    const idx = line.indexOf(':')
+    if (idx > 0) {
+      return { key: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() }
+    }
+    return { key: '', value: line.trim() }
+  })
 }
 
 const input = ref('')
@@ -745,13 +772,13 @@ async function loadConversation(convId: string) {
 	          askUser: st.ask_user ? { question: st.ask_user.question, options: st.ask_user.options || null } : null,
 	          done: true,
 	          metricHits: st.metric_hits || undefined,
-	          steps: [
-            {
-              label: '意图识别', status: 'done' as const,
-              detail: st.intent || undefined,
-              duration: dur.intent ?? undefined,
-              ...llmOf('intent'),
-            },
+		          steps: [
+	            {
+	              label: '意图识别', status: 'done' as const, type: 'intent',
+	              detail: st.intent || undefined,
+	              duration: dur.intent ?? undefined,
+	              ...llmOf('intent'),
+	            },
 				            {
 				              label: 'Schema 检索', status: 'done' as const,
 				              detail: [
@@ -1028,7 +1055,7 @@ function handleSSEEvent(type: string, data: any, msgIdx: number) {
       }
       break
     case 'intent':
-      updateStep('意图识别', 'done', { detail: data.intent, duration: data.duration_ms, ...llmInfo(data) })
+	      updateStep('意图识别', 'done', { detail: data.intent, type: 'intent', duration: data.duration_ms, ...llmInfo(data) })
       if (data.intent === 'GENERAL' || data.intent === 'EXPLANATION') {
         msg.reply = data.reply || ''
         msg.done = true
@@ -1768,8 +1795,11 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
   max-height: 120px;
   overflow-y: auto;
 }
-.trace-join-path {
-  margin-top: 4px;
+.trace-join-path .trace-v {
+  overflow: hidden;
+}
+.trace-join-path .join-path-pre {
+  margin: 0;
 }
 .heal-compare {
   display: flex;
@@ -1809,16 +1839,45 @@ watch(selectedDsId, () => { fetchSampleQuestions() })
   line-height: 1.5;
 }
 
-/* trace 弹窗内预思考/自愈 */
-.trace-thinking { font-size: 12px; line-height: 1.6; color: #606266; }
-.trace-thinking > div { margin-bottom: 2px; }
-.trace-caveat { display: block; color: #e6a23c; margin: 2px 0; }
-.trace-heal { font-size: 12px; }
-.trace-heal-err { color: #f56c6c; margin-bottom: 4px; }
-.trace-heal pre {
-  margin: 0; padding: 6px 10px; background: #1e1e1e; color: #a5d6ff;
-  font-size: 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-all;
+/* trace 弹窗展开内容 */
+.trace-expand-content {
+  padding: 4px 12px;
 }
+.trace-section-block {
+  font-size: 13px;
+  line-height: 1.8;
+  color: #606266;
+}
+.trace-kv {
+  margin-bottom: 4px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.trace-k {
+  flex-shrink: 0;
+  width: 64px;
+  text-align: right;
+  color: #909399;
+  font-size: 12px;
+  font-weight: 500;
+  padding-top: 2px;
+}
+.trace-v {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+.trace-detail-lines {
+  display: none; /* replaced by parseDetailKv + .trace-kv */
+}
+.trace-empty {
+  color: #c0c4cc;
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* trace 弹窗内自愈/注意等已统一用 .trace-kv, 以下仅保留兼容 */
 /* T049: token 用量汇总行 (pipeline 底部) */
 .trace-summary {
   margin-top: 6px;
