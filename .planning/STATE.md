@@ -1,8 +1,8 @@
 # 项目状态
 
 ## 当前位置
-- **阶段**: 演进规划 E1 / graph-feedback-loop（✅ 全部完成，5/5 Wave）
-- **状态**: v2 核心交付完成（68 任务）+ E1 演进完成（587 tests passed）
+- **阶段**: 演进规划 E1 / graph-feedback-loop（✅ 全部完成，5/5 Wave）+ P1-12 SchemaGraph 测试覆盖（✅ 64 项测试）
+- **状态**: v2 核心交付完成（68 任务）+ E1 演进完成 + P1-12 完成（709 tests passed）
 - **前序**: chatbi-v2 Phase 1-10 全部完成（B3+C5+C6+C8 技术债清理收尾）
 
 ## OpenSpec 关联
@@ -16,8 +16,8 @@
   - ✅ Wave 3: 图谱 confidence 更新（乐观锁 + 新表对发现 + sync_linkage_to_graph + 整理后同步）
   - ✅ Wave 4: 前端冲突弹框（三选项 + retry 端点）
   - ✅ Wave 5: 双路召回确认 + 端到端验收测试 + 文档
-- **下一步**: 选择下一个演进方向（路线图 13 个方向，E1 已完成）
-- **演进路线图**: `doc/chatbi-v2/EVOLUTION-ROADMAP.md`（13 个方向，E1 已完成）
+- **下一步**: 选择下一个演进方向（路线图 13 个方向，E1 + P1-12 已完成）
+- **演进路线图**: `doc/chatbi-v2/EVOLUTION-ROADMAP.md`（13 个方向，E1 + P1-12 已完成）
 
 
 ## Phase 进度

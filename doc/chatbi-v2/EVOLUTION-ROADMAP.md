@@ -271,11 +271,11 @@ intent(1) → retrieve精排(1) → think(1) → generate_sql(1) → [heal × 0~
 - **方案**：① AuditLog 加 prompt_tokens/completion_tokens/model 列（目前只在 StateStore JSONL）；② `/slo` 端点（成功率/P50P95延迟/自愈率/降级率/单查询平均 token）；③ `config.cost_per_1k_tokens` 折算金额；④ webhook 告警（飞书/钉钉）：错误率/熔断/慢查询超阈值。
 - **难度**：中｜**收益**：高（生产化硬门槛）
 
-### P1-12：SchemaGraph 算法测试覆盖（低难/中收益）
+### P1-12：SchemaGraph 算法测试覆盖 ✅ 已完成
 
-- **现状**：`graph_service.py`（Dijkstra/社区/expand_tables/get_join_context）**零测试覆盖**（`grep SchemaGraph` 在 tests/ 零命中）；超级枢纽（degree=90）、多社区种子、无连通路径等 edge case 都没测。
-- **方案**：补 `test_graph_service.py`：① Dijkstra 多跳 + max_hops 截断；② expand_tables 防扩散（种子保留+远亲按距离）；③ 社区补全兜底；④ get_join_context 去重；⑤ 双向边 forward/reverse 语义。
-- **难度**：低｜**收益**：中（一次性投入长期防回归）
+- **现状**：~~`graph_service.py`（Dijkstra/社区/expand_tables/get_join_context）**零测试覆盖**~~ → ✅ `test_graph_service.py` 64 项测试覆盖全部公开方法
+- **方案**：✅ 已实现：① Dijkstra 多跳 + max_hops 截断；② expand_tables 防扩散（种子保留+远亲按距离+超级枢纽90邻居）；③ 社区补全兜底+算法降级；④ get_join_context 去重；⑤ 双向边 forward/reverse 语义；⑥ confidence 去重（高优先）；⑦ 可视化导出+子图；⑧ 反向关系+ON去重
+- **难度**：低｜**收益**：中（一次性投入长期防回归）｜**结果**：645→709 tests passed
 
 ### P2-13：E2E 测试（中难/中收益）
 
@@ -299,9 +299,9 @@ intent(1) → retrieve精排(1) → think(1) → generate_sql(1) → [heal × 0~
 
 | 方向 | 为什么先做 |
 |------|-----------|
-| **P0-5 图谱/语义层缓存** | 低难度高收益，立竿见影省延迟；是方向 3（图谱驱动意图）的前置 |
-| **方向 1 查询反哺图谱** | 算法已就绪（13 单测），只缺接入；隐式信号无需新交互 |
-| **P1-12 SchemaGraph 算法测试** | 低难度，补回归保护；和方向 1/3 都涉及图谱，先建安全网 |
+| **P0-5 图谱/语义层缓存** | 低难度高收益，立竿见影省延迟；是方向 3（图谱驱动意图）的前置（⚠️ 用户决定不做） |
+| **方向 1 查询反哺图谱** | ✅ 已完成 (E1 graph-feedback-loop) |
+| **P1-12 SchemaGraph 算法测试** | ✅ 已完成 (64 项测试, 709 passed) |
 
 ### Wave 2 — 准确率攻坚（NL2SQL 的核心价值）
 
@@ -331,11 +331,11 @@ intent(1) → retrieve精排(1) → think(1) → generate_sql(1) → [heal × 0~
 ### 依赖关系速查
 
 ```
-P0-5缓存 ──→ 方向3(图谱驱动意图)
+P0-5缓存 ──→ 方向3(图谱驱动意图) ⚠️ 用户决定不做
 方向4(指标) ──→ 方向2(多图表)
 P0-7(评估) ──→ 方向5(纠偏经验)
-方向1(反哺图谱) ←─ 独立
-P1-12(图谱测试) ←─ 建议在做方向1/3前补
+方向1(反哺图谱) ←─ ✅ 已完成 (E1)
+P1-12(图谱测试) ←─ ✅ 已完成 (64项测试)
 ```
 
 ---
