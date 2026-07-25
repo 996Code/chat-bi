@@ -200,8 +200,9 @@ services:
         condition: service_healthy
 
   # ── 一次性初始化 (仅 --profile init 时触发) ──────────────────
-  # 灌入: 元数据(租户+admin+数据源) + 业务演示数据补充
+  # 建库 + 灌数据: 元数据(租户+admin+数据源) + 业务演示数据
   # 幂等: 已有数据则跳过, 可安全重复执行
+  # 扫描/记忆等需 LLM 的操作留给用户在前端手动触发
   init:
     build:
       context: ./backend
@@ -220,15 +221,15 @@ services:
         condition: service_healthy
       sample-db:
         condition: service_healthy
-      backend:
-        condition: service_started
     command: >
       sh -c "
         echo '=== 1. 初始化元数据 ===' &&
         python scripts/seed_meta.py &&
         echo '=== 2. 补充业务演示数据 ===' &&
         python scripts/seed_ecom_data.py &&
-        echo '=== 初始化完成 ==='
+        echo '=== 初始化完成 ===' &&
+        echo '' &&
+        echo '下一步: 前端登录 → 数据源页扫描 → 聊天页提问'
       "
     profiles: ["init"]
     restart: "no"
