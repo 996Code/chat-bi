@@ -16,4 +16,4 @@ COPY . .
 
 EXPOSE 8999
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8999", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8999"]

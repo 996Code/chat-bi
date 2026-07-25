@@ -2,7 +2,7 @@
 # ChatBI v2 — Docker Compose 完整部署
 #
 # 包含所有服务: PG + Redis + Milvus(etcd+minio) + Backend + Frontend + Sample DB
-# 对外端口仅暴露: 8999(backend), 28080(frontend), 5432(PG, 可选)
+# 对外端口仅暴露: 8999(backend), 28080(frontend)
 # 其余服务不暴露端口, 容器内通过服务名通信
 #
 # 用法:
@@ -23,7 +23,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-chatbi}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./docker/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
+      - ./deploy/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
     networks:
       - chatbi
     healthcheck:

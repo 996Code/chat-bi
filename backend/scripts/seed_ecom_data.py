@@ -585,8 +585,6 @@ def main() -> None:
                       "VALUES (%s, %s, %s, %s)", rows)
     print(f"   {len(rows):,} 行")
 
-    print(f"   {len(rows):,} 行")
-
     # ── 提交 ──────────────────────────────────────────────────────
     conn.commit()
     print("\n✅ 数据补充完成!")
