@@ -16,7 +16,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# deploy.sh 可能在项目根目录或 deploy/ 子目录, 统一找到项目根
+if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
+    PROJECT_DIR="$SCRIPT_DIR"
+elif [ -f "$SCRIPT_DIR/../docker-compose.yml" ]; then
+    PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+    echo "[ERROR] 找不到 docker-compose.yml, 请在项目根目录或 deploy/ 目录运行" >&2
+    exit 1
+fi
 cd "$PROJECT_DIR"
 
 # Compose 文件
