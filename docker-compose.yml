@@ -146,8 +146,8 @@ services:
   # ── Backend (FastAPI) ────────────────────────────────────────
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: chatbi-backend
     restart: unless-stopped
     ports:
@@ -205,8 +205,8 @@ services:
   # 扫描/记忆等需 LLM 的操作留给用户在前端手动触发
   init:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: chatbi-init
     env_file:
       - deploy/.env
