@@ -12,18 +12,19 @@
 """
 from __future__ import annotations
 
+import os
 import random
 from datetime import datetime, timedelta
 
 import psycopg2
 
-# ── 连接配置 ──────────────────────────────────────────────────
+# ── 连接配置 (从环境变量读取, 兼容 Docker 部署) ──────────────
 DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "database": "chatbi_ecom",
-    "user": "root",
-    "password": "root",
+    "host": os.getenv("SAMPLE_DB_HOST", "localhost"),
+    "port": int(os.getenv("SAMPLE_DB_PORT", "5432")),
+    "database": os.getenv("SAMPLE_DB_NAME", "chatbi_ecom"),
+    "user": os.getenv("SAMPLE_DB_USER", "root"),
+    "password": os.getenv("SAMPLE_DB_PASSWORD", os.getenv("POSTGRES_PASSWORD", "root")),
 }
 
 # ── 常量 ──────────────────────────────────────────────────────
@@ -90,6 +91,16 @@ def main() -> None:
     conn = psycopg2.connect(**DB_CONFIG)
     conn.autocommit = False
     cur = conn.cursor()
+
+    # ── 幂等判断: 如果 biz_orders 已有数据则跳过 ──────────────────
+    cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='biz_orders'")
+    if cur.fetchone()[0] > 0:
+        cur.execute("SELECT COUNT(*) FROM biz_orders")
+        if cur.fetchone()[0] > 0:
+            print("✓ 业务库已有数据, 跳过初始化 (如需重灌请先 TRUNCATE)")
+            cur.close()
+            conn.close()
+            return
 
     # ── 幂等: 先清空要插入的表 (按 FK 依赖倒序) ──────────────────────
     TRUNCATE_ORDER = [
