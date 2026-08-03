@@ -9,6 +9,18 @@
   - generate_sample_questions: 基于扫描到的表/列/关系, LLM 生成 6-8 个 BI 问题
   - Fail-closed (根本模式): LLM 失败 → 基于列语义类型的规则降级 (measure/dimension 组合)
   - 对标 replier/thinking/chart_agent 的降级模式: LLM 失败总有兜底, 不返回空
+
+数据流总览:
+  1. 输入: 语义层扫描结果 (models: list[Model])
+  2. 主路径: LLM 生成 6-8 个业务问题
+  3. 降级路径: LLM 失败 → _fallback_questions 规则生成
+  4. 极端兜底: 规则也无法生成 → 返回硬编码通用问题
+  5. 输出: 6-8 个示例问题列表 (前端展示给新用户)
+
+Fail-Closed 保证:
+  - LLM 失败 → 规则降级
+  - 规则生成空 → 硬编码兜底
+  - 每个路径都保证返回非空列表
 """
 from __future__ import annotations
 
@@ -49,9 +61,17 @@ async def generate_sample_questions(
 
     Returns:
         6-8 个示例问题 (fail-closed: LLM 失败用规则降级, 不返回空)
+
+    数据流:
+      1. 构建 schema_summary (过滤系统表, 提取 measure/dimension/关系)
+      2. 调用 LLM 生成问题 (temperature=0.3 保证一定多样性)
+      3. 解析 LLM 输出 (去编号/去空行)
+      4. LLM 失败/空结果 → 规则降级 _fallback_questions
+      5. 规则降级也失败 → 硬编码兜底 3 个通用问题
     """
     schema_text = _build_schema_summary(models)
     if not schema_text:
+        # schema 为空 (如无业务表) → 直接规则降级, 跳过 LLM 调用
         return _fallback_questions(models)
 
     prompt = _QUESTION_PROMPT.format(schema=schema_text)
@@ -74,12 +94,25 @@ async def generate_sample_questions(
         logger.warning("LLM 示例问题为空, 降级规则生成")
         return _fallback_questions(models)
     except Exception as e:
+        # 异常兜底: 不抛到上层, 降级规则生成
         logger.warning("示例问题 LLM 生成失败, 降级规则生成: %s", e)
         return _fallback_questions(models)
 
 
 def _build_schema_summary(models: list[Model]) -> str:
-    """构建喂给 LLM 的表结构摘要 (表名+中文名+关键列)。"""
+    """构建喂给 LLM 的表结构摘要 (表名+中文名+关键列)。
+
+    数据流:
+      1. 输入: 语义层 models 列表
+      2. 过滤: 排除系统表 (metadata 表, 用户不需要关心)
+      3. 提取: 每个表取 measure 前 3 个 + dimension 前 4 个 + 关系
+      4. 输出: 格式化文本 → 注入 LLM prompt
+
+    设计决策:
+      - 只取 measure 和 dimension 列, 跳过 system/unknown 类型列
+      - measure 取前 3, dimension 取前 4: 控制 prompt 长度, 避免超标
+      - 系统表过滤: 集中定义在 config.system_tables, 避免硬编码
+    """
     if not models:
         return ""
     # 过滤掉系统表 (ChatBI 元数据表, 集中定义在 config)
@@ -90,6 +123,7 @@ def _build_schema_summary(models: list[Model]) -> str:
         if m.name in system_tables:
             continue
         # 取关键列: measure (度量) + dimension (维度) 各几个
+        # 限制数量: 控制 LLM prompt 长度, 避免表列过多导致 token 超限
         measures = [c.display_name for c in m.columns if c.semantic_type == "measure"][:3]
         dimensions = [c.display_name for c in m.columns if c.semantic_type == "dimension"][:4]
         rels = [r.target_model for r in m.relationships]
@@ -105,7 +139,19 @@ def _build_schema_summary(models: list[Model]) -> str:
 
 
 def _parse_questions(text: str) -> list[str]:
-    """从 LLM 输出解析问题列表 (每行一个, 去编号/空行)。"""
+    """从 LLM 输出解析问题列表 (每行一个, 去编号/空行)。
+
+    数据流:
+      1. 输入: LLM 原始输出文本 (可能含编号、空行、前后缀说明)
+      2. 处理: 按行分割 → 去掉编号 (~ 1. 2. -) → 去空行 → 长度过滤
+      3. 输出: 最多 8 个问题
+
+    边界情况:
+      - 空文本 → 返回空列表 (触发调用方降级)
+      - 含编号行 (1. 2. -) → 去掉编号保留内容
+      - 短于 4 字符的行 → 过滤 (可能是残留的标点或缩写)
+      - 超过 8 行 → 截断 (prompt 要求 6-8, 但 LLM 可能生成更多)
+    """
     questions = []
     for line in text.strip().split("\n"):
         line = line.strip()
@@ -124,6 +170,18 @@ def _fallback_questions(models: list[Model]) -> list[str]:
       - 找到有 measure 列的表 → "各{dimension}的{measure}总和/排名"
       - 找到有 dimension 列的表 → "各{dimension}的数量统计"
       - 保证至少返回几个可用问题
+
+    设计决策:
+      - 优先组合 measure + dimension: 生成聚合 + 分组问题, 是 BI 最典型场景
+      - 只有 measure: 生成汇总统计问题 (如"总销售额")
+      - 只有 dimension: 生成数量统计问题 (如"各城市数量")
+
+    极端兜底:
+      - 如果规则也无法生成 (如无业务表), 返回 3 个硬编码通用问题
+      - 保证前端空状态引导永远有内容可展示
+
+    数据流:
+      LLM 失败 → _fallback_questions → 遍历 models → 规则生成 → 截断前 8 个
     """
     from app.core.config import get_settings
     system_tables = frozenset(get_settings().system_tables)

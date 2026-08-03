@@ -11,7 +11,7 @@
 
 ## 不可妥协的约束
 
-- **跑测试再交付**：`.venv/bin/python -m pytest backend/tests/ -q`，必须 20 passed
+- **跑测试再交付**：`.venv/bin/python -m pytest backend/tests/ -q`，必须 709 passed
 - **Python 3.12+ 语法**：`X | None`，不要 `Optional[X]`
 - **配置不硬编码**：所有魔法数字/超时/阈值进 `app/core/config.py`，走环境变量
 - **安全 Fail-Closed**：任何降级都要 WARNING + 告警，安全相关功能出问题拒绝而非放行（v1 根本模式）
@@ -40,6 +40,12 @@ cd frontend && npx vite --host 0.0.0.0 --port 5173
 - `doc/Claude-Code-源码深度解读.md`、`doc/海泰ChatBI完整代码分析.md`、`doc/经验教训.md` — 是 v2 的设计依据，只读不改
 - `doc/v1-archive/` — v1 历史文档，不是当前开发依据
 - `backend/.env` — 本地真实密钥，不提交（已在 .gitignore）
+
+## 新增文档（必读）
+
+- `doc/architecture-v2.md` — 完整架构图（11 章，含代码引用索引）
+- `doc/code-reference-index.md` — 460+ 关键定义 file:line 索引
+- `doc/learning-roadmap.md` — 7 阶段学习路线图
 
 ## 开发工作流
 

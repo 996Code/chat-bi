@@ -50,6 +50,7 @@ class DataSourceCreate(BaseModel):
     @field_validator("db_type")
     @classmethod
     def _validate_db_type(cls, v: str) -> str:
+        # 白名单校验: 只允许两种已知类型, 防止未知数据库驱动攻击
         if v not in ("postgresql", "mysql"):
             raise ValueError(f"不支持的数据库类型: {v} (仅 postgresql/mysql)")
         return v
@@ -66,6 +67,7 @@ class DataSourceOut(BaseModel):
     username: str
     is_active: bool
     # 扫描状态 (前端轮询展示进度条 + 步骤, 对标 V1 + 经验教训 #25)
+    # 注意: password 不返回 — 前端永远拿不到解密后的密码, 保障凭证安全
     scan_status: str = "idle"
     scan_progress: int = 0
     scan_stage: str | None = None
@@ -91,7 +93,11 @@ async def create_data_source(
     user: AuthUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """创建数据源。密码 Fernet 加密后存储 (对标 v1 #38)。"""
+    """创建数据源。密码 Fernet 加密后存储 (对标 v1 #38)。
+
+    admin 权限要求: 数据源创建涉及数据库连接凭证, 仅允许管理员操作。
+    密码加密在前端传输后 (HTTPS), 后端再次加密存储 (纵深防御)。
+    """
     ds = DataSource(
         tenant_id=user.tenant_id,
         name=body.name,
@@ -119,7 +125,11 @@ async def list_data_sources(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """列出当前租户的数据源 (多租户隔离, 对标 v1 #48)。"""
+    """列出当前租户的数据源 (多租户隔离, 对标 v1 #48)。
+
+    仅返回 active=True 的数据源 — 已禁用的数据源不会出现在列表中,
+    前端不显示不可用的数据源, 减少用户困惑。
+    """
     stmt = select(DataSource).where(
         DataSource.tenant_filter(user.tenant_id),
         DataSource.is_active == True,  # noqa: E712
@@ -134,12 +144,18 @@ async def get_data_source(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """查看单个数据源详情。
+
+    多租户隔离: 显式添加 tenant_filter, 防止跨租户越权访问。
+    注意: 返回的 DataSourceOut 不包含 password, 前端永远拿不到解密后的密码。
+    """
     stmt = select(DataSource).where(
         DataSource.id == ds_id,
         DataSource.tenant_filter(user.tenant_id),
     )
     ds = (await db.execute(stmt)).scalar_one_or_none()
     if ds is None:
+        # 统一返回 404, 不区分"数据源不存在"和"数据源不属于该租户"
         raise HTTPException(status_code=404, detail="数据源不存在")
     return _to_out(ds)
 
@@ -160,6 +176,9 @@ async def toggle_data_source(
 
     禁用后: 列表不返回 (已过滤), 查询/扫描拒绝 (build_agent_deps 校验)。
     审计三态: 记录 enable/disable 操作。
+
+    注意: 禁用数据源不会删除其关联的语义层和索引, 重新启用后恢复使用。
+    这是设计决策: 数据源可能被多个看板引用, 删除语义层会导致看板损坏。
     """
     stmt = select(DataSource).where(
         DataSource.id == ds_id,
@@ -168,6 +187,7 @@ async def toggle_data_source(
     ds = (await db.execute(stmt)).scalar_one_or_none()
     if ds is None:
         raise HTTPException(status_code=404, detail="数据源不存在")
+    # 幂等性检查: 如果已经是目标状态, 拒绝重复操作 (避免无意义的审计记录)
     if ds.is_active == body.is_active:
         raise HTTPException(status_code=400, detail=f"数据源已是 {'启用' if body.is_active else '禁用'} 状态")
     ds.is_active = body.is_active
@@ -194,6 +214,9 @@ async def check_datasource_health(
     """手动检查单个数据源健康状态 (DSO-02)。
 
     返回 {ok, latency_ms, error}。ping 失败不标记 error (只检查, 状态变更靠定时任务)。
+
+    注意: 这是一个轻量检查 (ping 数据库), 不涉及 SQL 执行。
+    用于前端数据源管理页面的"测试连接"功能。
     """
     ds = (
         await db.execute(
@@ -295,6 +318,9 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
     阶段进度 (对标经验教训 #25 "进度按步骤百分比"):
       connecting 10% → scanning 35% → inferring 65% → enriching 85% → saving 95% → done 100%
     任一阶段失败 → scan_status=failed + scan_error, 不留半成品状态。
+
+    设计决策: 使用独立 DB session, 不共享请求的 session。
+    原因: 后台任务生命周期超过 HTTP 请求, 请求 session 在响应返回后可能被关闭。
     """
     from app.db.session import get_async_session_factory
     factory = get_async_session_factory()
@@ -323,6 +349,8 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
             await _update_scan(session, ds, progress=35, stage=f"扫描到 {len(content.models)} 张表")
 
             # ── Stage 2: LLM 中文推断 (35% → 65%) ──────────────
+            # LLM 推断可能耗时较长 (尤其多表场景), 设整体超时兜底
+            # 超时后: 退化列名 (auto_inferred, confidence=0.5) 仍可用, 不阻塞扫描
             await _update_scan(session, ds, progress=45, stage="LLM 推断中文名...")
             try:
                 import asyncio
@@ -366,6 +394,7 @@ async def _run_scan_background(ds_id: str, tenant_id: str, user_id: str) -> None
                     content.models,
                 )
             except Exception:
+                # 示例问题生成失败不阻塞扫描 — 用户仍可手动输入自然语言查询
                 pass  # 失败不阻塞 (sample_questions 留空)
 
             # ── Stage 4: 版本保存 (85% → 95%) ──────────────────

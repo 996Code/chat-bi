@@ -30,11 +30,16 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 
 # 路径穿越防护: memory name 是显示标题, 允许安全字符 + 空格 + 中文标点
 # (id 才是文件名, name 不直接用于文件操作, 所以可以宽松)
+# id 作为文件名, 使用 UUID 格式, 严格白名单校验防止路径穿越
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_\-\u4e00-\u9fff\s\u3000-\u303f\uff00-\uffef]+$")
 
 
 def _validate_memory_name(name: str) -> str:
-    """校验 memory name 不含路径穿越字符。"""
+    """校验 memory name 不含路径穿越字符。
+
+    name 是显示标题, 不直接用于文件操作, 所以校验可适度宽松。
+    但防御纵深: 仍然拦截明显的恶意字符, 防止被间接用于其他攻击面。
+    """
     if not name or not _SAFE_NAME_RE.match(name):
         raise HTTPException(
             status_code=422,
@@ -55,6 +60,8 @@ def _validate_mem_id(mem_id: str) -> str:
 
     允许: UUID (xxxxxxxx-xxxx-...) 和旧格式 slug (a-z0-9_-)
     禁止: .., /, \\, 空格, 换行等一切可能用于路径操作或 frontmatter 注入的字符。
+
+    安全设计: 白名单比黑名单更安全, 只允许已知安全的字符模式。
     """
     if not mem_id or not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$|^[a-zA-Z0-9_\-]+$", mem_id):
         raise HTTPException(status_code=400, detail="无效的记忆标识")
@@ -66,6 +73,8 @@ def _get_ds_store(tenant_id: str, data_source_id: str):
 
     首次访问时自动从全局模板目录 (memory/_template/) 复制种子记忆,
     确保新数据源不会看到空白页面。
+
+    隔离层级: tenant_id -> data_source_id, 两层隔离防止跨租户/跨数据源访问。
     """
     from pathlib import Path
     from app.core.agent_memory import AgentMemoryStore
@@ -167,6 +176,8 @@ async def list_memories(
     """列出所有记忆 — 按 tenant_id + data_source_id 隔离。
 
     默认不返回已整理的记忆 (consolidated=true), 开启 include_consolidated 后返回。
+    设计决策: 默认隐藏已整理记忆, 因为整理后的记忆是 LLM 生成的汇总,
+    原始记忆通常对用户更有参考价值。
     """
     store = _get_ds_store(user.tenant_id, data_source_id)
     memories = []
@@ -176,6 +187,7 @@ async def list_memories(
             continue
         full = store.read_memory(m["id"]) or ""
         # 去掉 frontmatter, 只返回正文
+        # frontmatter 包含元数据 (id/name/type 等), 已由 MemoryOut 的字段承载
         content = full
         if full.startswith("---"):
             parts = full.split("---", 2)

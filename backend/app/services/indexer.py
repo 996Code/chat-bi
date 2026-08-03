@@ -39,6 +39,14 @@ def model_to_text(model: Model) -> str:
       - display_name (中文名) 优先, 英文表名放后面
       - 列信息只保留 display_name (中文注释), 不放英文列名
       - data_type 不进文本 (对语义匹配无帮助, 反增噪声)
+
+    注意事项:
+    - 重复描述: BGE 模型对重复文本的语义权重有叠加效果,
+      但重复过多会稀释区分度。2 遍是经验值, 经测试效果最佳。
+    - 英文表名: 向量模型对英文不敏感, 但保留给精确匹配场景。
+      格式 "表名{name}" 明确标识这是表名, 帮助模型区分。
+    - 列信息: 只取有 display_name 的列, 没有 display_name 的列
+      用英文列名对语义匹配无帮助, 跳过。
     """
     parts: list[str] = []
     # 中文描述重复2遍 — 核心语义
@@ -46,6 +54,7 @@ def model_to_text(model: Model) -> str:
         parts.append(model.description)
         parts.append(model.description)
     # display_name (中文名)
+    # 如果 display_name 和 name 相同, 说明没有中文别名, 不重复添加
     if model.display_name and model.display_name != model.name:
         parts.append(model.display_name)
     # 英文表名放最后 (向量模型对英文不敏感, 但保留给精确匹配)
@@ -61,7 +70,12 @@ def model_to_text(model: Model) -> str:
 
 
 def metric_to_text(metric: Metric) -> str:
-    """Metric → embed 文本 (中文优先, display_name + 描述 + 公式)。"""
+    """Metric → embed 文本 (中文优先, display_name + 描述 + 公式)。
+
+    指标文本化: 包含描述、显示名、条件、指标名、公式。
+    公式是核心: 指标查询时, 用户问 "销售额", 公式 sum(amount) 是匹配关键。
+    condition 可选: 如 "status=1" 这种过滤条件, 帮助区分同名指标。
+    """
     parts: list[str] = []
     if metric.description:
         parts.append(metric.description)
@@ -103,16 +117,33 @@ async def build_index(
     设计:
       - 先收集所有文本 → 批量 embed (一次调用, 对标效率)
       - 失败降级: 返回 0, 不阻塞调用方 (扫描/CRUD)
+
+    数据流:
+    content.models → model_to_text (每个 model) → items[9] (含 model + metric)
+    items → 批量 embed → vectors → 组装 VectorRecord → upsert
+
+    幂等性:
+    同 data_source_id + model/metric name 生成相同 id,
+    upsert 会覆盖旧向量, 不会产生重复记录。
+    所以重复调用 build_index 是安全的 (全量重建场景)。
+
+    失败降级:
+    - embed 失败: 不建索引, 不影响元数据操作
+    - upsert 失败: 同上, 不影响元数据操作
+    调用方 (扫描/CRUD) 不应依赖索引构建成功。
     """
     if not content.models:
         return IndexResult(indexed_count=0)
 
     # 收集所有可索引对象 → (id, type, name, text)
+    # id 命名规则: <data_source_id>:<type>:<name>
+    # 确保全局唯一, 同时支持按 data_source_id 过滤删除
     items: list[tuple[str, str, str, str]] = []
     for model in content.models:
         text = model_to_text(model)
         rid = f"{data_source_id}:model:{model.name}"
         items.append((rid, "model", model.name, text))
+        # metric 依附于 model, 以 model 为单位组织
         for metric in model.metrics:
             mtext = metric_to_text(metric)
             mid = f"{data_source_id}:metric:{metric.name}"
@@ -121,6 +152,8 @@ async def build_index(
     texts = [t for _, _, _, t in items]
 
     # 批量 embed
+    # 一次调用 embedder.embed 批量处理所有文本, 比逐条调用快
+    # 但也意味着如果某个文本 embed 失败, 全部失败
     try:
         vectors = await embedder.embed(texts)
     except Exception as e:
@@ -128,6 +161,7 @@ async def build_index(
         return IndexResult(indexed_count=0, error=str(e))
 
     # 组装 VectorRecord + 批量 upsert
+    # metadata 中包含 data_source_id 和 type, 支持 RAG-005 标量过滤
     records = []
     for (rid, rtype, name, text), vec in zip(items, vectors):
         records.append(VectorRecord(
@@ -138,7 +172,7 @@ async def build_index(
                 "type": rtype,
                 "name": name,
             },
-            text=text,
+            text=text,  # 原文保留, 调试/缓存用
         ))
 
     try:

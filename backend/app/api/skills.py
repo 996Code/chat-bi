@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/skills", tags=["skills"])
 
 # 路径穿越防护: skill name 只允许字母/数字/下划线/连字符
+# 安全设计: 白名单校验, 只允许安全字符, 拒绝一切特殊字符
+# 路径穿越攻击如 "../../etc/passwd" 会被拦截
 import re
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
@@ -43,6 +45,9 @@ def _get_tenant_skills_dir(tenant_id: str):
 
     首次访问时自动从全局模板目录 (skills/_template/) 复制种子规则,
     确保新租户不会看到空白页面。
+
+    防御纵深: 即使 tenant_id 来自 JWT (理论上安全), 仍做路径穿越校验。
+    原因: JWT 解析逻辑可能在未来被修改, 或者 tenant_id 可能来自其他来源。
     """
     from pathlib import Path
     import shutil
@@ -54,6 +59,8 @@ def _get_tenant_skills_dir(tenant_id: str):
     base = Path(getattr(settings, "skills_dir", "skills")) / tenant_id
     base.mkdir(parents=True, exist_ok=True)
     # 种子数据: 租户目录为空时, 从 _template/ 复制默认规则
+    # 设计决策: 种子数据只复制一次, 不覆盖已有内容
+    # 这样用户修改后不会被下次重启覆盖
     _ensure_seed_skills(base)
     return base
 
@@ -99,7 +106,11 @@ class SkillSave(BaseModel):
 async def list_skills(
     user=Depends(require_admin),
 ):
-    """列出所有 Skills (T041) — 按 tenant_id 隔离。"""
+    """列出所有 Skills (T041) — 按 tenant_id 隔离。
+
+    admin 权限: Skills 影响全局 SQL 生成逻辑, 非 admin 不可查看。
+    返回包含 reference 文件 (T060) 的完整内容, 前端用于渲染编辑界面。
+    """
     from app.services.skills_loader import SkillsLoader
     base = _get_tenant_skills_dir(user.tenant_id)
     loader = SkillsLoader(base_dir=str(base))
@@ -136,6 +147,10 @@ async def save_skill(
     """创建或更新 Skill (T041 在线编辑) — 按 tenant_id 隔离。
 
     保存后 invalidate 缓存, 下次查询自动热更新。
+    admin 权限: Skills 修改影响全局 SQL 生成, 必须审计 (SEC-006)。
+
+    热更新机制: reset_skills_loader() 清除 SkillsLoader 的缓存,
+    下次 load_all() 时重新从磁盘读取, 无需重启服务。
     """
     _validate_skill_name(body.name)  # 对标防御纵深: 防路径穿越
     base = _get_tenant_skills_dir(user.tenant_id)

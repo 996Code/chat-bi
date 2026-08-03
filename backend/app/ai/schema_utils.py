@@ -35,6 +35,21 @@ def extract_allowed_columns(
 ) -> set[str]:
     """从语义层提取白名单列名集合。
 
+    数据流:
+      1. 输入: SemanticModelContent (完整语义层定义) + 可选的表名过滤列表
+      2. 处理: 遍历指定表的 columns, 提取列名
+      3. 输出: 纯列名 set (不含表名前缀) — 供 T030 Layer3 白名单校验
+
+    为什么从语义层而非检索文本:
+      - 检索器只返回匹配的表名和文本描述, 不包含完整列定义
+      - 语义层是唯一权威的列定义来源 (含 data_type / display_name)
+      - 正则提取会漏列 (无 display_name 时) + 误匹配 (列名与描述文本混淆)
+
+    边界情况:
+      - content 为 None → 返回空 set (白名单校验放行所有列)
+      - model_names 为 None → 返回全部表的列名
+      - model_names 非空 → 只返回指定表的列, 未在列表中的表被跳过
+
     Args:
         content: 语义层内容 (完整列定义)
         model_names: 只取指定表的列 (None = 全部表)
@@ -92,13 +107,26 @@ def expand_with_relationships(
     优先使用 SchemaGraph (最短路径 + 社区补全) 替代纯 BFS。
     SchemaGraph 构建失败时降级回原始 BFS (fail-open, 保证查询可用)。
 
-    设计原则: 用语义层结构化关系数据 (Relationship), 不硬编码命名规则。
-    语义层的关系由 _scan_relationships (外键) + knowledge_graph (LLM 推断) 产出,
-    这里只消费不推断。
+    设计原则:
+      - 用语义层结构化关系数据 (Relationship), 不硬编码命名规则
+      - 语义层的关系由 _scan_relationships (外键) + knowledge_graph (LLM 推断) 产出,
+        这里只消费不推断
+      - 防扩散: 种子表 (selected_names) 永远保留, 不受上限影响
+      - SchemaGraph 模式下按图距离排序 (近的优先), 不会因 BFS 遍历顺序导致
+        超级枢纽的远亲占满名额
 
-    防扩散: 种子表 (selected_names) 永远保留, 不受上限影响。
-    SchemaGraph 模式下按图距离排序 (近的优先), 不会因 BFS 遍历顺序导致
-    超级枢纽的远亲占满名额。
+    为什么需要扩展:
+      - 用户问题可能只提及一张表 (如"销售额"), 但 SQL 可能需要 JOIN 多张表
+      - 扩展关联表后, LLM 在生成 SQL 时有更多表可选, 避免遗漏关联关系
+
+    数据流:
+      retriever 命中表 → expand_with_relationships → 扩展后的表名列表 →
+      build_schema_context (构建列定义) + build_join_path_section (构建 JOIN 路径)
+
+    防扩散机制:
+      - max_total 上限 (默认从 config 读 rag_max_schema_tables)
+      - 种子表不受上限影响 (永远保留)
+      - SchemaGraph 按图距离排序, 近的优先
 
     Args:
         content: 语义层内容 (含 relationships 定义)
@@ -158,8 +186,23 @@ def _expand_with_bfs(
     BFS 按深度优先 (先 1 跳后 2 跳), 累计表数达到 max_total 后停止。
     超级枢纽 (如 uc_users 有 45 邻居) 不会把全库拉进来, 因为到达上限后
     后续邻居不再加入。种子表 (selected_names) 永远保留, 不受上限影响。
+
+    设计决策:
+      - 双向邻接表: 关系定义是单向的 (A→B), 但 JOIN 需要双向可达,
+        所以构建双向邻接表确保 BFS 能从任一方向遍历
+      - 深度优先 + 上限截断: 优先扩展 1 跳关系, 再扩展 2 跳关系,
+        确保最相关的表先被包含
+
+    降级触发条件:
+      - SchemaGraph 构建失败 (如语义层数据异常)
+      - SchemaGraph.expand_tables 返回空列表
     """
     # 构建双向邻接表 (正向: 表→关系目标; 反向: 被关系指向的表→源表)
+    #
+    # 为什么需要双向:
+    #   语义层关系定义是单向的 (如 biz_orders → biz_users 表示 orders 引用了 users),
+    #   但用户问题可能从任一表出发, 双向邻接确保 BFS 能遍历所有方向。
+    #   例如用户问"用户信息"时, 从 biz_users 出发也能找到 biz_orders.
     adjacency: dict[str, set[str]] = {}
     for model in content.models:
         for rel in model.relationships:
@@ -209,6 +252,18 @@ def build_schema_context(
     指标行 (无指标不输出):
       指标: gmv(成交总额) = SUM(total_amount) WHERE status IN ('paid','shipped')
 
+    数据流:
+      1. 输入: SemanticModelContent + 可选的表名过滤列表
+      2. 处理: 遍历表 → 列 (含 data_type/display_name) → 关系 → 指标
+      3. 输出: 格式化文本 → 注入 T029 SQL 生成 prompt 的 schema_context 段
+
+    设计决策:
+      - 列名后附 data_type (如 [BIGINT]), 对标 RAG-005: 类型约束辅助 LLM
+        生成类型正确的 SQL (如避免字符串列做 SUM)
+      - 列名后附中文名 (如 "中文: 订单金额"), 辅助 LLM 生成 AS 中文别名
+      - 关系提示 (如 →biz_users(orders.user_id = users.id)), 辅助 LLM 理解 JOIN 依据
+      - 指标行: 让 LLM 知道业务计算口径, 避免自己推断聚合逻辑
+
     Args:
         content: 语义层内容
         model_names: 只取指定表 (None = 全部)
@@ -228,12 +283,14 @@ def build_schema_context(
         for col in model.columns:
             desc = col.name
             # 附上中文列名 (供 LLM 生成 AS 中文别名)
+            # 如 "total_amount" → "total_amount(中文: 总金额)"
             if col.display_name and col.display_name != col.name:
                 desc += f"(中文: {col.display_name})"
             if col.data_type:
                 desc += f"[{col.data_type}]"
             col_descs.append(desc)
         # 含关系提示 (对标海泰 JOIN 依据)
+        # 格式: →biz_users(orders.user_id = users.id)
         rels = []
         for rel in model.relationships:
             rels.append(f"→{rel.target_model}({rel.on})")
@@ -264,6 +321,14 @@ def build_metrics_hint(
     格式:
       biz_orders: gmv(成交总额) = SUM(total_amount) WHERE status IN ('paid','shipped')
                   order_count(订单数) = COUNT(id)
+
+    与 build_schema_context 的区别:
+      build_schema_context 输出表级完整信息 (列 + 关系 + 指标),
+      build_metrics_hint 只输出指标定义, 用于 prompt 中专用的"指标提示"段。
+      两者可同时使用, 让 LLM 从不同角度理解业务语义。
+
+    数据流:
+      SemanticModelContent → 提取指标定义 → 格式化文本 → 注入 SQL 生成 prompt
 
     Args:
         content: 语义层内容
@@ -309,6 +374,18 @@ def build_join_path_section(
     优化: 只对种子表 + 种子表的 1-hop 邻居计算 JOIN 路径,
     避免社区远亲产生大量无意义路径对 (C(n,2) 爆炸)。
 
+    为什么需要预计算 JOIN 路径:
+      - LLM 自行推断 JOIN 逻辑容易出错 (如选错 JOIN 列或 JOIN 类型)
+      - 语义层的关系定义是明确的, 预计算后直接给 LLM 使用更可靠
+      - 对标 AEE-001: 减少 LLM 推理负担, 把确定性的工作放在系统侧
+
+    数据流:
+      SchemaGraph → get_join_context → 格式化 JOIN 路径文本 →
+      注入 T029 SQL 生成 prompt 的【JOIN 路径】段
+
+    配置开关:
+      graph_join_path_in_prompt (config) — 可关闭此功能, 让 LLM 自行推断
+
     Args:
         content: 语义层内容
         table_names: 扩展后的表名列表
@@ -342,6 +419,7 @@ def build_join_path_section(
                             join_tables.add(nb)
             join_paths = sg.get_join_context(list(join_tables))
         else:
+            join_tables = set(table_names)
             join_paths = sg.get_join_context(table_names)
     except Exception as e:
         logger.warning("build_join_path_section: SchemaGraph 失败, 跳过 JOIN 路径块: %s", e)

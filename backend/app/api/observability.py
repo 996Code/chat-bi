@@ -56,7 +56,12 @@ async def list_audit_logs(
     user: AuthUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """审计日志列表 (T052, admin only)。"""
+    """审计日志列表 (T052, admin only)。
+
+    按 created_at 倒序, 最新操作在前。
+    支持按 resource_type 过滤 (如只查看 data_source 的操作)。
+    admin 权限: 审计日志包含敏感操作信息, 仅管理员可查看。
+    """
     stmt = (
         select(AuditLog)
         .where(AuditLog.tenant_filter(user.tenant_id))
@@ -65,6 +70,7 @@ async def list_audit_logs(
         .offset(offset)
     )
     if resource_type:
+        # 可选过滤: 按资源类型筛选 (如 "auth", "data_source", "chat")
         stmt = stmt.where(AuditLog.resource_type == resource_type)
     result = await db.execute(stmt)
     return [
@@ -121,7 +127,14 @@ async def list_slow_queries(
 async def list_conversations(
     user: AuthUser = Depends(require_user),
 ):
-    """对话列表 (T052, 从 StateStore 文件)。"""
+    """对话列表 (T052, 从 StateStore 文件)。
+
+    读取文件系统上的 .jsonl 对话文件, 按修改时间倒序排列。
+    每个对话汇总: 轮次、token 消耗、最后 SQL、关联表。
+
+    注意: 这是一个文件系统操作, 不查数据库。
+    当对话数量很大时 (数千个), 此接口可能变慢, 需考虑缓存。
+    """
     from app.ai.state_store import StateStore
     store = StateStore()
     states_dir = Path(store._base_dir) / user.tenant_id
@@ -165,6 +178,8 @@ async def list_conversations(
                 "total_tokens": total_prompt_tokens + total_completion_tokens,
             })
         except (json.JSONDecodeError, KeyError):
+            # 跳过损坏的对话文件, 不阻塞整个列表
+            # 损坏原因: 写文件时进程崩溃 / 磁盘满 / 并发写入
             continue
     # 按时间倒序 (最新对话在前, 与 ChatGPT/微信等聊天应用一致)
     # T050 的 token 排序需求由 ObservabilityView 的 Top 50 高消耗对话面板满足
@@ -177,7 +192,14 @@ async def get_conversation_detail(
     conv_id: str,
     user: AuthUser = Depends(require_user),
 ):
-    """对话详情 — 所有轮次 (T052)。"""
+    """对话详情 — 所有轮次 (T052)。
+
+    返回完整的对话轮次列表, 包含每轮的 question/SQL/结果/LLM prompts。
+    前端 loadConversation 按 question 合并连续同 turn 行, 不需要这里重新编号。
+
+    注意: 骨架行 + 完整行故意复用同一 turn 号 (start 落骨架, 末尾落完整, 复用 turn)。
+    前端按 question 合并, 所以不需要后端重新编号。
+    """
     from app.ai.state_store import StateStore
     store = StateStore()
     turns = store.list_turns(user.tenant_id, conv_id)
@@ -261,12 +283,17 @@ async def get_conversation_trace(
 async def health_detail(
     user: AuthUser = Depends(require_admin),
 ):
-    """系统状态详情 (T050 可观测性面板)。"""
+    """系统状态详情 (T050 可观测性面板)。
+
+    检查各组件状态: Milvus (向量库), Redis (缓存), Embedder (嵌入模型), Skills (业务规则)。
+    每个组件独立 try/except, 一个组件失败不影响其他组件状态检查。
+    admin 权限: 系统状态包含敏感配置信息 (LLM 模型、嵌入后端等), 仅管理员可查看。
+    """
     settings = get_settings()
     # 检查各组件状态
     components = {}
 
-    # Milvus
+    # Milvus 向量库 — 不可用时 RAG 检索降级为关键词搜索
     try:
         from app.core.milvus_client import get_milvus_client
         get_milvus_client()
@@ -274,7 +301,7 @@ async def health_detail(
     except Exception:
         components["milvus"] = "unavailable (degraded)"
 
-    # Redis
+    # Redis 缓存 — 不可用时降级为内存缓存 (限单实例)
     try:
         from app.core.redis_client import get_redis
         redis = await get_redis()
@@ -282,7 +309,7 @@ async def health_detail(
     except Exception:
         components["redis"] = "unavailable (degraded)"
 
-    # Embedder
+    # Embedder 嵌入模型 — 不可用时无法构建向量索引
     try:
         from app.services.embedder import get_embedder
         emb = get_embedder()
@@ -290,7 +317,7 @@ async def health_detail(
     except Exception as e:
         components["embedder"] = f"unavailable: {e}"
 
-    # Skills
+    # Skills 业务规则 — 加载数量
     try:
         from app.services.skills_loader import SkillsLoader
         skills = SkillsLoader(base_dir=f"skills/{user.tenant_id}").load_all()

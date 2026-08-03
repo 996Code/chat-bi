@@ -12,6 +12,12 @@
 
 Fail-Closed:
   - 任何异常都不抛, 始终返回一句非空字符串 (前端永不渲染空白)
+
+数据流总览:
+  1. 输入: 用户问题 + 意图类型 (GENERAL / EXPLANATION / CHART_MODIFY)
+  2. 处理: 调用 LLM 生成简短回复
+  3. 降级: LLM 失败 → 返回 _FALLBACK_REPLY (安全降级)
+  4. 输出: 始终返回非空字符串 (fail-closed 保证)
 """
 from __future__ import annotations
 
@@ -52,12 +58,23 @@ async def generate_reply(
 
     Returns:
         始终返回非空字符串 (fail-closed, 前端永不空白)
+
+    数据流:
+      1. 清洗: sanitize_text 去除敏感内容 (如电话号码、身份证号)
+      2. 空输入降级: 清洗后为空字符串 → 直接返回 _FALLBACK_REPLY
+      3. LLM 调用: 使用 llm_chat 生成回复, temperature=0.3 保证一定多样性
+      4. 空输出降级: LLM 返回空字符串 → 降级为 _FALLBACK_REPLY
+      5. 异常降级: 任何异常 → 降级为 _FALLBACK_REPLY (不抛到上层)
+
+    对标 fail-closed 根本模式:
+      任何路径都不会返回 None 或空字符串, 前端永远有内容可渲染。
     """
     from app.core.llm_client import llm_chat
     from app.core.text_sanitize import sanitize_text
 
     clean_question = sanitize_text(question)
     if not clean_question.strip():
+        # 清洗后为空: 问题全为敏感内容 (如 "我的电话是 138xxxx"), 直接降级
         return _FALLBACK_REPLY
     prompt = _REPLY_PROMPT.format(question=clean_question)
 
@@ -77,5 +94,6 @@ async def generate_reply(
             return _FALLBACK_REPLY
         return reply
     except Exception as e:
+        # 异常兜底: 不抛异常, 不返回空, 保证 fail-closed
         logger.warning("回复生成 LLM 失败, 降级默认文案: %s", e)
         return _FALLBACK_REPLY

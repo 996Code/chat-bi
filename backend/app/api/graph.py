@@ -99,7 +99,12 @@ async def get_full_graph(
     user: AuthUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取全图数据 (G6 渲染格式)。"""
+    """获取全图数据 (G6 渲染格式)。
+
+    SchemaGraph 从语义层懒构建, 无额外存储。
+    返回格式兼容 G6 图可视化引擎: nodes + edges 结构。
+    如果数据源无语义层, 返回空图 (nodes=[], edges=[])。
+    """
     graph, _ = await _get_graph(data_source_id, user, db)
     return graph.to_vis_data()
 
@@ -123,7 +128,11 @@ async def get_communities(
     user: AuthUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取社区列表 (表按业务域聚类)。"""
+    """获取社区列表 (表按业务域聚类)。
+
+    社区检测: 基于图连通性和关系权重, 自动识别业务域 (如: 订单域、商品域、用户域)。
+    用于前端展示"业务域"概念, 帮助用户理解表结构。
+    """
     graph, _ = await _get_graph(data_source_id, user, db)
     communities = graph.get_communities()
     return {"communities": communities, "count": len(communities)}
@@ -149,7 +158,11 @@ async def get_impact(
     user: AuthUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """影响分析: 从给定表可达的所有下游表。"""
+    """影响分析: 从给定表可达的所有下游表。
+
+    用途: 当用户需要修改某表结构时, 可查看哪些下游表会受影响。
+    基于图遍历算法 (BFS/DFS), 沿关系方向传播。
+    """
     graph, _ = await _get_graph(data_source_id, user, db)
     if not graph.has_node(table):
         raise HTTPException(status_code=404, detail=f"表 '{table}' 不在图谱中")
@@ -210,7 +223,13 @@ async def add_relationship(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """新增关系 (持久化到语义层, 创建新版本)。需要 user 或 admin 权限。"""
+    """新增关系 (持久化到语义层, 创建新版本)。需要 user 或 admin 权限。
+
+    流程: 校验源表/目标表存在 → 构建 ON 条件 → 更新语义层 content → 创建新版本 → 写审计日志。
+    注意: 这里直接修改 sm.content 并递增版本号 (不创建新 SemanticModel 行),
+    区别于 semantic_models.py 的 append-only 策略。
+    这是因为 graph 端点直接操作 content dict, 语义层模块操作完整版本。
+    """
     graph, sm = await _get_graph(data_source_id, user, db)
     if sm is None:
         raise HTTPException(status_code=404, detail="该数据源无语义层")
@@ -279,7 +298,11 @@ async def delete_relationship(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除关系 (持久化到语义层, 创建新版本)。需要 user 或 admin 权限。"""
+    """删除关系 (持久化到语义层, 创建新版本)。需要 user 或 admin 权限。
+
+    同时删除正向和反向关系: 如果 target 表也有指向 from_table 的关系, 也一并删除。
+    这是为了保持图的一致性 — 双向关系只需一次删除操作。
+    """
     graph, sm = await _get_graph(data_source_id, user, db)
     if sm is None:
         raise HTTPException(status_code=404, detail="该数据源无语义层")
@@ -291,6 +314,7 @@ async def delete_relationship(
         )
 
     # 持久化: 从语义层 content 中删除关系
+    # 同时从 from_table 和 target 两个方向清除, 保持图对称性
     content = SemanticModelContent(**sm.content) if sm.content else SemanticModelContent()
     removed = False
     for model in content.models:

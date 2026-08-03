@@ -51,6 +51,12 @@ def recall_memories(
         max_count = get_settings().memory_max_recall_count
 
     # 构造记忆目录: 优先用 memory_dir, 否则用 tenant_id + data_source_id
+    #
+    # 数据流说明:
+    #   调用方传入 memory_dir 时直接使用 (用于显式指定路径的测试/特殊场景),
+    #   否则根据 tenant_id + data_source_id 构造隔离路径, 确保不同租户/数据源
+    #   的记忆互不干扰。这是多租户隔离的关键设计 — 租户 A 查"销售额"不会
+    #   召回租户 B 的记忆。
     if not memory_dir or memory_dir == "memory":
         if tenant_id and data_source_id:
             memory_dir = f"memory/{tenant_id}/{data_source_id}"
@@ -62,9 +68,18 @@ def recall_memories(
         mem_path.mkdir(parents=True, exist_ok=True)
 
     # 种子数据: 目录为空时从 _template/ 复制默认记忆
+    #
+    # 设计背景: 首次使用时记忆目录为空, 需要从模板目录复制预设的种子记忆
+    # (如常见业务约定), 确保即使没有历史对话也能提供基础知识。
+    # 与 AgentMemoryStore._ensure_seed_memories 逻辑一致, 双路径保障。
     _ensure_seed_memories(mem_path)
 
     # 扫描记忆清单 (id + name + description)
+    #
+    # 遍历 memory_dir 下所有 .md 文件, 提取 frontmatter 元数据。
+    # 只读取描述信息 (description + name) 用于关键词匹配, 不读全文,
+    # 避免大文件内容被全部加载到内存。
+    # 跳过已整理的记忆 (consolidated) 和结构化 linkage 数据。
     memories_meta = []
     for md_file in sorted(mem_path.glob("*.md")):
         try:
@@ -94,7 +109,14 @@ def recall_memories(
         return []
 
     # 关键词相关性排序 (description + name 与问题的词重叠)
-    # 分词: 英文按 \b 边界拆, 中文按单字拆 (避免 "GMV计算" 被当成一个 token)
+    #
+    # 为什么不用 LLM 排序:
+    #   对标 Claude Code §5.4 — 轻量选择, 不调 LLM。关键词重叠度排序
+    #   虽然粗糙但足够用 (记忆数量少, 通常 < 50 条), 且零 API 成本。
+    #
+    # 分词策略: 英文按 \b 边界拆, 中文按单字拆 (避免 "GMV计算" 被当成一个 token)
+    # 中文单字分词的取舍: 虽然会丢失"用户画像"这样的双字词关联,
+    # 但单字匹配更宽松, 降低漏召回风险 (precision 换 recall)。
     def _tokenize(text: str) -> set[str]:
         """分词: 英文单词 + 中文单字, 全部小写。"""
         tokens: set[str] = set()
@@ -114,8 +136,11 @@ def recall_memories(
 
     if not scored:
         return []  # 无相关记忆, 宁缺毋滥
+    # 宁缺毋滥原则: 不灌无关内容污染 prompt, 对标 docstring 中所述
 
     # 按重叠度降序, 取前 max_count
+    # 注意: 这里只按 overlapped token 数量排序, 不做 TF-IDF 加权,
+    # 因为记忆条目数少, 简单排序即可满足需求。
     scored.sort(key=lambda x: x[0], reverse=True)
     return [mem for _, mem in scored[:max_count]]
 
@@ -124,6 +149,11 @@ def format_memories_for_prompt(memories: list[dict]) -> str:
     """格式化记忆为 prompt 片段 (注入 SQL 生成动态段)。
 
     对标 Claude Code: formatMemoryManifest — 给模型约束性提示。
+
+    数据流:
+      1. 输入: recall_memories 返回的 [{name, description, content}, ...]
+      2. 处理: 提取 frontmatter body, 截断长内容
+      3. 输出: 格式化的 Markdown 文本, 注入到 SQL 生成 prompt 的"记忆"段
     """
     if not memories:
         return ""
@@ -132,9 +162,12 @@ def format_memories_for_prompt(memories: list[dict]) -> str:
     for mem in memories:
         lines.append(f"[{mem['name']}] {mem['description']}")
         content = mem.get("content", "")
+        # 去掉 frontmatter (--- 之间的内容), 只保留 body 正文
         body = re.sub(r"^---\n.*?\n---\n?", "", content, flags=re.DOTALL).strip()
         if body:
-            lines.append(body[:200])  # 截断防 prompt 爆炸
+            # 截断前 200 字符: 防止某条记忆过长导致 prompt 膨胀,
+            # 200 字符足够表达核心信息, 过长内容应在 consolidate 时精简
+            lines.append(body[:200])
     return "\n".join(lines)
 
 
@@ -161,6 +194,10 @@ async def extract_memory_from_turn(
         提炼结果 {name, description, type, content} 或 None (不值得记)
     """
     # 读取已有记忆, 避免重复
+    #
+    # 关键设计: 将已有记忆摘要发给 LLM, 让 LLM 判断本轮是否产生新知识,
+    # 避免重复记忆 (如每次对话都记"status=2 表示审核中")。
+    # 这是"去重"的第一道防线, 第二道防线在 consolidate_memories 中合并。
     existing_summaries = _get_existing_memory_summaries(memory_dir)
 
     prompt = (
@@ -223,7 +260,17 @@ async def extract_memory_from_turn(
 
 
 def _get_existing_memory_summaries(memory_dir: str) -> str:
-    """获取已有记忆的摘要 (供 LLM 避免重复)。"""
+    """获取已有记忆的摘要 (供 LLM 避免重复)。
+
+    数据流:
+      1. 读取 memory_dir 下所有 .md 文件
+      2. 提取 frontmatter 中的 name 和 description
+      3. 拼接为摘要文本, 传给 LLM
+
+    边界情况:
+      - 跳过 MEMORY.md (元数据文件, 不是业务记忆)
+      - 目录不存在时返回 "(无)"
+    """
     mem_path = Path(memory_dir)
     if not mem_path.exists():
         return "(无)"
@@ -255,6 +302,12 @@ async def consolidate_memories(
     当记忆条目较多时, 将碎片化的记忆合并为更精炼的几条。
     原有记忆标记 consolidated=true (默认隐藏), 合并结果作为新记忆写入。
 
+    触发时机: 通常由定时任务或手动触发, 非每轮对话自动执行。
+    设计原则:
+      - 合并后不删除原始记忆 (只标记隐藏), 可追溯
+      - linkage 类型是结构化数据, 跳过 (LLM 整理会破坏结构)
+      - 单条或少条时跳过 (不值得调 LLM)
+
     Args:
         store: AgentMemoryStore 实例
         memory_dir: 记忆目录
@@ -272,7 +325,14 @@ async def consolidate_memories(
 
     all_memories = store.list_memories()
     # 过滤: 已整理的不参与, ids 非空时只取指定的 (空列表/None 都表示整理全部)
-    # linkage 类型是结构化数据 (co_occurrence/tables), LLM 整理会破坏结构, 跳过
+    #
+    # 过滤规则说明:
+    #   1. consolidated=true: 已被合并过的碎片记忆, 跳过 (避免重复整理)
+    #   2. type=linkage: 结构化数据 (co_occurrence/tables), LLM 整理会破坏结构, 跳过
+    #   3. ids 过滤: 支持选择性整理, 如只整理最近新增的几条
+    #
+    # 边界情况: ids 传入空列表 [] 时, 条件 `if ids and m["id"] not in ids` 为 False,
+    # 所有条目都通过, 与 None 行为一致。
     memories = []
     for m in all_memories:
         if m.get("consolidated"):
@@ -292,6 +352,7 @@ async def consolidate_memories(
     all_content = []
     for m in memories:
         full = store.read_memory(m["id"]) or ""
+        # 去掉 frontmatter, 只保留 body 正文给 LLM 整理
         body = re.sub(r"^---\n.*?\n---\n?", "", full, flags=re.DOTALL).strip()
         if body:
             all_content.append(f"[{m['name']}] ({m.get('type', 'project')}) {m.get('description', '')}\n{body}")
@@ -329,6 +390,7 @@ async def consolidate_memories(
             _progress(100, "完成")
             return {"consolidated": 0, "total": len(memories), "detail": "LLM 未返回有效结果"}
         # 兼容: LLM 可能返回 dict 而非 list
+        # 某些模型在返回单条整理结果时倾向用 dict 包裹, 而非数组
         if isinstance(parsed, dict):
             parsed = parsed.get("memories", [parsed])
         if not isinstance(parsed, list):
@@ -336,6 +398,10 @@ async def consolidate_memories(
             return {"consolidated": 0, "total": len(memories), "detail": "LLM 返回格式异常"}
 
         # 写入整理后的记忆 (每条生成新 UUID, 类型统一为 consolidated)
+        #
+        # 设计决策: 写入新记忆而非修改原记忆, 保持可追溯性。
+        # 原始记忆被标记为 consolidated=true, 在 recall 时默认跳过。
+        # 如果整理结果不满意, 可以手动取消标记恢复原始记忆。
         saved = 0
         for item in parsed:
             name = item.get("name", "").strip()
@@ -375,6 +441,16 @@ def save_query_memory(question: str, tables: list[str], memory_dir: str = "memor
     NOTE: 此函数目前无生产调用方 (chat.py/chat_stream.py 已移除调用)。
     与 fewshot 回流功能重叠 (fewshot 更有价值: 含 SQL, 语义检索)。
     保留作为备用, 若后续需要关键词记忆召回可重新接入。
+
+    数据流:
+      1. 输入: 用户问题 + 涉及的表名
+      2. 写入: memory/{tenant_id}/recent_queries.md 追加新行
+      3. 容量控制: 超过 200 行时截断, 保留前 2 行 frontmatter + 后 100 行
+
+    边界情况:
+      - question 为空时直接返回 (不写入空记录)
+      - 目录不存在时自动创建 (mkdir parents)
+      - 文件不存在时创建带 frontmatter 的新文件
     """
     if not question:
         return

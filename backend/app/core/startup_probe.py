@@ -15,6 +15,16 @@ ChatBI v2 — Startup Probe (fail-fast)
 为什么 probe 不直接抛异常:
   - 要同时支持"必需(抛)"和"可选(降级)"两种语义, 抛异常会让降级路径复杂化
   - probe 只负责"能不能连", 策略 (必需/可选) 由调用方决定 → 关注点分离
+
+数据流:
+  main.py lifespan startup → run_startup_probes()
+    ├─ check_required_services() → 任一失败 → RuntimeError (应用退出)
+    └─ check_optional_services() → 失败 → WARNING 日志 (降级运行)
+
+关键设计:
+  - 所有 probe 都有 timeout, 防止 hang 住启动流程
+  - 连接串脱敏: 日志中不打印密码, 仅打印 scheme://user:***@host
+  - Milvus probe 用 asyncio.to_thread 避免阻塞 event loop (pymilvus 是同步 API)
 """
 from __future__ import annotations
 

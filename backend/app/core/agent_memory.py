@@ -7,6 +7,30 @@ MEMORY.md maintains the index (links + one-line descriptions).
 
 对标: Claude Code memdir — MEMORY.md 索引 + topic memories/*.md
       Relevant Recall: scan memory files → format manifest → select top 5
+
+架构角色:
+  - 持久化 Agent 记忆: 表关联经验 (E1 linkage)、用户偏好、项目约定等
+  - 文件系统作为存储后端, 无需数据库依赖
+  - MEMORY.md 索引提供快速摘要查询
+
+目录结构:
+  memory/
+  ├── MEMORY.md              ← 索引 (链接 + 一行描述)
+  ├── {uuid}.md              ← 单个记忆文件 (frontmatter + body)
+  ├── _template/             ← 种子记忆模板 (首次初始化时复制)
+
+记忆类型:
+  - user: 用户偏好 (如"总是用别名 order_date 而非 date_created")
+  - feedback: 用户反馈 (如"上次 SQL 结果不对, 因为 join 条件错了")
+  - project: 项目约定 (如"订单金额字段为 decimal(18,2)")
+  - reference: 参考信息 (如"客户表按 region 分区")
+  - linkage: 表关联经验 (E1, 自动生成, 含 co_occurrence/tables/join_paths)
+
+关键设计:
+  - 不可变 ID: 记忆文件名为 UUID, 创建后不变
+  - 可编辑 name: frontmatter 中的 name 字段可编辑, 用于显示
+  - 幽灵索引清理: reconcile_index() 清理索引指向但文件不存在的条目
+  - 种子记忆: 首次初始化时从 _template/ 复制默认记忆
 """
 from __future__ import annotations
 
@@ -46,12 +70,18 @@ class AgentMemoryStore:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.base_dir / "MEMORY.md"
         # 种子数据: 目录为空时从 _template/ 复制默认记忆
+        # 这些种子记忆包含电商场景的常见业务约定, 用户可自由编辑或删除
         self._ensure_seed_memories()
         # 启动时自动清理幽灵索引 (仅首次 list_memories 触发一次)
+        # 延迟清理: 不在 __init__ 中执行, 避免启动时不必要的 I/O
         self._index_reconciled = False
 
     def _init_index(self) -> None:
-        """Create MEMORY.md index if it doesn't exist."""
+        """Create MEMORY.md index if it doesn't exist.
+
+        索引文件格式: 简单的 Markdown 列表, 每行一个链接。
+        如果索引已存在, 不覆盖 (保留用户手动编辑的内容)。
+        """
         if not self.index_path.exists():
             self.index_path.write_text(
                 "# Agent Memory Index\n\n"
@@ -68,6 +98,11 @@ class AgentMemoryStore:
         _template 在 memory/ 根目录下: memory/_template/。
         当前目录可能是 memory/{tenant_id}/{data_source_id}/,
         需要向上两级找到 memory/。
+
+        为什么向上寻找:
+          - AgentMemoryStore 的 base_dir 可能是 memory/{tenant_id}/{data_source_id}/
+          - _template 固定放在 memory/_template/ (project root)
+          - 向上两级: memory/{tenant_id}/{data_source_id}/ → memory/
         """
         import shutil
         # 已有记忆 → 不覆盖 (排除 MEMORY.md 索引文件)
@@ -92,10 +127,15 @@ class AgentMemoryStore:
             self._rebuild_index_from_files()
             logger.info("种子 Memory 已初始化到 %s", self.base_dir)
         except Exception as e:
+            # 种子初始化失败不阻塞应用 (影响: 新租户无默认记忆)
             logger.warning("种子 Memory 初始化失败 (不阻塞): %s", e)
 
     def _rebuild_index_from_files(self) -> None:
-        """根据目录中的 .md 文件重建 MEMORY.md 索引。"""
+        """根据目录中的 .md 文件重建 MEMORY.md 索引。
+
+        扫描所有 .md 文件, 解析 frontmatter 中的 description,
+        重建索引链接。用于种子初始化后或索引损坏后的修复。
+        """
         self._init_index()
         for md_file in sorted(self.base_dir.glob("*.md")):
             if md_file.name == "MEMORY.md":
@@ -108,7 +148,11 @@ class AgentMemoryStore:
             self._update_index_link(md_file.name, description)
 
     def read_index(self) -> str:
-        """Read the MEMORY.md index content."""
+        """Read the MEMORY.md index content.
+
+        截断保护: 最大 200 行或 25KB (对标 Claude Code 的截断策略)。
+        超过限制时截断, 避免 LLM 上下文过大。
+        """
         self._init_index()
         content = self.index_path.read_text(encoding="utf-8")
         # Truncate protection: 200 lines or 25KB max (对标 Claude Code)
@@ -142,6 +186,25 @@ class AgentMemoryStore:
 
         Returns:
             Path to the created memory file.
+
+        创建 vs 更新:
+          - 创建: mem_id=None → 生成新 UUID, 新文件
+          - 更新: mem_id=已有 UUID → 更新文件内容, 保留原 created_at
+
+        frontmatter 格式:
+          ---
+          id: {uuid}
+          name: {name}
+          description: {description}
+          created_at: {iso datetime}
+          metadata:
+            type: {memory_type}
+            consolidated: false
+            {extra_metadata fields}
+          ---
+          {content}
+
+        注意: extra_metadata 的 key 必须是合法 YAML 标识符, 防止 frontmatter 注入。
         """
         from datetime import datetime, timezone
 
@@ -168,6 +231,7 @@ class AgentMemoryStore:
         file_path = self.base_dir / file_name
 
         # metadata 段: 基础 (type/consolidated) + 额外 (co_occurrence/tables 等)
+        # YAML 手动构建 (非 yaml.dump 整个 dict), 保持 frontmatter 格式可控
         meta_lines = ["metadata:", f"  type: {memory_type}", "  consolidated: false"]
         if extra_metadata:
             import yaml as _yaml  # lazy: 仅写记忆时才 import
@@ -213,6 +277,13 @@ class AgentMemoryStore:
             memory_name: The memory's name field (e.g. "linkage-biz_orders-uc_users").
                          Used for dedup: if a linkage memory with the same name but
                          different UUID already exists, the old entry is removed first.
+
+        索引条目格式: - [uuid](uuid.md) — description
+
+        操作:
+          - 同 UUID 条目存在 → 更新描述
+          - 同 UUID 条目不存在 → 追加新行
+          - linkage 类型: 同名不同 UUID → 去重 (保留最新)
         """
         index_content = self.index_path.read_text(encoding="utf-8")
         link_line = f"- [{file_name.replace('.md', '')}]({file_name}) — {description}"
@@ -249,6 +320,11 @@ class AgentMemoryStore:
 
         Args:
             mem_id: UUID of the memory (also the filename stem)
+
+        Returns:
+            True if deleted, False if file not found.
+
+        注意: 删除后不可恢复。索引条目也会同步删除。
         """
         # mem_id 可能是完整 UUID 或 filename, 取 stem
         stem = mem_id.replace(".md", "")
@@ -275,6 +351,11 @@ class AgentMemoryStore:
 
         Returns:
             清理的条目数
+
+        幽灵索引: 索引文件中有条目, 但对应的 .md 文件已被删除。
+        linkage 去重: 同一表对只保留最新的一条 linkage 记忆。
+
+        在 list_memories 首次调用时自动执行一次。
         """
         self._init_index()
         index_content = self.index_path.read_text(encoding="utf-8")
@@ -339,6 +420,16 @@ class AgentMemoryStore:
 
         对标 Claude Code: scanMemoryFiles() — scan file headers only,
         return id/name/description/type for the lightweight model to select.
+
+        性能:
+          - 只解析 frontmatter (文件前几行), 不读取完整文件
+          - 使用 yaml.safe_load 解析 frontmatter, 安全且快速
+          - 对于无 frontmatter 的旧格式文件, 兼容处理 (id 回退到 filename)
+
+        返回的字段:
+          - id, name, file, description, type, consolidated, path
+          - created_at (if present), conversation_id (if present)
+          - E1 linkage: co_occurrence, tables, join_paths, scenes, aggregation (if present)
         """
         # 首次调用时自动清理幽灵索引
         if not self._index_reconciled:
@@ -348,6 +439,7 @@ class AgentMemoryStore:
                 if removed:
                     logger.info("启动索引清理: 移除 %d 条幽灵/重复条目", removed)
             except Exception as e:
+                # 索引清理失败不阻塞应用 (影响: 索引可能包含幽灵条目)
                 logger.warning("启动索引清理失败 (不阻塞): %s", e)
 
         import yaml as _yaml  # lazy: 仅扫描时才 import
@@ -366,6 +458,7 @@ class AgentMemoryStore:
                 try:
                     fm = _yaml.safe_load(head) or {}
                 except Exception:
+                    # YAML 解析失败不影响其他文件
                     fm = {}
             else:
                 fm = {}
@@ -411,6 +504,9 @@ class AgentMemoryStore:
 
         Returns:
             匹配的记忆 entry (含 id/co_occurrence/tables 等), 无匹配返回 None。
+
+        性能: O(n) 遍历所有记忆, n 为记忆总数。
+        如果 linkage 记忆数量很大 (100+), 考虑建立 tables 映射索引。
         """
         pair = sorted([table_a, table_b])
         for m in self.list_memories():
@@ -425,6 +521,14 @@ class AgentMemoryStore:
         """标记记忆为已整理 (在 frontmatter 设 consolidated: true)。
 
         整理后原始记忆不删除, 但默认隐藏, 用户可通过开关查看。
+
+        实现策略:
+          1. 如果已有 consolidated: true → 跳过
+          2. 替换 consolidated: false → true
+          3. 如果无 consolidated 字段 → 在 metadata 段中插入
+          4. 如果无 metadata 段 → 在 frontmatter 末尾创建
+
+        防御: 替换后校验是否包含 consolidated: true, 否则返回 False。
         """
         stem = mem_id.replace(".md", "")
         file_path = self.base_dir / f"{stem}.md"
@@ -480,7 +584,10 @@ class AgentMemoryStore:
             return False
 
     def read_memory(self, mem_id: str) -> Optional[str]:
-        """Read the full content of a specific memory file."""
+        """Read the full content of a specific memory file.
+
+        返回完整文件内容 (含 frontmatter), 或 None (文件不存在)。
+        """
         stem = mem_id.replace(".md", "")
         file_path = self.base_dir / f"{stem}.md"
         if not file_path.exists():
@@ -494,7 +601,11 @@ _agent_memory_store: AgentMemoryStore | None = None
 
 
 def get_agent_memory_store(base_dir: str | None = None) -> AgentMemoryStore:
-    """Get or create the global agent memory store."""
+    """Get or create the global agent memory store.
+
+    单例模式: 首次调用时创建, 后续复用。
+    base_dir 仅在首次创建时生效, 后续调用忽略。
+    """
     global _agent_memory_store
     if _agent_memory_store is None:
         _agent_memory_store = AgentMemoryStore(base_dir=base_dir or "memory")

@@ -22,7 +22,7 @@ cat openspec/changes/chatbi-v2/tasks.md
 
 ## 当前状态
 
-- **全部 10 Phase 已完成**：68 任务 (T001-T068)，552 测试通过
+- **全部 10 Phase 已完成**：68 任务 (T001-T068)，709 测试通过
 - **Phase 10（技术债清理）已收尾**，详见 `.planning/STATE.md`（唯一状态真相源）
 - **新增能力**（2026-07）：🕸️知识图谱中间件（SchemaGraph 可视化 + JOIN 路径驱动）+ 💾对话全量落库（问了就留 + 主动确认内容留存）+ 🔗记忆与图谱集成（E1 进行中，linkage 记忆沉淀）
 - **演进规划**：`doc/chatbi-v2/EVOLUTION-ROADMAP.md`（13 个方向），当前推进 E1 graph-feedback-loop
@@ -92,11 +92,14 @@ chat-bi/
 │   ├── ai/                  # Agent 核心管线 (agent/intent/thinking/sql_agent/state_store/...)
 │   ├── schemas/             # Pydantic 模型 (semantic_layer/...)
 │   ├── services/            # 业务服务 (retriever/embedder/graph_service/indexer/...)
-│   └── tests/               # 552 passed
+│   └── tests/               # 709 passed
 ├── frontend/src/            # Vue3 + TS (9 个功能页面 + api 封装层)
 ├── openspec/changes/chatbi-v2/   # ★ OpenSpec 规格（任务真相源）
 ├── .planning/                    # ★ GSD 状态（STATE/ROADMAP/PROJECT + phases/）
 ├── doc/
+│   ├── architecture-v2.md        # ★ 完整架构图（11 章, 含代码引用索引）
+│   ├── code-reference-index.md   # ★ 460+ 关键定义 file:line 索引
+│   ├── learning-roadmap.md       # ★ 7 阶段学习路线图
 │   ├── chatbi-v2/               # v2 方案文档（proposal/design/specs）
 │   ├── Claude-Code-源码深度解读.md   # 设计法则来源
 │   ├── 海泰ChatBI完整代码分析.md     # BI 领域打法来源
@@ -122,7 +125,7 @@ chat-bi/
 
 ## 开发规范（硬约束）
 
-- **测试**：`.venv/bin/python -m pytest backend/tests/ -q`，552 passed 为底线，**变更后必跑**
+- **测试**：`.venv/bin/python -m pytest backend/tests/ -q`，709 passed 为底线，**变更后必跑**
 - **Python 3.12+**：用 `X | None`，不用 `Optional[X]`
 - **配置集中**：所有魔法数字/超时/阈值在 `app/core/config.py`，环境变量控制（v1 #1）
 - **API 前缀**：`settings.api_prefix`（默认 `/chat-bi/api/v1`）

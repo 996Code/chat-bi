@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/saved-queries", tags=["saved-queries"])
 
 # CSV 导出最大行数 (防超大结果 OOM, 对标 sql_max_rows 上限)
+# 设计决策: 有限制而非无限制, 因为 CSV 导出可能触发大量数据查询
+# 如果用户需要更多数据, 建议使用数据库导出工具或分批导出
 _CSV_EXPORT_MAX_ROWS = 50000
 
 
@@ -47,7 +49,12 @@ async def list_saved_queries(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """已保存查询列表 (T051, 分页, 按 created_at 倒序)。"""
+    """已保存查询列表 (T051, 分页, 按 created_at 倒序)。
+
+    分页参数: limit 最大 200, offset 从 0 开始。
+    前端使用 limit/offset 实现"加载更多"或分页器。
+    user 级别权限: 租户内所有用户共享查询历史。
+    """
     stmt = (
         select(SavedQuery)
         .where(SavedQuery.tenant_filter(user.tenant_id))
@@ -74,7 +81,12 @@ async def get_saved_query(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """已保存查询详情 (含 chart_config)。"""
+    """已保存查询详情 (含 chart_config)。
+
+    chart_config 包含图表类型和配置, 前端直接用于渲染。
+    注意: 本端点不返回实际查询结果 (columns/rows),
+    调用者需要重新执行 SQL 或使用之前缓存的结果。
+    """
     q = (
         await db.execute(
             select(SavedQuery).where(
@@ -121,11 +133,15 @@ async def export_saved_query_csv(
         raise HTTPException(status_code=404, detail="查询记录不存在")
 
     # 优先使用记录中的 data_source_id, 无则用查询参数
+    # 兼容旧数据: 旧版本 SavedQuery 可能没有 data_source_id 字段,
+    # 前端传参作为后备, 保证旧数据可导出
     effective_ds_id = q.data_source_id or data_source_id
     if not effective_ds_id:
         raise HTTPException(status_code=400, detail="缺少 data_source_id, 无法执行查询")
 
     # 校验数据源归属 + 启用状态 (DSO-08: 禁用数据源拒绝导出)
+    # 注意: 即使 sql_text 是用户自己保存的, 也需重新校验数据源权限
+    # 因为数据源可能在保存后被禁用, 或者用户权限被收回
     ds = (
         await db.execute(
             select(DataSource).where(
@@ -184,6 +200,7 @@ async def export_saved_query_csv(
     output = io.StringIO()
     writer = csv.writer(output)
     # 截断提示放表头前 (非数据行, 用户可见)
+    # 放在 CSV 首行, 以 # 开头, 符合 CSV 注释约定 (部分解析器会跳过)
     if truncated:
         writer.writerow([f"# 提示: 超过 {_CSV_EXPORT_MAX_ROWS} 行, 仅导出前 {_CSV_EXPORT_MAX_ROWS} 行"])
     writer.writerow(result.columns)
@@ -196,6 +213,7 @@ async def export_saved_query_csv(
 
     return Response(
         # utf-8-sig 带 BOM (Excel 中文不乱码) — encode 时用 utf-8-sig 自动加 BOM
+        # 不带 BOM 时, Excel 打开 UTF-8 CSV 中文会乱码, 这是 Windows 生态的已知问题
         content=content.encode("utf-8-sig"),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},

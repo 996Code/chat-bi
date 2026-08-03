@@ -86,6 +86,8 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    # token_type 固定为 "bearer" — 符合 OAuth2 规范, 前端按 bearer 方式携带
+    # 前端请求头: Authorization: Bearer <access_token>
 
 
 # ── 注册 ──────────────────────────────────────────────────────
@@ -104,6 +106,9 @@ async def register(
     """
     email = _validate_email(body.email)
     # 检查 email 唯一
+    # 注意: 这里存在竞态条件 (TOCTOU) — 两个并发请求同时注册同一邮箱, 可能都通过检查。
+    # 但由于数据库层 email 字段有 UNIQUE 约束, 最终 commit 时第二个会抛 IntegrityError,
+    # 由 FastAPI 的数据库异常处理器处理, 返回 409。这里不做手动加锁, 保持简单。
     existing = (
         await db.execute(select(User).where(User.email == email))
     ).scalar_one_or_none()
@@ -128,12 +133,16 @@ async def register(
     db.add(user)
     await db.flush()
 
+    # 审计: 注册成功 — 记录 tenant_id 和 user_id, 用于后续账号追溯
     await write_audit_log(
         db, tenant_id=tenant.id, user_id=user.id,
         resource_type="auth", action="register", status="success",
     )
     await db.commit()
 
+    # JWT token 数据: 包含完整鉴权四字段 (user_id, email, tenant_id, role)
+    # 对标经验教训 #3: 任何字段缺失将导致后续鉴权失败
+    # 注意: 这里不包含非必要的字段 (如 username), 保持 token 精简
     token_data = {
         "user_id": user.id, "email": user.email,
         "tenant_id": tenant.id, "role": user.role,
@@ -207,10 +216,12 @@ async def login(
     ).scalar_one_or_none()
 
     # 3. 用户不存在 or 密码错 → 统一返回 "邮箱或密码错误" (不泄露用户是否存在)
+    # 安全设计: 返回相同错误信息, 防止枚举攻击 (攻击者无法区分"邮箱不存在"和"密码错误")
     if user is None or not verify_password(body.password, user.hashed_password):
         _record_login_failure(email)
         # 审计登录失败: 用户存在时记录 (有合法 tenant_id);
         # 用户不存在时不写审计 (无合法 tenant_id, audit_logs.tenant_id 是 NOT NULL + FK)
+        # 这是有意为之: 不存在的用户不留下审计痕迹, 防止攻击者通过审计日志反推用户是否存在
         if user is not None:
             await write_audit_log(
                 db, tenant_id=user.tenant_id, user_id=user.id,
@@ -243,12 +254,16 @@ async def login(
 
     # 6. 成功
     _clear_login_lock(email)
+    # 审计登录成功 — 审计三态完整: 登录成功/失败/拒绝, 对标经验教训 #41
     await write_audit_log(
         db, tenant_id=user.tenant_id, user_id=user.id,
         resource_type="auth", action="login", status="success",
     )
     await db.commit()
 
+    # JWT token 数据: 刷新时原生支持自动续期, 无需额外逻辑
+    # access_token 短期 (默认 30 分钟), refresh_token 长期 (默认 7 天)
+    # 前端应在 access_token 过期前调用 /auth/refresh 获取新 token
     token_data = {
         "user_id": user.id, "email": user.email,
         "tenant_id": user.tenant_id, "role": user.role,
@@ -271,10 +286,15 @@ async def refresh_token(
 
     refresh token 必须含完整鉴权字段, 刷新后新 token 同样完整。
     同时校验用户仍存在且活跃, 避免已禁用用户持续刷新 (fail-closed)。
+
+    注意: 这是一个无状态操作 — 不查询 DB 做 session 校验, 仅依赖 JWT 签名。
+    如果需要在服务端撤销 refresh token, 需引入黑名单机制 (Redis 或 DB)。
     """
     try:
         payload = decode_token(body.refresh_token)
     except Exception:
+        # 统一返回 401, 不区分 "token 过期" 和 "token 无效"
+        # 防止攻击者通过错误信息推断 token 结构
         raise HTTPException(status_code=401, detail="refresh token 无效或已过期")
 
     if payload.get("type") != "refresh":

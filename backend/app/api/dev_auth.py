@@ -59,12 +59,15 @@ async def get_dev_token(
     防止任意 tenant_id 伪造 (即使开发模式也不能绕过租户隔离)。
     """
     settings = get_settings()
+    # 生产环境 (DEBUG=False) 返回 404, 不暴露这个端点存在
+    # 404 而非 403/401 是为了让攻击者无法区分"端点不存在"和"无权限"
     if not settings.debug:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     # DB 查询包裹 try/except — 防止连接失败泄露 DB 连接细节 (host/port/error stack)
+    # 安全设计: 对外统一返回 503, 不暴露具体数据库错误信息
     try:
-        # 验证 tenant 存在
+        # 验证 tenant 存在 — 防止伪造不存在的 tenant_id
         tenant = (
             await db.execute(select(Tenant).where(Tenant.id == body.tenant_id))
         ).scalar_one_or_none()
@@ -74,7 +77,8 @@ async def get_dev_token(
                 detail=f"租户 '{body.tenant_id}' 不存在, 请使用真实 tenant_id",
             )
 
-        # 验证 user 存在且属于该 tenant
+        # 验证 user 存在且属于该 tenant — 双重校验: 用户存在 + 租户归属正确
+        # 防止跨租户伪造: 即使知道一个 user_id, 如果 tenant_id 不匹配也拒绝
         user = (
             await db.execute(
                 select(User).where(User.id == body.user_id, User.tenant_id == body.tenant_id)
@@ -95,6 +99,7 @@ async def get_dev_token(
         )
 
     # 使用数据库中的真实值 (不信任请求体中的 email/role, 防止提权)
+    # 安全设计: 即使请求体传来 role=admin, 如果数据库中是 role=user, 也以数据库为准
     token_data = {
         "user_id": user.id,
         "email": user.email,

@@ -36,6 +36,7 @@ class DashboardCreate(BaseModel):
     def _name_not_empty(cls, v: str) -> str:
         v = v.strip()
         if not v:
+            # 空名称会破坏前端渲染 (看板页标题为空), 所以在这里拦截
             raise ValueError("看板名称不能为空")
         return v
 
@@ -64,6 +65,8 @@ class WidgetOut(BaseModel):
     datasource_id: str
     chart_type: str = "table"
     chart_option: dict | None = None  # 缓存的图表配置 (对标 F1: list/get 也需返回)
+    # chart_option 是缓存: 包含 chart_type, dim_col, measure_cols 等
+    # 保存时由 LLM 生成, refresh 时注入实时数据, 避免每次调 LLM
     columns: list = []
     rows: list = []
     row_count: int | None = None
@@ -95,6 +98,8 @@ class WidgetCreate(BaseModel):
 
     # datasource_id: UUID 格式, 来自前端下拉; 空值会在 DB 查询时返回 404
     # query_sql: 空 SQL 在 validate_sql() 校验时会被拦截; 无需重复校验
+    # 设计决策: 不在 DTO 层校验 SQL 合法性, 因为 SQL 校验需要语义层上下文 (白名单列),
+    # 在保存/刷新时由 sql_validator 统一校验更合理
 
 
 class WidgetLayoutItem(BaseModel):
@@ -187,7 +192,11 @@ async def list_dashboards(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """列出当前租户的看板。"""
+    """列出当前租户的看板。
+
+    按 updated_at 倒序: 最近编辑的看板排在最前, 符合用户预期。
+    user 级别权限: 租户内所有用户共享看板 (不按 user_id 隔离)。
+    """
     rows = (
         await db.execute(
             select(Dashboard)
@@ -258,7 +267,11 @@ async def delete_dashboard(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除看板 (级联删 widget)。"""
+    """删除看板 (级联删 widget)。
+
+    级联删除: 手动执行 DashboardWidget 的批量删除, 而非依赖数据库外键 CASCADE。
+    原因: 需要显式加 tenant_filter 防止跨租户误删 (对标 S4)。
+    """
     dash = (
         await db.execute(
             select(Dashboard).where(
@@ -288,7 +301,11 @@ async def get_dashboard(
     user: AuthUser = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取看板详情 (含所有 widget)。"""
+    """获取看板详情 (含所有 widget)。
+
+    返回 widgets 按 position_y, position_x 排序, 前端可直接用于 Grid 布局渲染。
+    widget 的 columns/rows 是空字符串 (不入库快照), 实时数据在 refresh 时获取。
+    """
     dash = (
         await db.execute(
             select(Dashboard).where(

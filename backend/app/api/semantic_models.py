@@ -33,6 +33,8 @@ class SemanticModelOut(BaseModel):
     version: int
     is_current: bool
     content: dict  # 对标 F3: 结构化为 SemanticModelContent 会导致 schema 变更; 保持 dict 兼容前端
+    # 设计决策: 使用 dict 而非 Model 序列化, 是因为 content 结构复杂且可能随版本变化,
+    # 强类型序列化会导致前端需要频繁适配 schema 变更。保持 dict 灵活, 前端直接消费。
 
 
 class VersionSummary(BaseModel):
@@ -49,7 +51,11 @@ async def get_current_semantic_model(
     user: AuthUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """查看指定数据源的当前语义层版本 (is_current=True)。"""
+    """查看指定数据源的当前语义层版本 (is_current=True)。
+
+    返回 None 表示该数据源尚未扫描 (无语义层), 前端应引导用户触发扫描。
+    注意: 这里不返回 404, 而是返回 null, 因为无语义层是预期状态 (新数据源未扫描)。
+    """
     stmt = select(SemanticModel).where(
         SemanticModel.tenant_filter(user.tenant_id),
         SemanticModel.data_source_id == data_source_id,
@@ -57,6 +63,7 @@ async def get_current_semantic_model(
     )
     sm = (await db.execute(stmt)).scalar_one_or_none()
     if sm is None:
+        # 返回 None 而非 404: 前端据此判断"尚未扫描"并触发扫描流程
         return None
     return SemanticModelOut(
         id=sm.id, tenant_id=sm.tenant_id, data_source_id=sm.data_source_id,
@@ -72,7 +79,12 @@ async def list_versions(
     user: AuthUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """列出该语义层的所有版本 (含历史)。"""
+    """列出该语义层的所有版本 (含历史)。
+
+    流程: 先校验请求的记录是否属于当前租户, 然后查出同一数据源的所有版本。
+    两步查询的设计: 第一步做租户隔离校验, 第二步获取完整版本列表。
+    不能直接按 data_source_id 查, 因为 user 可能传入任意 sm_id 尝试越权。
+    """
     # 先找到这条记录拿到 data_source_id + tenant 校验
     stmt = select(SemanticModel).where(
         SemanticModel.id == sm_id,
@@ -82,6 +94,7 @@ async def list_versions(
     if sm is None:
         raise HTTPException(status_code=404, detail="语义层不存在")
 
+    # 查出同一数据源的所有版本 (按版本号倒序, 最新在前)
     all_versions = (
         await db.execute(
             select(SemanticModel).where(
@@ -148,8 +161,10 @@ async def rollback_to_version(
         old.is_current = False
 
     # 新版本 = 目标 content 的副本
+    # 注意: 这里先做了局部 max, 再做全局 max 兜底
+    # 局部 max 可能因并发回滚不准确, 所以用全局 max 最终确定版本号
     new_version = max(v.version for v in old_currents) + 1 if old_currents else current.version + 1
-    # 更稳妥: 取全局 max
+    # 更稳妥: 取全局 max (防止并发回滚导致版本号冲突)
     max_v = (
         await db.execute(
             select(SemanticModel.version).where(
