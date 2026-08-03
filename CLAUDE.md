@@ -97,10 +97,8 @@ chat-bi/
 ├── openspec/changes/chatbi-v2/   # ★ OpenSpec 规格（任务真相源）
 ├── .planning/                    # ★ GSD 状态（STATE/ROADMAP/PROJECT + phases/）
 ├── doc/
-│   ├── architecture-v2.md        # ★ 完整架构图（11 章, 含代码引用索引）
-│   ├── code-reference-index.md   # ★ 460+ 关键定义 file:line 索引
-│   ├── learning-roadmap.md       # ★ 7 阶段学习路线图
-│   ├── chatbi-v2/               # v2 方案文档（proposal/design/specs）
+│   ├── ChatBI v2 系统架构与学习指南.md  # ★ 完整架构+学习路线图+代码索引（2515行）
+	│   ├── chatbi-v2/               # v2 方案文档（proposal/design/specs）
 │   ├── Claude-Code-源码深度解读.md   # 设计法则来源
 │   ├── 海泰ChatBI完整代码分析.md     # BI 领域打法来源
 │   ├── 经验教训.md                  # v1 48 条坑

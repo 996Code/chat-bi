@@ -43,9 +43,7 @@ cd frontend && npx vite --host 0.0.0.0 --port 5173
 
 ## 新增文档（必读）
 
-- `doc/architecture-v2.md` — 完整架构图（11 章，含代码引用索引）
-- `doc/code-reference-index.md` — 460+ 关键定义 file:line 索引
-- `doc/learning-roadmap.md` — 7 阶段学习路线图
+- `doc/ChatBI v2 系统架构与学习指南.md` — 完整架构图 + 学习路线图 + 代码索引（三合一）
 
 ## 开发工作流
 
