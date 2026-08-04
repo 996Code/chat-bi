@@ -143,6 +143,11 @@ graph TB
 > - **Fail-Closed**：安全默认是"否"，出问题拒绝而非放行。类比 SecurityManager 异常默认拒绝。
 > - **BGE-large-zh-v1.5**：北京智源研究院开源的中文嵌入模型，输入文本输出 1024 维向量。本地部署不调 API。
 > - **yield**：Python 生成器关键字，逐个产生值。后端每完成一步就 `yield` 一个 SSE 事件。类比 Java `Iterator`/`Stream`。
+> - **Dijkstra**：图中最短路径算法，和 Java JGraphT 的 Dijkstra 一样。项目用 `weight = 1 - confidence`，confidence 越高路径越短（越优先走）。
+> - **CTE**：Common Table Expression，SQL 的 `WITH...AS(...)` 语法。攻击者可藏写操作绕过校验：`WITH upd AS (UPDATE...RETURNING *) SELECT * FROM upd`。
+> - **AST**：抽象语法树，和 Java AST 一样。把 SQL 文本解析成树结构遍历检查，比字符串匹配安全得多。
+> - **熔断器**：和 Resilience4j/Hystrix 一样。三态：closed（正常）→ open（连续失败拒绝）→ half-open（冷却后试探）。
+> - **JSONL**：JSON Lines，每行一个 JSON 对象的文本格式，追加写入。类比日志文件每行一条记录。
 
 ```mermaid
 flowchart TD
@@ -606,6 +611,7 @@ graph LR
 - **data_source_id 标量过滤**：多租户/多源隔离，防跨源召回
 - **fewshot 独立 collection**：和 schema 索引分开，top-3 防 prompt token 爆炸
 - **fewshot ID = md5(data_source_id:question)**：防同问题跨数据源覆盖
+- **upsert 语义**：upsert = update + insert（存在则覆盖，不存在则插入），类比 MySQL 的 `INSERT ... ON DUPLICATE KEY UPDATE`。重复扫描不产生重复索引
 
 ---
 
@@ -1027,6 +1033,9 @@ async def fetch_data():                # 相当于 CompletableFuture<Data> fetch
     return result                      # 相当于 CompletableFuture.completedFuture(result)
 ```
 - 但 Python 的协程更轻量：不需要线程池，单线程内并发
+- **协程**：比线程更轻量的执行单元，单线程内多任务切换，不走 OS 调度。类比 Java 的虚拟线程（Virtual Threads，JDK 21+），但 Python 的协程是协作式（主动 `await` 让出），不是抢占式
+- **GIL**：Global Interpreter Lock，Python 全局解释器锁。同一进程内同一时刻只有一个线程执行 Python 字节码，所以多线程不能并行 CPU 计算。但 async I/O 不受影响（等 I/O 时释放 GIL）
+- **事件循环**：async 的调度器，单线程内轮询就绪的协程执行。类比 Java 的 `EventLoop`（Netty）
 - 类比：Java 的虚拟线程（Virtual Threads）+ CompletableFuture 的合体
 
 **2. `@dataclass`（数据类）**
@@ -1201,6 +1210,13 @@ uv run pytest backend/tests/test_intent.py -v
 > - **中心度**：图中节点的重要性，度中心度 = 连接数。类比 PageRank 但看连接数。枢纽表 = 连接最多的表。
 > - **asyncio.to_thread**：Python 把同步函数丢到线程池执行不阻塞事件循环。类比 Java 的 `CompletableFuture.supplyAsync()`。
 > - **乐观锁**：和 JPA `@Version` 一样。更新时校验 expected_version，冲突抛异常（Fail-Closed 不静默吞错）。
+> - **RAG**：Retrieval-Augmented Generation 检索增强生成。先用向量检索找相关数据，再把检索结果拼进 Prompt 让 LLM 生成。类比"先查数据库再调外部 API，把查询结果拼进请求"。
+> - **max_tokens**：LLM API 参数，限制单次响应的最大 token 数。超了会被截断（响应不完整），项目里 `llm_max_tokens=262144`。类比 HTTP 的 Content-Length 限制。
+> - **temperature**：LLM 采样温度参数，控制输出随机性。0.0 = 最确定性（每次相同输入得到相同输出），1.0 = 更有创意/随机。项目里意图识别/SQL 生成/精筛都用 0.0（要确定性，不能瞎猜）。
+> - **tiktoken**：OpenAI 官方的分词计数库，准确计算文本的 token 数。项目没用它（省依赖），用估算（中文每字 ~1.5 token）替代，±20% 误差不影响 70% 阈值决策。
+> - **MDL**：Modeling Definition Language，一种语义建模语言（如 WrenAI 的）。项目借鉴了 MDL 风格用 JSON Schema 描述表/列/关系/指标，实现结构化的 Schema Linking。
+> - **lifespan**：FastAPI 的异步上下文管理器，替代旧版 `@app.on_event("startup")`。类比 Spring 的 `@PostConstruct`（启动时执行）/`@PreDestroy`（关闭时执行）。
+> - **YAML frontmatter**：Markdown 文件顶部 `---` 之间的元数据块（YAML 格式）。类比 HTML 的 `<head>`——正文前的元信息。项目用于 Agent 记忆文件（.md）存标签/分类等元数据。
 
 #### 13.1 Agent 状态机详解（`agent.py`）
 
@@ -1379,6 +1395,11 @@ flowchart TD
 | 图谱 | `graph_max_join_path_hops` / `graph_community_algorithm` | 4 / label_propagation |
 | LLM | `llm_max_tokens` / `llm_timeout` / `llm_max_retries` | 262144 / 600s / 3 |
 | 安全 | `bcrypt_rounds` / `max_login_attempts` / `login_lock_minutes` | 12 / 5 / 30 |
+
+> **术语速解（Java 视角）**：
+> - **label_propagation**：标签传播算法，社区发现算法的一种。类比把关系紧密的节点聚成一组（按业务域分组：订单域、用户域、商品域）。复杂度 O(m) 近线性，速度快。
+> - **@field_validator**：Pydantic 的校验装饰器，类比 Java Bean Validation 的 `@Min`/`@Max`/`@Range`。校验失败抛 ValidationError → 应用拒绝启动（fail-closed）。
+> - **fail-closed**：校验失败拒绝启动，而非降级默认值。类比 Spring Boot 启动时配置校验失败直接退出。
 
 **CHANGE_ME 校验**：critical（DATABASE_URL/SECRET_KEY/FERNET_KEY/LLM_URL/LLM_MODEL/LLM_API_KEY 缺失拒绝启动）+ warning（REDIS_URL/MILVUS_URL 缺失降级）。
 
