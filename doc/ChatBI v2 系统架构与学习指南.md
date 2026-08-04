@@ -13,6 +13,10 @@
 
 ChatBI v2 是一个 NL2SQL BI 平台——用户用自然语言提问，系统自动生成 SQL、查询业务数据库、返回数据 + 图表。基于 v1（海泰 ChatBI）48 条经验教训从零重构。
 
+> **术语速解（Java 视角）**：
+> - **NL2SQL**：Natural Language to SQL，自然语言转 SQL。用户说"各品类本月销售额"，系统生成 `SELECT category, SUM(amount) FROM orders WHERE month = ... GROUP BY category`。类比把用户输入直接变成数据库查询。
+> - **BI（Business Intelligence）**：商业智能，把数据库里的数据变成图表/报表辅助决策。类比传统 BI 工具（Tableau/Power BI），但用自然语言驱动。
+
 ```mermaid
 graph TB
     subgraph Frontend["前端 Vue3 + TS"]
@@ -110,11 +114,35 @@ graph TB
 | 基础设施层 | `backend/app/core/` | 配置/认证/加密/LLM/校验/限流/调度 | 单例模式，惰性加载 |
 | 数据持久化 | `backend/app/db/` | PostgreSQL + Milvus + Redis + 文件系统 | SQLAlchemy async |
 
+> **术语速解（Java 视角）**：
+> - **Agent 引擎**：不是 Spring Agent / JMX Agent。是一个"LLM 驱动的工作流引擎"——类比 Spring State Machine，但每个状态的执行逻辑是调 LLM API 而非 Java 方法。能自我修正（SQL 错了重试）、能问用户（不确定时暂停）。
+> - **LLM（大语言模型）**：不是 API 接口，是"猜下一个词"的神经网络。项目里调 `llm_chat(messages)` 函数，传入 Prompt 文本，返回文本。类比一个超级 `String → String` 函数。
+> - **SSE**：Server-Sent Events，HTTP 长连接服务器推送。类似 WebSocket 但单向（服务器→客户端）。Java 里是 `SseEmitter`。
+> - **Milvus**：开源向量数据库，类比 Elasticsearch 但存向量而非文本，用 HNSW 索引做相似度搜索。
+> - **contextvars**：Python 3.7+ 标准库，类似 Java ThreadLocal 但 async 安全。类比阿里的 TransmittableThreadLocal。
+> - **TenantMixin**：Python Mixin 类，类似 Java `@MappedSuperclass`，继承它自动有 `tenant_id` 字段。
+> - **Fernet**：Python 对称加密方案，类似 Java 的 `AES/CBC/PKCS5Padding`。数据源密码需要解密后连库所以用对称加密。
+> - **Protocol**：Python 鸭子类型接口，类似 Java interface 但不需要显式 `implements`——有同名方法就算实现。
+> - **SQLAlchemy async**：Python 的 ORM，类比 JPA/Hibernate。Model ≈ `@Entity`，Session ≈ `EntityManager`，异步 API 更接近 R2DBC。
+> - **Pydantic**：数据校验库，类比 Jackson + Hibernate Validator。类型注解同时做校验和序列化。
+> - **依赖注入（AgentDeps）**：和 Spring `@Autowired` 一样，把服务注入到 Agent。Python 用 dataclass 装函数引用，不是注解。
+> - **Pinia**：Vue 的状态管理库（类比 Redux），本项目没用——用组合式 API（`ref`/`reactive`）就够。
+
 ---
 
 ### 第二章 核心数据流——一次问答的完整旅程
 
 以「各品类本月销售额，用柱状图展示」为例，展示从用户输入到最终响应的完整流程：
+
+> **术语速解（Java 视角）**：
+> - **Prompt（提示词）**：给 LLM 的输入文本。类比 SQL 是给数据库的输入，Prompt 是给 LLM 的输入。每次问答拼好几 KB 的 Prompt（含系统规则+语义层+历史+问题），LLM 返回 SQL。
+> - **token**：LLM 的计量单位，不是字符也不是单词。中文每字约 1.5 token，英文每 4 字符约 1 token。LLM 有 token 上限（如 262144），超了必须压缩。
+> - **Few-shot**：在 Prompt 里给 LLM 几个"问题→SQL"示例让它照着写。类比给方法传参考用例。
+> - **Schema Linking**：把自然语言问题映射到数据库表/列。用户说"销售额"要找到 `orders.amount`。行业 29%-49% 的 NL2SQL 错误来自这步。
+> - **宁缺毋滥**：检索失败返回空结果 + 提示用户换问法，而非瞎猜。类比返回 `Optional.empty()` 而非 `null`。
+> - **Fail-Closed**：安全默认是"否"，出问题拒绝而非放行。类比 SecurityManager 异常默认拒绝。
+> - **BGE-large-zh-v1.5**：北京智源研究院开源的中文嵌入模型，输入文本输出 1024 维向量。本地部署不调 API。
+> - **yield**：Python 生成器关键字，逐个产生值。后端每完成一步就 `yield` 一个 SSE 事件。类比 Java `Iterator`/`Stream`。
 
 ```mermaid
 flowchart TD
@@ -390,6 +418,10 @@ flowchart LR
 
 ### 第五章 数据库模型关系（ER 图）
 
+> **术语速解（Java 视角）**：
+> - **ORM**：Object Relational Mapping，和 JPA/Hibernate 一样。Model 类 ≈ `@Entity`，Session ≈ `EntityManager`。项目用 SQLAlchemy async（异步版本更接近 R2DBC）。
+> - **ORM 模型**：就是 Java 的 `@Entity` 类，一个 Python 类对应一张数据库表，类属性对应列。
+
 ```mermaid
 erDiagram
     Tenant ||--o{ User : "1:N"
@@ -527,6 +559,13 @@ erDiagram
 ---
 
 ### 第六章 向量存储结构
+
+> **术语速解（Java 视角）**：
+> - **向量（Embedding）**：把文本变成数字数组（如 1024 个浮点数）。不是 MD5（固定哈希），而是"语义相似→数字距离近"。"狗"和"猫"的向量接近，"汽车"的向量远。
+> - **Collection**：Milvus 的表概念，类比 MySQL 的 Table。项目有两个 Collection：`semantic_index`（存表/列的中文描述向量）和 `fewshot_index`（存审核过的 SQL 示例向量）。
+> - **HNSW**：Hierarchical Navigable Small World，向量索引算法。类比 ES 的倒排索引，但为向量相似度搜索优化。查询不是精确匹配而是"最像的 10 个"。
+> - **IP 度量**：Inner Product 内积，向量相似度计算方式。比余弦相似度快，BGE 模型推荐用 IP。
+> - **标量过滤**：向量搜索时同时按普通字段过滤。类比 ES 的 `filter + must` 组合查询——既要相似度又要 `data_source_id = xxx`。
 
 ```mermaid
 graph LR
@@ -678,6 +717,11 @@ chat-bi/
 
 ### 第八章 关键设计决策
 
+> **术语速解（Java 视角）**：
+> - **LangGraph**：LangChain 生态的状态机框架，适合开放式 Agent（动态路由、条件分支）。本项目没用它——流程是确定性的固定管线，自建状态机更可控、无框架黑盒。
+> - **sqlglot**：Python 的 SQL 解析库，把 SQL 文本解析成 AST。类比 Java 的 JSqlParser，但支持多方言转换。
+> - **AST**：抽象语法树，和 Java AST 一样。`SELECT * FROM users` 会被解析成树结构（Select 节点→Column 节点→Table 节点），遍历树检查比字符串匹配安全得多。
+
 | 决策 | 选择 | 替代方案 | 理由 |
 |------|------|---------|------|
 | AI 框架 | 自建 Agent 状态机 | LangGraph, DeepAgents | 确定性工作流，严格前向，非"Agent 失控"；依赖注入全链路可 mock；无框架黑盒 |
@@ -696,6 +740,14 @@ chat-bi/
 ---
 
 ### 第九章 安全架构
+
+> **术语速解（Java 视角）**：
+> - **RBAC**：Role-Based Access Control，基于角色的访问控制。和 Spring Security 的 Role 一样。项目三角色：admin/user/read_only。
+> - **JWT**：JSON Web Token，和 Java 的 JWT 一模一样。HS256 签名，payload 含 user_id/email/tenant_id/role 四字段。
+> - **bcrypt**：密码哈希算法，内置 salt + 可调 cost factor（12 轮）。比 MD5/SHA 安全得多，GPU 抗性强。类比 Spring Security 的 `BCryptPasswordEncoder`。
+> - **CTE**：Common Table Expression，SQL 的 `WITH...AS(...)` 语法。攻击者可以写 `WITH upd AS (UPDATE...RETURNING *) SELECT * FROM upd` 绕过只查顶层的校验。
+> - **Fail-Closed**：安全默认是"否"，出问题拒绝而非放行。类比 SecurityManager 异常默认拒绝。相对的是 Fail-Open（出问题放行），项目安全相关全部 Fail-Closed。
+> - **CORS**：跨域资源共享。项目拒绝 `wildcard + credentials` 组合（浏览器规范不允许，等于放行任意源）。
 
 ```mermaid
 graph TB
@@ -765,6 +817,12 @@ graph TB
 ---
 
 ### 第十章 Agent 状态机状态流转图
+
+> **术语速解（Java 视角）**：
+> - **状态机**：和 Spring State Machine 一样，状态间严格前向流转（A→B→C）。唯一回环是 SQL 自愈循环（执行失败→自愈→重新执行）。上游失败直接终止不走下游（Fail-Closed）。
+> - **while(true) 循环**：不是死循环，是"生成→校验→执行→自愈→再执行"的修正循环。退出条件：成功（`last_error is None`）或耗尽配额（`self_heal_rounds >= 2`）。
+> - **自愈（Self-healing）**：SQL 执行报错后，用 LLM 重新生成修正版 SQL。类比 `try { execute(sql) } catch (e) { sql = llm.fix(e); retry }`。关键是自愈后的 SQL 也要走三层校验（v1 教训#32：自愈不校验能出 DROP TABLE）。
+> - **熔断器**：和 Resilience4j/Hystrix 一模一样。三态：closed（正常）→ open（连续 3 次失败后拒绝自愈）→ half-open（60 秒冷却后允许一次试探）。
 
 ```mermaid
 stateDiagram-v2
@@ -1134,6 +1192,15 @@ uv run pytest backend/tests/test_intent.py -v
 ### 第十三章 关键实现深度解析
 
 > 本章基于源码深度分析，补充架构图的实现细节。每个小节对应一个核心技术模块。
+>
+> **术语速解（Java 视角）**：
+> - **dataclass**：Python 数据类，类比 Lombok `@Data` 或 Java 16 `record`。自动生成构造器、toString、equals。项目大量用来传递数据（AgentState、AgentDeps、RetrievalResult 等）。
+> - **prefix cache**：LLM API 的优化机制——如果多次请求的 Prompt 前缀相同，API 服务端会缓存前缀的 KV 计算结果加速响应。类似 HTTP 的 ETag 缓存，但是在 LLM API 侧。
+> - **Dijkstra**：图中最短路径算法，和 Java JGraphT 的 Dijkstra 一样。weight = 1 - confidence 意味着 confidence 越高路径越短（越优先走）。
+> - **社区发现**：图算法，把图中关系紧密的节点聚类。类比把数据库表按业务域分组（订单域、用户域、商品域）。
+> - **中心度**：图中节点的重要性，度中心度 = 连接数。类比 PageRank 但看连接数。枢纽表 = 连接最多的表。
+> - **asyncio.to_thread**：Python 把同步函数丢到线程池执行不阻塞事件循环。类比 Java 的 `CompletableFuture.supplyAsync()`。
+> - **乐观锁**：和 JPA `@Version` 一样。更新时校验 expected_version，冲突抛异常（Fail-Closed 不静默吞错）。
 
 #### 13.1 Agent 状态机详解（`agent.py`）
 
@@ -1766,6 +1833,10 @@ SELECT SUM(amount) 会重复计算订单金额
 | SQL 执行安全 | 三层校验+CTE防护, READ ONLY, 超时双保险, LIMIT | `core/sql_validator.py`, `services/sql_executor.py` |
 | 数据安全 | Fernet 加密, Unicode 清洗, 审计三层降级, CSV 注入防护 | `core/security.py`, `core/text_sanitize.py` |
 | Prompt 安全 | 宁缺毋滥, 自愈后校验, 不传原始DB错误, 白名单列 | `ai/retriever.py`, `ai/agent.py`, `ai/sql_healer.py` |
+
+> **术语速解（Java 视角）**：
+> - **Unicode 清洗**：移除文本中的危险字符（零宽字符、方向控制字符、私用区字符），防 Unicode 隐形字符注入。类比 Java 的 `String.replaceAll("[\\p{Cf}]", "")`，但更全面（NFKC 归一化 + 多类字符移除）。
+> - **CSV 注入防护**：导出 Excel/CSV 时，如果单元格以 `=`、`+`、`-`、`@` 开头，Excel 会当公式执行。防护方式是加 `'` 前缀。类比 Java 导出时对特殊字符做转义。
 
 #### 多租户实现
 
