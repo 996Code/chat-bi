@@ -19,81 +19,13 @@ ChatBI v2 是一个 NL2SQL BI 平台——用户用自然语言提问，系统�
 
 ```mermaid
 graph TB
-    subgraph Frontend["前端 Vue3 + TS"]
-        direction LR
-        ChatView["对话问答"]
-        DataSource["数据源管理"]
-        Semantic["语义层编辑"]
-        Dashboard["看板管理"]
-        History["历史记录"]
-        Observability["系统监控"]
-        Skills["业务规则"]
-        Memory["记忆管理"]
-        Login["登录注册"]
-    end
-
-    subgraph APILayer["API 路由层 api/ — 12 个子路由"]
-        direction LR
-        AuthAPI["认证"]
-        ChatAPI["同步问答"]
-        StreamAPI["SSE 流式"]
-        DSAPI["数据源 CRUD"]
-        SemAPI["语义层版本"]
-        DashAPI["看板"]
-        GraphAPI["图谱"]
-        ObsAPI["可观测性"]
-    end
-
-    subgraph AgentEngine["Agent 执行引擎 ai/ — 7 阶段状态机"]
-        direction LR
-        Intent["意图识别"]
-        SchemaSearch["Schema 检索"]
-        Thinking["预思考"]
-        GenSQL["SQL 生成"]
-        ExecSQL["SQL 执行 + 自愈"]
-        SelfCheck["结果自检"]
-        Visualize["图表生成"]
-    end
-
-    subgraph Services["业务服务层 services/"]
-        direction LR
-        Embedder["向量嵌入 BGE"]
-        Retriever["两阶段检索"]
-        VectorStore["向量存储 Milvus"]
-        SQLExec["SQL 执行器"]
-        DSEngine["数据源连接池"]
-        GraphSvc["图谱服务 NetworkX"]
-        Scanner["数据源扫描器"]
-        Indexer["索引构建"]
-        FewShot["Few-shot 检索"]
-        SkillsLoader["Skills 加载器"]
-    end
-
-    subgraph Core["基础设施层 core/"]
-        direction LR
-        Config["配置 Pydantic"]
-        AuthCore["JWT + RBAC"]
-        Security["加密 bcrypt+Fernet"]
-        LLMClient["LLM 客户端"]
-        SQLValidator["SQL 三层校验"]
-        Redis["Redis 缓存"]
-        Scheduler["定时任务"]
-        TokenTracker["Token 追踪"]
-    end
-
-    subgraph DataLayer["数据持久化层"]
-        direction LR
-        PG["PostgreSQL 元数据库<br/>10 张 ORM 表"]
-        Milvus["Milvus 向量库<br/>semantic_index + fewshot_index"]
-        RedisDB["Redis<br/>限流 + 语义缓存"]
-        FS["文件系统<br/>skills/ + memory/ + states/"]
-    end
-
-    subgraph BusinessDB["业务数据库 用户数据源"]
-        direction LR
-        MySQL["MySQL"]
-        PG2["PostgreSQL"]
-    end
+    Frontend["前端 Vue3 + TS<br/>9 个功能页面 + SSE + ECharts/G6"]
+    APILayer["API 路由层 api/<br/>12 个子路由 + 鉴权"]
+    AgentEngine["Agent 执行引擎 ai/<br/>7 阶段状态机 + 自愈循环"]
+    Services["业务服务层 services/<br/>检索/执行/连接池/图谱/扫描/索引"]
+    Core["基础设施层 core/<br/>配置/认证/加密/LLM/校验/限流/调度"]
+    DataLayer["数据持久化层 db/<br/>PostgreSQL + Milvus + Redis + 文件系统"]
+    BusinessDB["业务数据库<br/>MySQL / PostgreSQL"]
 
     Frontend -->|HTTP / SSE| APILayer
     APILayer --> AgentEngine
@@ -102,6 +34,18 @@ graph TB
     Core --> DataLayer
     Services --> BusinessDB
 ```
+
+**各层展开说明**：
+
+| 层 | 包含模块 |
+|---|---------|
+| **前端** | ChatView（对话问答）、DataSource（数据源管理）、Semantic（语义层编辑）、Dashboard（看板管理）、History（历史记录）、Observability（系统监控）、Skills（业务规则）、Memory（记忆管理）、Login（登录注册） |
+| **API 路由层** | auth（认证）、chat（同步问答）、chat_stream（SSE 流式）、data_sources（数据源 CRUD）、semantic_models（语义层版本）、dashboard（看板）、graph（图谱）、observability（可观测性）+ skills/memory/saved_queries/dev_auth |
+| **Agent 引擎** | intent（意图识别）→ schema_search（Schema 检索）→ thinking（预思考）→ generate_sql（SQL 生成）→ execute_sql（执行+自愈）→ self_check（结果自检）→ visualize（图表生成） |
+| **业务服务层** | embedder（BGE 嵌入）、retriever（两阶段检索）、vector_store（Milvus）、sql_executor（SQL 执行）、datasource_engine（连接池）、graph_service（图谱 NetworkX）、semantic_scanner（扫描）、indexer（索引）、fewshot（Few-shot）、skills_loader（Skills 加载） |
+| **基础设施层** | config（配置 Pydantic）、auth（JWT+RBAC）、security（bcrypt+Fernet）、llm_client（LLM 客户端）、sql_validator（SQL 三层校验）、redis_client（缓存）、scheduler（定时任务）、token_tracker（Token 追踪） |
+| **数据持久化** | PostgreSQL（10 张 ORM 表：租户/用户/数据源/语义层/对话/查询/审计/看板）、Milvus（semantic_index + fewshot_index）、Redis（限流+语义缓存）、文件系统（skills/ + memory/ + states/） |
+| **业务数据库** | MySQL / PostgreSQL（用户自己的数据源，DataSourceEnginePool 动态连接池 + Fernet 解密） |
 
 **分层职责**：
 
@@ -149,12 +93,28 @@ graph TB
 > - **熔断器**：和 Resilience4j/Hystrix 一样。三态：closed（正常）→ open（连续失败拒绝）→ half-open（冷却后试探）。
 > - **JSONL**：JSON Lines，每行一个 JSON 对象的文本格式，追加写入。类比日志文件每行一条记录。
 
+整个流程分为 4 个阶段，每个阶段是一张独立的小图，阶段之间用文字说明衔接：
+
+```mermaid
+flowchart LR
+    P1["阶段一<br/>入口+意图识别<br/>步骤1-2"] --> P2["阶段二<br/>检索+预思考+生成<br/>步骤3-5"]
+    P2 --> P3["阶段三<br/>校验+执行+自愈<br/>步骤6-8"]
+    P3 --> P4["阶段四<br/>图表+持久化<br/>步骤9-10"]
+```
+
+---
+
+#### 阶段一：API 入口 + 意图识别（步骤 1-2）
+
+> **本阶段职责**：鉴权 → 装配依赖 → 恢复多轮上下文 → LLM 分类用户意图。
+> **本阶段产出**：`IntentOutput`（意图类型 + 规范化问题 + chart_type_hint）
+> **下一阶段衔接**：意图为 `TEXT_TO_SQL` 时进入阶段二走 SQL 管道；其他意图直接跳到阶段四（闲聊回复/改图表/澄清）。
+
 ```mermaid
 flowchart TD
     Start(["用户提问：各品类本月销售额，用柱状图展示"]) --> API
 
     subgraph API["1. API 入口 chat.py / chat_stream.py"]
-        direction TB
         A1["JWT 鉴权 → 获取 tenant_id / user_id"]
         A2["确定数据源 → 取语义层 content + 连接 URL"]
         A3["装配 AgentDeps（注入 11 个依赖）"]
@@ -165,7 +125,6 @@ flowchart TD
     API --> Intent
 
     subgraph Intent["2. 意图识别 intent.py"]
-        direction TB
         I1["LLM 分类：TEXT_TO_SQL / CLARIFICATION /<br/>GENERAL / CHART_MODIFY / EXPLANATION"]
         I2["剥离可视化措辞：柱状图 → chart_type_hint=bar"]
         I3{"置信度 ≥ 0.6?"}
@@ -173,93 +132,112 @@ flowchart TD
         I3 -->|是| I5["继续 SQL 管道"]
     end
 
-    Intent -->|TEXT_TO_SQL| Schema
-    Intent -->|GENERAL| Reply
-    Intent -->|CHART_MODIFY| ChartModify["复用 prev_sql<br/>重新校验 → 执行 → 新图表"]
-    Intent -->|CLARIFICATION| AskUser["ask_user 暂停"]
+    Intent -->|TEXT_TO_SQL| Next["→ 进入阶段二 Schema 检索"]
+    Intent -->|GENERAL| Reply["→ 跳到阶段四 generate_reply"]
+    Intent -->|CHART_MODIFY| ChartModify["→ 跳到阶段四 复用 prev_sql"]
+    Intent -->|CLARIFICATION| AskUser["→ ask_user 暂停等待用户"]
+```
 
+---
+
+#### 阶段二：Schema 检索 + 预思考 + SQL 生成（步骤 3-5）
+
+> **本阶段职责**：从用户问题找到相关的数据库表 → 预思考聚合策略 → 用 LLM 生成 SQL。
+> **本阶段产出**：`retrieved_models`（命中的表）、`thinking`（选表理由+聚合方式）、`sql`（生成的 SQL）
+> **上一阶段衔接**：由阶段一意图为 `TEXT_TO_SQL` 进入。
+> **下一阶段衔接**：生成的 SQL 进入阶段三校验 + 执行。注意白名单列取**整个语义层**（非仅命中表），避免 JOIN 关联表时列不在白名单误拒。
+
+```mermaid
+flowchart TD
     subgraph Schema["3. Schema 检索 retriever.py"]
-        direction TB
         S1["阶段1: BGE 嵌入 → Milvus 召回 top-20<br/>score ≥ 0.35"]
         S2["阶段2: LLM 精筛（宁缺毋滥）"]
         S3["图谱扩展: 沿外键补全关联表"]
         S4["JOIN 路径预计算: Dijkstra 最短路径"]
     end
 
-    Schema --> Think
-
     subgraph Think["4. 预思考 thinking.py"]
-        direction TB
         T1["选表理由：为什么选 category + orders"]
         T2["聚合方式：按 category 分组, SUM(amount)"]
         T3["陷阱警告：注意订单金额含退款"]
     end
 
-    Think --> GenSQL
-
     subgraph GenSQL["5. SQL 生成 sql_agent.py"]
-        direction TB
         G1["Prompt 分层：静态层(可缓存) + 动态层(每次重算)"]
         G2["Few-shot 注入：相似审核 SQL 示例"]
         G3["JOIN 路径 + 指标定义注入"]
         G4["白名单列约束（整个语义层）"]
     end
 
-    GenSQL --> Validate
+    Schema --> Think --> GenSQL
+    GenSQL --> Next["→ 进入阶段三 SQL 校验"]
+```
 
+---
+
+#### 阶段三：校验 + 执行 + 自愈循环（步骤 6-8）
+
+> **本阶段职责**：三层校验 SQL 安全 → 执行 SQL → 失败则自愈（最多 2 轮）→ 成功则自检结果。
+> **本阶段产出**：`execute_result`（查询结果）、`check_result`（自检是否正常）
+> **上一阶段衔接**：由阶段二生成的 SQL 进入。
+> **核心循环**：执行失败 → 自愈 → 重新校验 → 重新执行。自愈循环最多 2 轮，与结果自检修正**共享配额**（`self_heal_rounds` 计数器），总修正次数封顶 2 次防无限循环。
+> **下一阶段衔接**：自检正常进入阶段四生成图表；自检仍异常则 `ask_user` 暂停。
+
+```mermaid
+flowchart TD
     subgraph Validate["6. SQL 校验 sql_validator.py"]
-        direction TB
-        V1["Layer 1: AST 解析 → 拒绝非 SELECT（含 CTE 内写操作）"]
+        V1["Layer 1: AST 解析 → 拒绝非 SELECT（含 CTE）"]
         V2["Layer 2: 危险函数 → 拒绝 LOAD_FILE/SLEEP 等"]
         V3["Layer 3: 白名单列 → 只允许语义层定义的列"]
     end
 
-    Validate --> ExecSQL
-
     subgraph ExecSQL["7. SQL 执行 sql_executor.py"]
-        direction TB
         E1["连接池复用 DataSourceEnginePool"]
-        E2["READ ONLY 事务 + DB 侧超时 + asyncio.wait_for 双保险"]
+        E2["READ ONLY + DB 超时 + asyncio.wait_for 双保险"]
         E3["自动 LIMIT (max_rows + 1) 防全表扫描"]
         E4["结果采样 + truncated 标记"]
     end
 
-    ExecSQL -->|执行失败| Heal
-    ExecSQL -->|执行成功| Check
-
     subgraph Heal["自愈循环 sql_healer.py — 最多 2 轮"]
-        direction TB
-        H1["错误码提取 → 分类（表不存在/列不存在/语法错误...）"]
-        H2["错误类别 + hint → LLM 重新生成（不传原始 DB 错误）"]
+        H1["错误码提取 → 分类"]
+        H2["错误类别 + hint → LLM 重新生成"]
         H3["自愈结果走三层校验"]
-        H4{"熔断器状态？连续 3 次跨查询失败 → 熔断 60s"}
+        H4{"熔断器？连续3次跨查询失败→熔断60s"}
     end
 
-    Heal -->|修正成功| ExecSQL
-    Heal -->|耗尽配额| Final
-
     subgraph Check["8. 结果自检 result_checker.py — 纯规则不调 LLM"]
-        direction TB
-        C1["0 行检查 → 不阻断，附 suggestion"]
-        C2["全 NULL 列 → 阻断 → 自动修正（消耗自愈配额）"]
+        C1["0 行 → 不阻断，附 suggestion"]
+        C2["全 NULL 列 → 阻断 → 自动修正"]
         C3["笛卡尔积 → 行数 > 5000 阻断"]
     end
 
-    Check -->|正常| Viz
+    Validate --> ExecSQL
+    ExecSQL -->|执行失败| Heal
+    ExecSQL -->|执行成功| Check
+    Heal -->|修正成功| Validate
+    Heal -->|耗尽配额| Failed["→ final(failed)"]
     Check -->|异常且可修正| Heal
-    Check -->|仍异常| AskUser
+    Check -->|正常| Next["→ 进入阶段四 图表生成"]
+    Check -->|仍异常| AskUser["→ ask_user 暂停"]
+```
 
+---
+
+#### 阶段四：图表生成 + 持久化（步骤 9-10）
+
+> **本阶段职责**：生成 ECharts 图表 → 持久化对话状态 + 审计。
+> **本阶段产出**：`chart_option`（ECharts 配置）、持久化的 ConversationState/SavedQuery/AuditLog
+> **本阶段也是分流终点**：阶段一的 GENERAL（闲聊回复）、CHART_MODIFY（复用 SQL 改图表）也会汇聚到这里持久化。
+
+```mermaid
+flowchart TD
     subgraph Viz["9. 图表生成 chart_agent.py"]
-        direction TB
         VZ1["LLM → 图表配置（chart_type/dim_col/measure_cols）"]
         VZ2["inject_data 系统侧填充完整数据"]
         VZ3["JSON 自愈 → 规则推断兜底"]
     end
 
-    Viz --> Final
-
     subgraph Final["10. 持久化与审计"]
-        direction TB
         F1["StateStore 持久化 JSONL"]
         F2["SavedQuery 入库（去重）"]
         F3["Few-shot 回流向量库"]
@@ -268,8 +246,9 @@ flowchart TD
         F6["Token 追踪 + Prompt 捕获"]
     end
 
-    Reply["generate_reply<br/>自然语言回复"] --> Final
-    ChartModify --> Final
+    FromPhase3["来自阶段三<br/>自检正常"] --> Viz --> Final
+    FromGeneral["来自阶段一<br/>GENERAL 闲聊"] --> Final
+    FromChartModify["来自阶段一<br/>CHART_MODIFY"] --> Final
 ```
 
 **关键设计决策**：
@@ -285,83 +264,28 @@ flowchart TD
 
 ```mermaid
 graph TB
-    Main["main.py<br/>FastAPI 应用<br/>lifespan: 启动探测→建表→预热→调度器"]
-
-    Main --> API["api/ 路由层"]
-    Main --> Core["core/ 基础设施"]
-    Main --> AI["ai/ Agent 引擎"]
-    Main --> Svc["services/ 业务服务"]
-    Main --> DB["db/ 持久化层"]
+    Main["main.py<br/>FastAPI 应用入口<br/>lifespan: 启动探测→建表→预热→调度器"]
+    Main --> API["api/ 路由层<br/>12 个路由文件"]
+    Main --> AI["ai/ Agent 引擎<br/>14 个模块"]
+    Main --> Svc["services/ 业务服务<br/>16 个服务"]
+    Main --> Core["core/ 基础设施<br/>18 个核心模块"]
+    Main --> DB["db/ 持久化层<br/>2 个文件"]
 
     API --> AI
     AI --> Svc
     Svc --> Core
     Core --> DB
-
-    subgraph APIDetails["api/ — 12 个路由文件"]
-        direction LR
-        api_auth["auth.py 认证"]
-        api_chat["chat.py 同步问答"]
-        api_stream["chat_stream.py SSE 流式"]
-        api_ds["data_sources.py 数据源"]
-        api_sem["semantic_models.py 语义层"]
-        api_dash["dashboard.py 看板"]
-        api_graph["graph.py 图谱"]
-        api_obs["observability.py 可观测性"]
-        api_skills["skills.py 业务规则"]
-        api_memory["memory.py Agent 记忆"]
-    end
-
-    subgraph AIDetails["ai/ — 14 个模块"]
-        direction LR
-        ai_agent["agent.py 状态机编排"]
-        ai_intent["intent.py 意图识别"]
-        ai_thinking["thinking.py 预思考"]
-        ai_sqlgen["sql_agent.py SQL 生成"]
-        ai_heal["sql_healer.py SQL 自愈"]
-        ai_chart["chart_agent.py 图表生成"]
-        ai_check["result_checker.py 结果自检"]
-        ai_replier["replier.py 自然语言回复"]
-        ai_ask["ask_user.py 用户澄清"]
-        ai_recall["recall.py 记忆召回"]
-        ai_compress["compressor.py 上下文压缩"]
-        ai_state["state_store.py 状态管理"]
-        ai_schema["schema_utils.py Schema 工具"]
-    end
-
-    subgraph SvcDetails["services/ — 16 个服务"]
-        direction LR
-        svc_embed["embedder.py BGE 嵌入"]
-        svc_retr["retriever.py 两阶段检索"]
-        svc_vec["vector_store.py 向量存储"]
-        svc_sql["sql_executor.py SQL 执行"]
-        svc_ds["datasource_engine.py 连接池"]
-        svc_graph["graph_service.py 图谱"]
-        svc_scan["semantic_scanner.py 扫描"]
-        svc_kg["knowledge_graph.py 图谱推断"]
-        svc_index["indexer.py 索引构建"]
-        svc_few["fewshot.py Few-shot"]
-    end
-
-    subgraph CoreDetails["core/ — 18 个核心模块"]
-        direction LR
-        core_config["config.py 配置"]
-        core_auth["auth.py JWT+RBAC"]
-        core_sec["security.py 加密"]
-        core_llm["llm_client.py LLM 客户端"]
-        core_sqlval["sql_validator.py SQL 校验"]
-        core_redis["redis_client.py Redis"]
-        core_milvus["milvus_client.py Milvus"]
-        core_sched["scheduler.py 调度器"]
-        core_probe["startup_probe.py 启动探测"]
-        core_token["token_tracker.py Token 追踪"]
-    end
-
-    API --> APIDetails
-    AI --> AIDetails
-    Svc --> SvcDetails
-    Core --> CoreDetails
 ```
+
+**各目录文件清单**（点击 `附录：代码引用索引` 查看每个文件的 `file:line` 入口）：
+
+| 目录 | 文件数 | 核心文件 |
+|------|--------|---------|
+| `api/` | 13 | auth.py、chat.py、chat_stream.py、data_sources.py、semantic_models.py、dashboard.py、graph.py、observability.py、skills.py、memory.py |
+| `ai/` | 14 | agent.py（状态机）、intent.py、thinking.py、sql_agent.py、sql_healer.py、chart_agent.py、result_checker.py、replier.py、ask_user.py、recall.py、compressor.py、state_store.py、schema_utils.py |
+| `services/` | 16 | embedder.py、retriever.py、vector_store.py、sql_executor.py、datasource_engine.py、graph_service.py、semantic_scanner.py、knowledge_graph.py、indexer.py、fewshot.py、skills_loader.py |
+| `core/` | 18 | config.py、auth.py、security.py、llm_client.py、sql_validator.py、redis_client.py、milvus_client.py、rate_limit.py、scheduler.py、startup_probe.py、token_tracker.py、prompt_cache.py |
+| `db/` | 2 | models.py（10 张 ORM 表）、session.py（异步引擎+自动建表）|
 
 ---
 
@@ -444,115 +368,72 @@ erDiagram
         string id PK
         string name
         bool is_active
-        datetime created_at
-        datetime updated_at
     }
 
     User {
         string id PK
         string tenant_id FK
         string email UK
-        string username
-        string hashed_password
         string role "admin/user/read_only"
-        bool is_active
-        bool email_verified
+        string hashed_password
     }
 
     DataSource {
         string id PK
         string tenant_id FK
-        string name
         string db_type "mysql/postgresql"
-        string host
-        int port
-        string database
-        string username
-        string encrypted_password "Fernet 加密"
-        bool is_active
+        string encrypted_password "Fernet"
         string scan_status "idle/scanning/done/failed"
-        int scan_progress "0-100"
-        string scan_stage
-        datetime scanned_at
     }
 
     SemanticModel {
         string id PK
-        string tenant_id FK
         string data_source_id FK
         int version
         json content "语义层 JSON"
         bool is_current
-        datetime created_at
     }
 
     Conversation {
         string id PK
-        string tenant_id FK
         string user_id FK
         string title
-        json state_json
         bool is_archived
-        datetime created_at
     }
 
     SavedQuery {
         string id PK
-        string tenant_id FK
-        string user_id FK
         string data_source_id FK
-        string conversation_id
         text question
         text sql_text
-        string result_summary
         json chart_config
-        datetime created_at
     }
 
     AuditLog {
         string id PK
         string tenant_id FK
-        string user_id FK "nullable"
-        string resource_type
-        string resource_id
-        string action
         string status "success/fail/denied"
-        json detail
-        text sql_text
-        string error_message
-        string ip_address
         int duration_ms
         bool is_slow
-        string data_source_id
-        datetime created_at
     }
 
     Dashboard {
         string id PK
-        string tenant_id FK
         string user_id
         string name
-        datetime created_at
     }
 
     DashboardWidget {
         string id PK
         string dashboard_id FK
-        string tenant_id FK
-        string question
-        text query_sql
-        string datasource_id
         string chart_type
-        json columns
-        json rows
-        int row_count
         json chart_option
         int position_x
         int position_y
-        int width
-        int height
     }
 ```
+
+> **字段说明**：上图为精简版（每表只列核心字段）。完整字段定义见 `backend/app/db/models.py`（10 张 ORM 表）。「附录：代码引用索引」有每个模型的 `file:line` 入口。
 
 **关键设计**：
 - **TenantMixin**：所有租户隔离表继承，含 `tenant_id` 字段 + `tenant_filter()` 类方法，查询时用 `.where(Model.tenant_filter(tid))` 显式过滤
@@ -1608,85 +1489,25 @@ graph TB
 
 #### 一问一答的完整旅程
 
-以「各品类本月销售额，用柱状图展示」为例：
+以「各品类本月销售额，用柱状图展示」为例。
 
-```mermaid
-flowchart TD
-    Q(["用户：各品类本月销售额，用柱状图展示"]) --> API
+> **完整流程图见本文档「第二章 核心数据流」**——那里把 10 个步骤拆成了 4 张小图（阶段一入口+意图 / 阶段二检索+生成 / 阶段三校验+执行+自愈 / 阶段四图表+持久化），每张都清晰可读。
+>
+> 这里给出文字版步骤摘要，配合第二章的图阅读：
 
-    subgraph API["1. API 入口"]
-        A1["JWT 鉴权 → tenant_id / user_id"]
-        A2["确定数据源 → 语义层 + 连接 URL"]
-        A3["装配 AgentDeps（11 个依赖注入）"]
-        A4["StateStore 恢复多轮上下文"]
-    end
-
-    subgraph Intent["2. 意图识别"]
-        I1["LLM 分类: TEXT_TO_SQL"]
-        I2["剥离可视化: chart_type_hint=bar"]
-    end
-
-    subgraph Schema["3. Schema 检索"]
-        S1["BGE 嵌入 → Milvus top-20 (score≥0.35)"]
-        S2["LLM 精筛（宁缺毋滥）"]
-        S3["图谱扩展: 沿外键补全关联表"]
-        S4["JOIN 路径: Dijkstra 最短路径"]
-    end
-
-    subgraph Think["4. 预思考"]
-        T1["选表理由: 为什么选 category+orders"]
-        T2["聚合方式: GROUP BY category, SUM(amount)"]
-        T3["陷阱: 注意订单金额含退款"]
-    end
-
-    subgraph GenSQL["5. SQL 生成"]
-        G1["Prompt 分层: 静态(可缓存)+动态(重算)"]
-        G2["Few-shot + JOIN 路径 + 指标注入"]
-    end
-
-    subgraph Validate["6. SQL 校验"]
-        V1["AST 拒非 SELECT（含 CTE 绕过防护）"]
-        V2["危险函数黑名单"]
-        V3["白名单列校验"]
-    end
-
-    subgraph Exec["7. SQL 执行"]
-        E1["连接池复用"]
-        E2["READ ONLY + 超时双保险"]
-        E3["自动 LIMIT"]
-    end
-
-    subgraph Heal["自愈循环 最多2轮"]
-        H1["错误分类 → LLM 重新生成"]
-        H2["自愈结果也走三层校验"]
-    end
-
-    subgraph Check["8. 结果自检"]
-        C1["0行/全NULL/笛卡尔积 检测"]
-        C2["异常 → 自动修正（消耗自愈配额）"]
-    end
-
-    subgraph Viz["9. 图表生成"]
-        VZ1["LLM 决策 → inject_data 填充"]
-        VZ2["规则兜底"]
-    end
-
-    subgraph Persist["10. 持久化"]
-        P1["StateStore JSONL"]
-        P2["SavedQuery 去重入库"]
-        P3["Few-shot 回流"]
-        P4["指标反哺 co_occurrence"]
-        P5["审计日志三态"]
-    end
-
-    API --> Intent --> Schema --> Think --> GenSQL --> Validate --> Exec
-    Exec -->|失败| Heal
-    Heal -->|修正| Exec
-    Exec -->|成功| Check
-    Check -->|异常可修正| Heal
-    Check -->|正常| Viz
-    Viz --> Persist
-```
+| 步骤 | 模块 | 输入 → 输出 | 失败处理 |
+|------|------|------------|---------|
+| 1. API 入口 | chat.py | 用户问题 → AgentState | 鉴权失败 401 |
+| 2. 意图识别 | intent.py | 问题+历史 → IntentOutput | confidence<0.6 降级 CLARIFICATION |
+| 3. Schema 检索 | retriever.py | 问题 → 命中表列表 | 无召回 → ask_user（宁缺毋滥） |
+| 4. 预思考 | thinking.py | 问题+schema → 选表理由+聚合方式 | LLM 失败 → 空提示不阻塞 |
+| 5. SQL 生成 | sql_agent.py | prompt 全量 → SQL | 无语义层 → fail-closed 拒绝 |
+| 6. SQL 校验 | sql_validator.py | SQL → ValidationResult | 非 SELECT/危险函数/非白名单列 → 拒绝 |
+| 7. SQL 执行 | sql_executor.py | SQL → ExecuteResult | 超时/错误 → 进入自愈循环 |
+| 自愈循环 | sql_healer.py | 错误 → 修正 SQL | 最多 2 轮，熔断器连续 3 次熔断 60s |
+| 8. 结果自检 | result_checker.py | 结果 → CheckResult | 全NULL/笛卡尔积 → 自动修正消耗配额 |
+| 9. 图表生成 | chart_agent.py | 结果 → ECharts option | LLM 失败 → 规则推断兜底 |
+| 10. 持久化 | chat.py | 全状态 → DB+文件 | 各步骤独立失败不阻塞主流程 |
 
 #### 动手练习
 
