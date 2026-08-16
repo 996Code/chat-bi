@@ -306,7 +306,7 @@ persist_metric_feedback() 执行
 | 语言 | Python 3.12+ |
 | 框架 | FastAPI + Uvicorn |
 | ORM | SQLAlchemy 2.0 (async) |
-| AI 编排 | LangGraph + LangChain |
+| AI 编排 | 自研 Agent 状态机引擎（7 阶段管线 + SQL 自愈 + 熔断器） |
 | LLM | OpenAI 兼容接口 (讯飞/DeepSeek/OpenAI...) |
 | 向量库 | Milvus 2.4 |
 | Embedding | BGE-large-zh-v1.5 (本地 1024 维) |
